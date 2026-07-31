@@ -29,7 +29,9 @@ The dashboard provides visibility into request routing, success rates, fallback 
 
 - `docker-compose.yaml` — gateway image build and runtime
 - `docker-compose.prebuilt.yaml` — gateway runtime using the published image
-- `gateway/` — Express gateway and React admin UI
+- `apps/api/` — Express gateway backend
+- `apps/web/` — React admin UI
+- `packages/contracts/` — shared control-plane contracts
 - `.env.example` — gateway configuration reference
 - `SELF_HOST.md` — external-service deployment guide
 
@@ -48,4 +50,4 @@ The dashboard provides visibility into request routing, success rates, fallback 
 ## Documentation
 
 - [`SELF_HOST.md`](SELF_HOST.md) — deployment, configuration, and troubleshooting
-- [`gateway/README.md`](gateway/README.md) — gateway routes, policy, and development
+- [`apps/api/README.md`](apps/api/README.md) — gateway routes, policy, and development

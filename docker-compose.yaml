@@ -2,7 +2,9 @@ name: firecrawl-gateway
 
 services:
   gateway:
-    build: gateway
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
     restart: unless-stopped
     environment:
       PORT: 8080

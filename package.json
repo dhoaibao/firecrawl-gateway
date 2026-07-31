@@ -1,0 +1,26 @@
+{
+  "name": "firecrawl-gateway-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Modular Firecrawl gateway and admin dashboard",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "typecheck": "npm run typecheck --workspace @firecrawl/contracts && npm run build --workspace @firecrawl/contracts && npm run typecheck --workspace @firecrawl/api && npm run typecheck --workspace @firecrawl/web",
+    "lint": "npm run build --workspace @firecrawl/contracts && npm run lint --workspace @firecrawl/contracts && npm run lint --workspace @firecrawl/api && npm run lint --workspace @firecrawl/web",
+    "test": "npm run build --workspace @firecrawl/contracts && npm run test --workspace @firecrawl/contracts && npm run test --workspace @firecrawl/api",
+    "build": "npm run build --workspace @firecrawl/contracts && npm run build --workspace @firecrawl/api && npm run build --workspace @firecrawl/web",
+    "api:typecheck": "npm run build --workspace @firecrawl/contracts && npm run typecheck --workspace @firecrawl/api",
+    "api:test": "npm run build --workspace @firecrawl/contracts && npm run test --workspace @firecrawl/api",
+    "api:build": "npm run build --workspace @firecrawl/contracts && npm run build --workspace @firecrawl/api",
+    "web:typecheck": "npm run typecheck --workspace @firecrawl/web",
+    "web:lint": "npm run lint --workspace @firecrawl/web",
+    "web:build": "npm run build --workspace @firecrawl/web",
+    "contracts:typecheck": "npm run typecheck --workspace @firecrawl/contracts",
+    "contracts:lint": "npm run lint --workspace @firecrawl/contracts",
+    "contracts:test": "npm run test --workspace @firecrawl/contracts",
+    "contracts:build": "npm run build --workspace @firecrawl/contracts"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

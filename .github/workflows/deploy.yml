@@ -5,7 +5,12 @@ on:
     branches:
       - main
     paths:
-      - "gateway/**"
+      - "apps/**"
+      - "packages/**"
+      - "deploy/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.base.json"
       - "docker-compose.prebuilt.yaml"
       - ".github/workflows/deploy.yml"
   workflow_dispatch:
@@ -33,7 +38,8 @@ jobs:
       - name: Build and push gateway image
         uses: docker/build-push-action@v6
         with:
-          context: ./gateway
+          context: .
+          file: deploy/Dockerfile
           push: true
           tags: dhoaibao/firecrawl-gateway:latest
           cache-from: type=gha

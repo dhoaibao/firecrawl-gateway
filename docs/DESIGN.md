@@ -74,7 +74,7 @@ A dark-themed, data-dense administrative dashboard for operating a hybrid Firecr
 
 ## Color System
 
-Source of truth is `gateway/admin-ui/src/index.css` using Tailwind CSS v4 `@theme`.
+Source of truth is `apps/web/src/index.css` using Tailwind CSS v4 `@theme`.
 
 ### Base surfaces
 
@@ -164,7 +164,7 @@ Respect `prefers-reduced-motion: reduce` in `index.css`; do not add unbounded an
 
 ### Primitive source
 
-Use the components in `gateway/admin-ui/src/components/ui/`. Do not introduce new third-party UI libraries without explicit approval.
+Use the components in `apps/web/src/components/ui/`. Do not introduce new third-party UI libraries without explicit approval.
 
 - **Button** (`button.tsx`): CVA-based with variants `default | destructive | outline | secondary | ghost | link` and sizes `default | sm | lg | icon`. Includes `active:translate-y-px`, focus ring, and `[&_svg]:size-4` defaults.
 - **Card** (`card.tsx`): `Card`, `CardHeader`, `CardTitle`, `CardDescription`, `CardContent`. Default card has `gap-6`, `rounded-lg`, `border`, `py-6`, and `shadow-[var(--shadow-card)]` with hover shadow.
@@ -254,20 +254,20 @@ Before considering Admin UI work complete:
 - [ ] Async actions show toast feedback via `useToast()`.
 - [ ] Focus states and keyboard navigation work; dialogs trap focus and close on `Escape`.
 - [ ] Mobile layout does not break: tables scroll horizontally, sidebar collapses, content clears top bar.
-- [ ] `npm run lint` and `npm run build` pass in `gateway/admin-ui/`.
+- [ ] `npm run web:lint` and `npm run web:build` pass from the repository root.
 - [ ] No new arbitrary HSL values duplicated in components; values come from `@theme` tokens.
 - [ ] New dependencies are approved before being added.
 
 ## Source Evidence
 
-- Color/theme/animation/shadow definitions: `gateway/admin-ui/src/index.css`.
-- App shell, basename, and routing: `gateway/admin-ui/src/App.tsx`.
-- UI primitives: `gateway/admin-ui/src/components/ui/{button,card,table,badge,select,skeleton}.tsx`.
-- Layout components: `gateway/admin-ui/src/components/Sidebar.tsx`, `gateway/admin-ui/src/components/PageLayout.tsx`.
-- Page implementations: `gateway/admin-ui/src/pages/{Dashboard,ApiKeys,Users,Configure,Login}.tsx`.
-- Shared helpers: `gateway/admin-ui/src/lib/utils.ts`, `gateway/admin-ui/src/lib/routing.ts`.
-- Feedback components: `gateway/admin-ui/src/components/ToastStack.tsx`, `gateway/admin-ui/src/components/ConfirmDialog.tsx`.
-- Data display: `gateway/admin-ui/src/components/DataTable.tsx`, `gateway/admin-ui/src/components/MetricCard.tsx`, `gateway/admin-ui/src/components/MetricsGrid.tsx`.
+- Color/theme/animation/shadow definitions: `apps/web/src/index.css`.
+- App shell, basename, and routing: `apps/web/src/App.tsx`.
+- UI primitives: `apps/web/src/components/ui/{button,card,table,badge,select,skeleton}.tsx`.
+- Layout components: `apps/web/src/components/Sidebar.tsx`, `apps/web/src/components/PageLayout.tsx`.
+- Page implementations: `apps/web/src/pages/{Dashboard,ApiKeys,Users,Configure,Login}.tsx`.
+- Shared helpers: `apps/web/src/lib/utils.ts`, `apps/web/src/lib/routing.ts`.
+- Feedback components: `apps/web/src/components/ToastStack.tsx`, `apps/web/src/components/ConfirmDialog.tsx`.
+- Data display: `apps/web/src/components/DataTable.tsx`, `apps/web/src/components/MetricCard.tsx`, `apps/web/src/components/MetricsGrid.tsx`.
 
 ## Open Questions
 
