@@ -4,6 +4,8 @@ import { passport } from "./passport";
 import * as userService from "../users/service";
 import { requireAuth } from "./middleware";
 import type { AuthenticatedRequest } from "./middleware";
+import type { User } from "../types";
+import { serializeUser } from "../users/serialization";
 import { authenticatedUserSchema } from "@firecrawl/contracts";
 
 export function createAuthRouter() {
@@ -29,8 +31,7 @@ export function createAuthRouter() {
             if (err) {
               return next(err);
             }
-            const { password_hash, ...safeUser } = user as unknown as Record<string, unknown>;
-            res.json({ success: true, data: authenticatedUserSchema.parse(safeUser) });
+            res.json({ success: true, data: authenticatedUserSchema.parse(serializeUser(user as User)) });
           });
         });
       });
@@ -53,8 +54,7 @@ export function createAuthRouter() {
   });
 
   router.get("/me", requireAuth, (req: AuthenticatedRequest, res) => {
-    const { password_hash, ...safeUser } = req.user as unknown as Record<string, unknown>;
-    res.json({ data: authenticatedUserSchema.parse(safeUser) });
+    res.json({ data: authenticatedUserSchema.parse(serializeUser(req.user as User)) });
   });
 
   router.post("/password", requireAuth, async (req: AuthenticatedRequest, res, next) => {

@@ -23,12 +23,13 @@ beforeAll(async () => {
   passwordHash = await bcrypt.hash("current-password", 4);
 });
 
-function createApp(authenticated = true) {
+function createApp(authenticated = true, databaseDates = false) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     req.isAuthenticated = (() => authenticated) as typeof req.isAuthenticated;
     if (authenticated) {
+      const timestamp = databaseDates ? new Date("2026-01-01T00:00:00.000Z") : new Date().toISOString();
       req.user = {
         id: "admin-1",
         email: "admin@example.com",
@@ -36,16 +37,29 @@ function createApp(authenticated = true) {
         password_hash: passwordHash,
         is_admin: true,
         status: "active",
-        suspended_until: null,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
+        suspended_until: databaseDates ? new Date("2026-01-02T00:00:00.000Z") : null,
+        created_at: timestamp,
+        updated_at: timestamp,
+      } as unknown as Express.User;
     }
     next();
   });
   app.use("/auth", createAuthRouter());
   return app;
 }
+
+describe("GET /auth/me", () => {
+  it("serializes database timestamp values as ISO strings", async () => {
+    const res = await request(createApp(true, true)).get("/auth/me").expect(200);
+
+    expect(res.body.data).toMatchObject({
+      suspended_until: "2026-01-02T00:00:00.000Z",
+      created_at: "2026-01-01T00:00:00.000Z",
+      updated_at: "2026-01-01T00:00:00.000Z",
+    });
+    expect(res.body.data).not.toHaveProperty("password_hash");
+  });
+});
 
 describe("POST /auth/password", () => {
   beforeEach(() => {

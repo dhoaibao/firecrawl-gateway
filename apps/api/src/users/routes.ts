@@ -2,6 +2,7 @@ import { Router } from "express";
 import bcrypt from "bcrypt";
 import type { User } from "../types";
 import * as userService from "./service";
+import { serializeUser } from "./serialization";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MIN_PASSWORD_LENGTH = 8;
@@ -259,6 +260,5 @@ export function createUsersRouter() {
 }
 
 function sanitizeUser(user: User) {
-  const { password_hash, ...rest } = user;
-  return rest;
+  return serializeUser(user);
 }
