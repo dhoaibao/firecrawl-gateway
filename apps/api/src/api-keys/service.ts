@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { withClient } from "../db";
+import { withAccountTransaction, withClient, withUserAccountTransaction } from "../db";
 import { encryptApiKey } from "./crypto";
 import type { ApiKey, User } from "../types";
 
@@ -11,6 +11,7 @@ export interface AuthenticatedApiKey {
 export interface CreatedApiKey {
   id: string;
   user_id: string;
+  account_id?: string;
   name: string;
   key_prefix: string;
   revoked: boolean;
@@ -24,51 +25,71 @@ export async function createApiKey(userId: string, name: string): Promise<Create
   const keyHash = hashApiKey(key);
   const keyPrefix = key.slice(0, 8);
 
-  return withClient(async (client) => {
+  return withUserAccountTransaction(userId, async (accountId, client) => {
     const result = await client.query<ApiKey>(
-      `INSERT INTO api_keys (id, user_id, name, key_hash, key_value, key_prefix, revoked)
-       VALUES ($1, $2, $3, $4, $5, $6, false)
+      `INSERT INTO api_keys (id, user_id, account_id, name, key_hash, key_value, key_prefix, revoked)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, false)
        RETURNING *`,
-      [crypto.randomUUID(), userId, name, keyHash, encryptApiKey(key), keyPrefix],
+      [crypto.randomUUID(), userId, accountId, name, keyHash, encryptApiKey(key), keyPrefix],
     );
     const row = result.rows[0];
     const { key_value: _keyValue, ...keyData } = row;
-    return {
-      ...keyData,
-      key,
-    };
+    return { ...keyData, key };
   });
 }
 
 export async function listApiKeys(userId?: string): Promise<ApiKey[]> {
+  if (userId) {
+    return withUserAccountTransaction(userId, async (accountId, client) => {
+      const result = await client.query<ApiKey>(
+        "SELECT * FROM api_keys WHERE account_id = $1 AND user_id = $2 ORDER BY created_at DESC",
+        [accountId, userId],
+      );
+      return result.rows;
+    });
+  }
+
   return withClient(async (client) => {
-    const query = userId
-      ? "SELECT * FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC"
-      : "SELECT * FROM api_keys ORDER BY created_at DESC";
-    const params = userId ? [userId] : [];
-    const result = await client.query<ApiKey>(query, params);
+    const result = await client.query<ApiKey>(
+      "SELECT * FROM api_keys ORDER BY created_at DESC",
+    );
     return result.rows;
-  });
+  }, { operator: true });
 }
 
-export async function getApiKeyById(id: string): Promise<ApiKey | null> {
+export async function getApiKeyById(id: string, accountId?: string): Promise<ApiKey | null> {
+  if (accountId) {
+    return withAccountTransaction(accountId, async (client) => {
+      const result = await client.query<ApiKey>(
+        "SELECT * FROM api_keys WHERE id = $1 AND account_id = $2",
+        [id, accountId],
+      );
+      return result.rows[0] || null;
+    });
+  }
+
   return withClient(async (client) => {
     const result = await client.query<ApiKey>(
       "SELECT * FROM api_keys WHERE id = $1",
       [id],
     );
     return result.rows[0] || null;
-  });
+  }, { operator: true });
 }
 
-export async function revokeApiKey(id: string): Promise<ApiKey | null> {
-  return withClient(async (client) => {
+export async function revokeApiKey(id: string, accountId?: string): Promise<ApiKey | null> {
+  const run = async (client: import("pg").PoolClient) => {
     const result = await client.query<ApiKey>(
-      "UPDATE api_keys SET revoked = true, updated_at = NOW() WHERE id = $1 RETURNING *",
-      [id],
+      accountId
+        ? "UPDATE api_keys SET revoked = true, updated_at = NOW() WHERE id = $1 AND account_id = $2 RETURNING *"
+        : "UPDATE api_keys SET revoked = true, updated_at = NOW() WHERE id = $1 RETURNING *",
+      accountId ? [id, accountId] : [id],
     );
     return result.rows[0] || null;
-  });
+  };
+  return accountId
+    ? withAccountTransaction(accountId, run)
+    : withClient(run, { operator: true });
 }
 
 export async function validateApiKey(key: string): Promise<ApiKey | null> {
@@ -79,7 +100,7 @@ export async function validateApiKey(key: string): Promise<ApiKey | null> {
       [keyHash],
     );
     return result.rows[0] || null;
-  });
+  }, { operator: true });
 }
 
 export async function validateApiKeyWithUser(key: string): Promise<AuthenticatedApiKey | null> {
@@ -91,6 +112,7 @@ export async function validateApiKeyWithUser(key: string): Promise<Authenticated
       owner_name: string;
       owner_password_hash: string;
       owner_is_admin: boolean;
+      owner_account_id: string;
       owner_status: string;
       owner_suspended_until: string | null;
       owner_created_at: string;
@@ -99,6 +121,7 @@ export async function validateApiKeyWithUser(key: string): Promise<Authenticated
     }>(
       `SELECT ak.*, u.id AS owner_id, u.email AS owner_email, u.name AS owner_name,
               u.password_hash AS owner_password_hash, u.is_admin AS owner_is_admin,
+              ak.account_id AS owner_account_id,
               CASE WHEN u.status = 'suspended' AND u.suspended_until <= NOW()
                    THEN 'active' ELSE u.status END AS owner_status,
               CASE WHEN u.status = 'suspended' AND u.suspended_until <= NOW()
@@ -119,6 +142,7 @@ export async function validateApiKeyWithUser(key: string): Promise<Authenticated
       owner_name,
       owner_password_hash,
       owner_is_admin,
+      owner_account_id,
       owner_status,
       owner_suspended_until,
       owner_created_at,
@@ -132,6 +156,7 @@ export async function validateApiKeyWithUser(key: string): Promise<Authenticated
       name: owner_name,
       password_hash: owner_password_hash,
       is_admin: owner_is_admin,
+      account_id: owner_account_id,
       status: owner_status,
       suspended_until: owner_suspended_until,
       created_at: owner_created_at,
@@ -145,7 +170,7 @@ export async function validateApiKeyWithUser(key: string): Promise<Authenticated
       user = reactivated.rows[0] || user;
     }
     return { key: apiKey, user };
-  });
+  }, { operator: true });
 }
 
 const TOUCH_DEBOUNCE_MS = 60_000;
@@ -186,7 +211,7 @@ export async function touchApiKey(id: string): Promise<void> {
       "UPDATE api_keys SET last_used_at = NOW() WHERE id = $1",
       [id],
     );
-  });
+  }, { operator: true });
 
   recordTouch(id, now);
 }

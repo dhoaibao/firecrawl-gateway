@@ -8,8 +8,12 @@ The gateway can route requests between an externally hosted Firecrawl instance a
 
 ```bash
 cp .env.example .env
-# Set DATABASE_URL and the remaining required credentials, then:
-docker compose up -d --build
+# Set DATABASE_URL, OPERATOR_DATABASE_URL, MIGRATION_DATABASE_URL, and the remaining required credentials.
+# Apply migrations before starting the API:
+docker compose build
+docker compose run --rm --no-deps \
+  -e MIGRATION_DATABASE_URL gateway node apps/api/scripts/migrate.cjs up
+docker compose up -d
 ```
 
 Default endpoints:

@@ -315,16 +315,19 @@ export function createProxyHandler({
   config,
   auditStore,
   getTrustedUserId,
+  getTrustedAccountId,
 }: {
   config: GatewayConfig;
   auditStore: AuditStore;
   getTrustedUserId?: (req: Request) => string | undefined;
+  getTrustedAccountId?: (req: Request) => string | undefined;
 }) {
   return async function handleProxy(
     req: Request,
     res: Response,
   ): Promise<void> {
     const trustedUserId = getTrustedUserId?.(req);
+    const trustedAccountId = getTrustedAccountId?.(req);
     const log = getRequestLogger(req);
     const started = Date.now();
     const requestUrl = req.originalUrl || req.url;
@@ -336,6 +339,7 @@ export function createProxyHandler({
       return;
     }
     let userId: string | undefined;
+    let accountId: string | undefined = trustedAccountId;
     let primaryTargetUrl = "";
     let routeMode: string = config.defaultRouteMode;
     const appendAuditEntry = async ({
@@ -362,6 +366,7 @@ export function createProxyHandler({
         duration_ms: Date.now() - started,
         target_url: primaryTargetUrl,
         user_id: userId,
+        account_id: accountId,
         request_id: req.requestId,
       };
       try {
@@ -418,6 +423,7 @@ export function createProxyHandler({
       }
 
       userId = validKey.user_id;
+      accountId = validKey.account_id ?? keyOwner.account_id;
       apiKeyService.touchApiKey(validKey.id).catch((err) => {
         log.warn({ err }, "Failed to update API key last used timestamp");
       });

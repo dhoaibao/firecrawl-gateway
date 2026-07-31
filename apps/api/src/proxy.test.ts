@@ -39,6 +39,7 @@ const baseConfig: GatewayConfig = {
   maxBodyBytes: 5_242_880,
   authEnabled: false,
   databaseUrl: "postgresql://localhost/test",
+  operatorDatabaseUrl: "postgresql://localhost/operator-test",
   sessionSecret: "secret",
   firecrawlKeysEncryptionKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   adminEmail: "",

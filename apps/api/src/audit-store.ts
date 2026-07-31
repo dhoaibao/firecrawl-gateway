@@ -77,8 +77,8 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
       await withClient((client) => client.query(
         `INSERT INTO audit_logs
            (id, created_at, method, path, route_mode, backend_used, fallback_used,
-            fallback_reason, status_code, duration_ms, target_url, user_id, request_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            fallback_reason, status_code, duration_ms, target_url, user_id, account_id, request_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
          ON CONFLICT (id) DO NOTHING`,
         [
           entry.id,
@@ -93,9 +93,10 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
           entry.duration_ms,
           entry.target_url,
           entry.user_id ?? null,
+          entry.account_id ?? null,
           entry.request_id ?? null,
         ],
-      ));
+      ), { operator: true });
     } catch (err) {
       rootLogger.warn({ err, auditId: entry.id }, "Failed to write audit entry to database");
     }
@@ -106,7 +107,7 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
 
     const values: unknown[] = [];
     const placeholders = entries.map((entry, entryIndex) => {
-      const offset = entryIndex * 13;
+      const offset = entryIndex * 14;
       values.push(
         entry.id,
         entry.created_at,
@@ -120,20 +121,21 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
         entry.duration_ms,
         entry.target_url,
         entry.user_id ?? null,
+        entry.account_id ?? null,
         entry.request_id ?? null,
       );
-      return `(${Array.from({ length: 13 }, (_, valueIndex) => `$${offset + valueIndex + 1}`).join(", ")})`;
+      return `(${Array.from({ length: 14 }, (_, valueIndex) => `$${offset + valueIndex + 1}`).join(", ")})`;
     }).join(",\n           ");
 
     try {
       await withClient((client) => client.query(
         `INSERT INTO audit_logs
            (id, created_at, method, path, route_mode, backend_used, fallback_used,
-            fallback_reason, status_code, duration_ms, target_url, user_id, request_id)
+            fallback_reason, status_code, duration_ms, target_url, user_id, account_id, request_id)
          VALUES ${placeholders}
          ON CONFLICT (id) DO NOTHING`,
         values,
-      ));
+      ), { operator: true });
     } catch (err) {
       const errorCode = (err as { code?: string }).code;
       rootLogger.warn(
@@ -250,12 +252,12 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
       try {
         const result = await withClient((client) => client.query<AuditEntry>(
           `SELECT id, created_at, method, path, route_mode, backend_used, fallback_used,
-                  fallback_reason, status_code, duration_ms, target_url, user_id, request_id
+                  fallback_reason, status_code, duration_ms, target_url, user_id, account_id, request_id
            FROM audit_logs
            ORDER BY created_at DESC
            LIMIT $1`,
           [limit],
-        ));
+        ), { operator: true });
         databaseEntries.push(...result.rows);
       } catch (err) {
         rootLogger.warn({ err }, "Failed to read audit entries from database");
@@ -300,7 +302,7 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
         const result = await withClient((client) => client.query(
           "DELETE FROM audit_logs WHERE id = ANY($1::text[]) RETURNING id",
           [[...uniqueIds]],
-        ));
+        ), { operator: true });
         for (const row of (result.rows ?? []) as Array<{ id?: string }>) {
           if (row.id) deletedIds.add(row.id);
         }
@@ -351,7 +353,7 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
         const result = await withClient((client) => client.query(
           "DELETE FROM audit_logs WHERE id = $1 RETURNING id",
           [id],
-        ));
+        ), { operator: true });
         deleted = (result.rowCount ?? 0) > 0;
       } catch (err) {
         rootLogger.warn({ err, id }, "Failed to delete audit entry from database");
@@ -420,7 +422,7 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
           return client.query(
             "DELETE FROM audit_logs WHERE created_at >= NOW() - interval '7 days' RETURNING id",
           );
-        });
+        }, { operator: true });
         deletedFromDatabase = result.rowCount ?? 0;
         for (const row of (result.rows ?? []) as Array<{ id?: string }>) {
           if (row.id) deletedDatabaseIds.add(row.id);

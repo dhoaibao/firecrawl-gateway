@@ -42,7 +42,7 @@ npm run web:build
 - `apps/api/src/policy.ts` — route-mode and Cloud-requirement decisions
 - `apps/api/src/config.ts` — injected environment configuration and validation
 - `apps/api/src/auth/`, `apps/api/src/users/`, `apps/api/src/api-keys/`, and `apps/api/src/settings/` — dashboard authentication and administration; user responses serialize PostgreSQL timestamps at `apps/api/src/users/serialization.ts`
-- `apps/api/src/db/` — PostgreSQL pool, bootstrap, and schema/migrations
+- `apps/api/src/db/` — PostgreSQL pool, transaction/tenant primitives, and bootstrap; ordered migrations live in `apps/api/migrations/`
 - `apps/api/src/audit-store.ts`, `middleware.ts`, `jobs/`, and `utils.ts` — audit persistence, request middleware, background jobs, and shared helpers
 - `apps/web/src/` — React dashboard served under `/admin`
 - `packages/contracts/` — shared control-plane Zod schemas and inferred types
@@ -54,7 +54,7 @@ npm run web:build
 
 - Compose runs the gateway on container port `8080`; `GATEWAY_PORT` controls the host mapping.
 - Firecrawl and PostgreSQL are external deployment prerequisites. The external Firecrawl URL is configured in the Admin UI; `DATABASE_URL` points to externally managed PostgreSQL.
-- Startup applies `apps/api/src/db/schema.sql`, which includes lightweight migrations. Update the source schema, not a copied build output.
+- Startup never applies DDL. Apply ordered `apps/api/migrations/` explicitly with `MIGRATION_DATABASE_URL`; the API checks the expected migration version and fails readiness on mismatch.
 - The admin UI is at `/admin` when authentication is enabled; admin endpoints are under `/admin/api/*`.
 - Virtual API keys are `fc_`-prefixed, stored as hashes with encrypted key values, and their plaintext is returned only at creation. Keep `.env` and credential-bearing files out of output and commits.
 - Routing defaults to `cloud-first`; supported modes and inactivity settings are stored in PostgreSQL. Sensitive headers/cookies and private target URLs restrict fallback.
@@ -64,7 +64,7 @@ npm run web:build
 ## Maintainer Guide
 
 - Node `>=22` is required. Backend TypeScript is strict; the admin UI uses Vite, Tailwind CSS, and ESLint.
-- `npm run api:build` also copies `src/db/schema.sql` into `apps/api/dist/db/schema.sql`; update the source schema only.
+- `npm run api:build` compiles the API only. Migration sources and scripts are deployed separately from `apps/api/migrations/` and `apps/api/scripts/`.
 - Configuration examples belong in `.env.example`; runtime credentials must remain local.
 
 ## Source-of-Truth Files
@@ -75,7 +75,7 @@ npm run web:build
 - `package.json` and `package-lock.json` — root workspace scripts and dependency graph
 - `apps/api/package.json` and `apps/web/package.json` — application scripts and dependencies
 - `apps/api/src/config.ts` and `apps/api/src/policy.ts` — configuration defaults and routing behavior
-- `apps/api/src/db/schema.sql` — database schema and startup migrations
+- `apps/api/migrations/` — ordered database schema and data migrations
 - `docs/DESIGN.md` — admin UI design rules
 - `README.md`, `QUICKSTART.md`, and `SELF_HOST.md` — user-facing setup and deployment guidance
 <!-- b-init-managed:end -->

@@ -25,9 +25,9 @@ The gateway starts cloud-first. Manage the live default in the Admin UI under **
 X-Firecrawl-Route-Mode: self-hosted-first | self-hosted-only | cloud-first | cloud-only
 ```
 
-Existing database settings and audit records are migrated to the self-hosted terminology automatically at startup. API clients must use the renamed route-mode values; the admin data endpoint exposes the self-hosted count as `totals.self_hosted`.
+Existing database settings and audit records are migrated by the ordered database migrations; startup never applies DDL. API clients must use the renamed route-mode values; the admin data endpoint exposes the self-hosted count as `totals.self_hosted`.
 
-The external self-hosted Firecrawl URL is configured in the Admin UI. `DATABASE_URL` must point to an externally managed PostgreSQL service.
+The external self-hosted Firecrawl URL is configured in the Admin UI. `DATABASE_URL` and `OPERATOR_DATABASE_URL` must point to separate credentials on an externally managed PostgreSQL service. Apply migrations separately with `MIGRATION_DATABASE_URL` before starting the API.
 
 ## Policy
 

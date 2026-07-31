@@ -12,14 +12,20 @@ Run the gateway with a pre-built image. Firecrawl and PostgreSQL are external se
 
 ```bash
 cp .env.example .env
-# Set DATABASE_URL and the remaining required credentials in .env
+# Set DATABASE_URL, OPERATOR_DATABASE_URL, MIGRATION_DATABASE_URL, and the remaining required credentials in .env
+# Apply migrations as a one-off deployment step before starting the API.
+docker compose -f docker-compose.prebuilt.yaml run --rm --no-deps \
+  -e MIGRATION_DATABASE_URL gateway node apps/api/scripts/migrate.cjs up
 docker compose -f docker-compose.prebuilt.yaml up -d
 ```
 
 For a source build instead:
 
 ```bash
-docker compose up -d --build
+docker compose build
+docker compose run --rm --no-deps \
+  -e MIGRATION_DATABASE_URL gateway node apps/api/scripts/migrate.cjs up
+docker compose up -d
 ```
 
 ## Endpoints

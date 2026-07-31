@@ -53,7 +53,7 @@ async function autoRevokeInactiveApiKeys() {
       [threshold.toISOString()],
     );
     return result.rowCount || 0;
-  });
+  }, { operator: true });
 
   if (revoked > 0) {
     logger.info({ revoked, threshold: threshold.toISOString() }, "Auto-revoked inactive API keys");
@@ -79,6 +79,7 @@ async function autoSuspendInactiveUsers() {
            updated_at = NOW()
        WHERE status = 'active'
          AND is_admin = false
+         AND COALESCE(platform_role, 'user') <> 'admin'
          AND created_at < $1
          AND NOT EXISTS (
            SELECT 1 FROM api_keys
@@ -90,7 +91,7 @@ async function autoSuspendInactiveUsers() {
       [threshold.toISOString()],
     );
     return result.rowCount || 0;
-  });
+  }, { operator: true });
 
   if (suspended > 0) {
     logger.info({ suspended, threshold: threshold.toISOString() }, "Auto-suspended inactive users");

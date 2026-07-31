@@ -1,6 +1,22 @@
 import crypto from "node:crypto";
-import { withClient } from "../db";
+import { withClient, withOperatorTransaction, withTransaction } from "../db";
 import type { User } from "../types";
+
+export function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+const USER_SELECT = `
+  SELECT u.*, personal_account.id AS account_id
+  FROM users u
+  LEFT JOIN LATERAL (
+    SELECT a.id
+    FROM accounts a
+    INNER JOIN account_memberships m ON m.account_id = a.id
+    WHERE m.user_id = u.id AND m.role = 'owner'
+    ORDER BY a.created_at ASC
+    LIMIT 1
+  ) personal_account ON true`;
 
 export async function createUser(
   email: string,
@@ -8,14 +24,28 @@ export async function createUser(
   passwordHash: string,
   isAdmin = false,
 ): Promise<User> {
-  return withClient(async (client) => {
+  return withOperatorTransaction(async (client) => {
+    const id = crypto.randomUUID();
+    const normalizedEmail = normalizeEmail(email);
     const result = await client.query<User>(
-      `INSERT INTO users (id, email, name, password_hash, is_admin, status, suspended_until)
-       VALUES ($1, $2, $3, $4, $5, 'active', NULL)
+      `INSERT INTO users (id, email, normalized_email, name, password_hash, is_admin, platform_role, status, suspended_until)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', NULL)
        RETURNING *`,
-      [crypto.randomUUID(), email, name, passwordHash, isAdmin],
+      [id, email.trim(), normalizedEmail, name, passwordHash, isAdmin, isAdmin ? 'admin' : 'user'],
     );
-    return result.rows[0];
+    await client.query(
+      `INSERT INTO accounts (id, display_name)
+       VALUES ($1, $2)
+       ON CONFLICT (id) DO NOTHING`,
+      [`personal:${id}`, name.trim() || normalizedEmail],
+    );
+    await client.query(
+      `INSERT INTO account_memberships (account_id, user_id, role)
+       VALUES ($1, $2, 'owner')
+       ON CONFLICT (account_id, user_id) DO NOTHING`,
+      [`personal:${id}`, id],
+    );
+    return { ...result.rows[0], account_id: `personal:${id}` };
   });
 }
 
@@ -40,27 +70,27 @@ async function maybeReactivate(
 export async function getUserByEmail(email: string): Promise<User | null> {
   return withClient(async (client) => {
     const result = await client.query<User>(
-      "SELECT * FROM users WHERE email = $1",
-      [email],
+      `${USER_SELECT}\n  WHERE u.normalized_email = $1`,
+      [normalizeEmail(email)],
     );
     return maybeReactivate(client, result.rows[0] || null);
-  });
+  }, { operator: true });
 }
 
 export async function getUserById(id: string): Promise<User | null> {
   return withClient(async (client) => {
     const result = await client.query<User>(
-      "SELECT * FROM users WHERE id = $1",
+      `${USER_SELECT}\n  WHERE u.id = $1`,
       [id],
     );
     return maybeReactivate(client, result.rows[0] || null);
-  });
+  }, { operator: true });
 }
 
 export async function listUsers(): Promise<User[]> {
   return withClient(async (client) => {
     const result = await client.query<User>(
-      "SELECT * FROM users ORDER BY created_at DESC",
+      `${USER_SELECT}\n  ORDER BY u.created_at DESC`,
     );
     // Only reactivate in-place without DB writes to avoid side effects on reads
     return result.rows.map((u) => {
@@ -72,7 +102,7 @@ export async function listUsers(): Promise<User[]> {
       }
       return u;
     });
-  });
+  }, { operator: true });
 }
 
 export async function updateUser(
@@ -97,7 +127,9 @@ export async function updateUser(
     }
     if (updates.email !== undefined) {
       fields.push(`email = $${paramIndex++}`);
-      values.push(updates.email);
+      values.push(updates.email.trim());
+      fields.push(`normalized_email = $${paramIndex++}`);
+      values.push(normalizeEmail(updates.email));
     }
     if (updates.password_hash !== undefined) {
       fields.push(`password_hash = $${paramIndex++}`);
@@ -106,6 +138,8 @@ export async function updateUser(
     if (updates.is_admin !== undefined) {
       fields.push(`is_admin = $${paramIndex++}`);
       values.push(updates.is_admin);
+      fields.push(`platform_role = $${paramIndex++}`);
+      values.push(updates.is_admin ? "admin" : "user");
     }
     if (updates.status !== undefined) {
       fields.push(`status = $${paramIndex++}`);
@@ -188,37 +222,24 @@ export type DeleteUserResult = "deleted" | "not_found" | "last_admin";
 const ADMIN_DELETE_GUARD_LOCK = 4_271_001;
 
 export async function deleteUserSafely(id: string): Promise<DeleteUserResult> {
-  return withClient(async (client) => {
-    await client.query("BEGIN");
-    try {
-      const targetResult = await client.query<Pick<User, "id" | "is_admin">>(
-        "SELECT id, is_admin FROM users WHERE id = $1 FOR UPDATE",
-        [id],
+  return withTransaction(async (client) => {
+    const targetResult = await client.query<Pick<User, "id" | "is_admin">>(
+      "SELECT id, is_admin FROM users WHERE id = $1 FOR UPDATE",
+      [id],
+    );
+    const target = targetResult.rows[0];
+    if (!target) return "not_found";
+
+    if (target.is_admin) {
+      await client.query("SELECT pg_advisory_xact_lock($1)", [ADMIN_DELETE_GUARD_LOCK]);
+      const adminCount = await client.query<{ count: string }>(
+        "SELECT COUNT(*) as count FROM users WHERE platform_role = 'admin' OR is_admin = true",
       );
-      const target = targetResult.rows[0];
-      if (!target) {
-        await client.query("ROLLBACK");
-        return "not_found";
-      }
-
-      if (target.is_admin) {
-        await client.query("SELECT pg_advisory_xact_lock($1)", [ADMIN_DELETE_GUARD_LOCK]);
-        const adminCount = await client.query<{ count: string }>(
-          "SELECT COUNT(*) as count FROM users WHERE is_admin = true",
-        );
-        if (parseInt(adminCount.rows[0].count, 10) <= 1) {
-          await client.query("ROLLBACK");
-          return "last_admin";
-        }
-      }
-
-      await client.query("DELETE FROM users WHERE id = $1", [id]);
-      await client.query("COMMIT");
-      return "deleted";
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
+      if (parseInt(adminCount.rows[0].count, 10) <= 1) return "last_admin";
     }
+
+    await client.query("DELETE FROM users WHERE id = $1", [id]);
+    return "deleted";
   });
 }
 
@@ -234,7 +255,7 @@ export async function countUsers(): Promise<number> {
 export async function countAdmins(): Promise<number> {
   return withClient(async (client) => {
     const result = await client.query<{ count: string }>(
-      "SELECT COUNT(*) as count FROM users WHERE is_admin = true",
+      "SELECT COUNT(*) as count FROM users WHERE platform_role = 'admin' OR is_admin = true",
     );
     return parseInt(result.rows[0].count, 10);
   });

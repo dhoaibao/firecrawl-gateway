@@ -39,6 +39,7 @@ describe("config parsing", () => {
     const config = await loadConfigWithEnv({
       AUTH_ENABLED: value,
       DATABASE_URL: "postgresql://localhost/test",
+      OPERATOR_DATABASE_URL: "postgresql://localhost/operator-test",
     });
     expect(config.authEnabled).toBe(expected);
   });
@@ -53,6 +54,7 @@ describe("config parsing", () => {
     const config = await loadConfigWithEnv({
       TRUST_PROXY: value,
       DATABASE_URL: "postgresql://localhost/test",
+      OPERATOR_DATABASE_URL: "postgresql://localhost/operator-test",
     });
     expect(config.trustProxy).toBe(expected);
   });
@@ -60,6 +62,7 @@ describe("config parsing", () => {
   it("uses defaults when env vars are absent", async () => {
     const config = await loadConfigWithEnv({
       DATABASE_URL: "postgresql://localhost/test",
+      OPERATOR_DATABASE_URL: "postgresql://localhost/operator-test",
       AUTH_ENABLED: undefined,
       TRUST_PROXY: undefined,
     });

@@ -9,7 +9,8 @@ export function createApiKeysRouter() {
   router.get("/", async (req, res, next) => {
     try {
       const user = req.user as User;
-      const keys = await apiKeyService.listApiKeys(user.is_admin ? undefined : user.id);
+      const isPlatformAdmin = user.platform_role === "admin" || user.is_admin;
+      const keys = await apiKeyService.listApiKeys(isPlatformAdmin ? undefined : user.id);
       res.json({ data: keys.map((key) => sanitizeApiKey(key, key.user_id === user.id)) });
     } catch (error) {
       next(error);
@@ -19,7 +20,9 @@ export function createApiKeysRouter() {
   router.get("/:id", async (req, res, next) => {
     try {
       const user = req.user as User;
-      const key = await apiKeyService.getApiKeyById(req.params.id);
+      const key = user.account_id
+        ? await apiKeyService.getApiKeyById(req.params.id, user.account_id)
+        : await apiKeyService.getApiKeyById(req.params.id);
       if (!key) {
         res.status(404).json({ success: false, error: "API key not found" });
         return;
@@ -56,7 +59,9 @@ export function createApiKeysRouter() {
   router.delete("/:id", async (req, res, next) => {
     try {
       const user = req.user as User;
-      const key = await apiKeyService.getApiKeyById(req.params.id);
+      const key = user.account_id
+        ? await apiKeyService.getApiKeyById(req.params.id, user.account_id)
+        : await apiKeyService.getApiKeyById(req.params.id);
       if (!key) {
         res.status(404).json({ success: false, error: "API key not found" });
         return;
@@ -66,7 +71,9 @@ export function createApiKeysRouter() {
         res.status(403).json({ success: false, error: "Forbidden" });
         return;
       }
-      const revoked = await apiKeyService.revokeApiKey(req.params.id);
+      const revoked = user.account_id
+        ? await apiKeyService.revokeApiKey(req.params.id, user.account_id)
+        : await apiKeyService.revokeApiKey(req.params.id);
       if (!revoked) {
         res.status(404).json({ success: false, error: "API key not found" });
         return;

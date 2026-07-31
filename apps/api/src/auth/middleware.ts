@@ -45,7 +45,7 @@ export function requireAdmin(req: AuthenticatedRequest, res: Response, next: Nex
     return;
   }
 
-  if (!user.is_admin) {
+  if (user.platform_role !== "admin" && !user.is_admin) {
     res.status(403).json({ success: false, error: "Forbidden" });
     return;
   }

@@ -1,24 +1,38 @@
 import crypto from "node:crypto";
 import { rootLogger } from "../logger";
-import { withClient } from "./index";
+import { withOperatorTransaction } from "./index";
+import { normalizeEmail } from "../users/service";
 
 export async function bootstrapAdminUser(
   email: string,
   name: string,
   passwordHash: string,
 ): Promise<void> {
-  await withClient(async (client) => {
-    const existing = await client.query("SELECT id FROM users WHERE email = $1", [email]);
-    if (existing.rows.length > 0) {
-      return;
-    }
+  await withOperatorTransaction(async (client) => {
+    const normalizedEmail = normalizeEmail(email);
+    const existing = await client.query<{ id: string }>(
+      "SELECT id FROM users WHERE normalized_email = $1",
+      [normalizedEmail],
+    );
+    if (existing.rows.length > 0) return;
 
+    const id = crypto.randomUUID();
     await client.query(
-      `INSERT INTO users (id, email, name, password_hash, is_admin)
-       VALUES ($1, $2, $3, $4, true)`,
-      [crypto.randomUUID(), email, name, passwordHash],
+      `INSERT INTO users
+         (id, email, normalized_email, name, password_hash, is_admin, platform_role, status)
+       VALUES ($1, $2, $3, $4, $5, true, 'admin', 'active')`,
+      [id, email.trim(), normalizedEmail, name, passwordHash],
+    );
+    await client.query(
+      "INSERT INTO accounts (id, display_name) VALUES ($1, $2)",
+      [`personal:${id}`, name.trim() || normalizedEmail],
+    );
+    await client.query(
+      `INSERT INTO account_memberships (account_id, user_id, role)
+       VALUES ($1, $2, 'owner')`,
+      [`personal:${id}`, id],
     );
 
-    rootLogger.info(`Admin user created: ${email}`);
+    rootLogger.info({ email: normalizedEmail }, "Admin user created");
   });
 }

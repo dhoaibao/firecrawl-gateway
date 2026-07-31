@@ -43,6 +43,7 @@ export function createApp(dependencies: AppDependencies) {
     config,
     auditStore,
     getTrustedUserId: (req) => (req.user as Express.User | undefined)?.id,
+    getTrustedAccountId: (req) => (req.user as Express.User | undefined)?.account_id,
   });
   const adminRouter = createAdminRouter(auditStore);
   const app = express();

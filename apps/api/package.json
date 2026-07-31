@@ -5,9 +5,14 @@
   "private": true,
   "main": "dist/server.js",
   "scripts": {
-    "build": "tsc && cp src/db/schema.sql dist/db/schema.sql",
+    "build": "tsc",
     "start": "node dist/server.js",
     "dev": "ts-node src/server.ts",
+    "migrate:up": "node scripts/migrate.cjs up",
+    "migrate:down": "node scripts/migrate.cjs down",
+    "migrate:create": "node scripts/migrate.cjs create",
+    "migrate:status": "node scripts/migration-status.cjs",
+    "migrate:preflight": "node scripts/migration-preflight.cjs",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -15,6 +20,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@firecrawl/contracts": "1.0.0",
     "bcrypt": "^6.0.0",
     "compression": "^1.7.4",
     "connect-pg-simple": "^10.0.0",
@@ -22,12 +28,12 @@
     "express": "^4.21.2",
     "express-session": "^1.18.1",
     "helmet": "^8.0.0",
+    "node-pg-migrate": "^9.0.0",
     "passport": "^0.7.0",
     "passport-local": "^1.0.0",
     "pg": "^8.13.1",
     "pino": "^9.6.0",
-    "zod": "^3.24.2",
-    "@firecrawl/contracts": "1.0.0"
+    "zod": "^3.24.2"
   },
   "devDependencies": {
     "@types/bcrypt": "^5.0.2",

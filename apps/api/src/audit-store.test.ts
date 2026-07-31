@@ -58,7 +58,7 @@ describe("createAuditStore", () => {
 
     expect(query).toHaveBeenCalledTimes(2);
     expect(query.mock.calls.map((call) => (call[1] as unknown[]).length).sort((a, b) => a - b))
-      .toEqual([13, 100 * 13]);
+      .toEqual([14, 100 * 14]);
   });
 
   it("falls back to individual database writes when a batch fails", async () => {
@@ -75,7 +75,7 @@ describe("createAuditStore", () => {
     await store.flush?.();
 
     expect(query).toHaveBeenCalledTimes(3);
-    expect(query.mock.calls.slice(1).every((call) => (call[1] as unknown[]).length === 13)).toBe(true);
+    expect(query.mock.calls.slice(1).every((call) => (call[1] as unknown[]).length === 14)).toBe(true);
   });
 
   it("does not amplify transient database failures with individual retries", async () => {
@@ -92,7 +92,7 @@ describe("createAuditStore", () => {
 
     expect(query).toHaveBeenCalledTimes(2);
     expect(query.mock.calls.map((call) => (call[1] as unknown[]).length).sort((a, b) => a - b))
-      .toEqual([13, 100 * 13]);
+      .toEqual([14, 100 * 14]);
   });
 
   it("uses UTC calendar boundaries when deleting database entries", async () => {

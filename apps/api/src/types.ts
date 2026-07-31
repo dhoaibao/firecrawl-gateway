@@ -13,6 +13,7 @@ export interface AuditEntry {
   duration_ms: number;
   target_url: string;
   user_id?: string;
+  account_id?: string;
   request_id?: string;
 }
 
@@ -37,6 +38,7 @@ export interface GatewayConfig {
   maxBodyBytes: number;
   authEnabled: boolean;
   databaseUrl: string;
+  operatorDatabaseUrl: string;
   sessionSecret: string;
   firecrawlKeysEncryptionKey: string;
   adminEmail: string;
@@ -59,9 +61,14 @@ declare global {
     interface User {
       id: string;
       email: string;
+      normalized_email?: string;
       name: string;
       password_hash: string;
       is_admin: boolean;
+      platform_role?: string;
+      email_verified_at?: string | null;
+      auth_version?: number;
+      account_id?: string;
       status: string;
       suspended_until: string | null;
       created_at: string;
@@ -73,9 +80,14 @@ declare global {
 export interface User {
   id: string;
   email: string;
+  normalized_email?: string;
   name: string;
   password_hash: string;
   is_admin: boolean;
+  platform_role?: string;
+  email_verified_at?: string | null;
+  auth_version?: number;
+  account_id?: string;
   status: string;
   suspended_until: string | null;
   created_at: string;
@@ -85,6 +97,7 @@ export interface User {
 export interface ApiKey {
   id: string;
   user_id: string;
+  account_id?: string;
   name: string;
   key_hash: string;
   key_value: string | null;
