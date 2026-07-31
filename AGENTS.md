@@ -16,17 +16,20 @@ This repository ships an Express.js + TypeScript gateway and React admin dashboa
 
 ## Verification Commands
 
-Backend (`apps/api/`):
+Run from the repository root:
+
+```bash
+npm run typecheck
+npm run lint
+npm run test
+npm run build
+```
+
+Focused workspace checks:
 
 ```bash
 npm run api:typecheck
-npm run api:build
 npm run api:test
-```
-
-Admin UI (`apps/web/`):
-
-```bash
 npm run web:lint
 npm run web:build
 ```
@@ -38,7 +41,7 @@ npm run web:build
 - `apps/api/src/proxy.ts` — upstream proxying, API-key handling, fallback, and audit records
 - `apps/api/src/policy.ts` — route-mode and Cloud-requirement decisions
 - `apps/api/src/config.ts` — injected environment configuration and validation
-- `apps/api/src/auth/`, `apps/api/src/users/`, `apps/api/src/api-keys/`, and `apps/api/src/settings/` — dashboard authentication and administration
+- `apps/api/src/auth/`, `apps/api/src/users/`, `apps/api/src/api-keys/`, and `apps/api/src/settings/` — dashboard authentication and administration; user responses serialize PostgreSQL timestamps at `apps/api/src/users/serialization.ts`
 - `apps/api/src/db/` — PostgreSQL pool, bootstrap, and schema/migrations
 - `apps/api/src/audit-store.ts`, `middleware.ts`, `jobs/`, and `utils.ts` — audit persistence, request middleware, background jobs, and shared helpers
 - `apps/web/src/` — React dashboard served under `/admin`
@@ -55,6 +58,7 @@ npm run web:build
 - The admin UI is at `/admin` when authentication is enabled; admin endpoints are under `/admin/api/*`.
 - Virtual API keys are `fc_`-prefixed, stored as hashes with encrypted key values, and their plaintext is returned only at creation. Keep `.env` and credential-bearing files out of output and commits.
 - Routing defaults to `cloud-first`; supported modes and inactivity settings are stored in PostgreSQL. Sensitive headers/cookies and private target URLs restrict fallback.
+- PostgreSQL timestamp columns may arrive as JavaScript `Date` values; serialize user timestamps to ISO strings before validating or returning API responses.
 - `apps/api/dist/` and `apps/web/dist/` are generated outputs. Backend tests use Vitest and live beside source files as `*.test.ts`.
 
 ## Maintainer Guide
