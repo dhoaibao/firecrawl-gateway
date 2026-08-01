@@ -62,6 +62,15 @@ npm run web:build
 
 - Node `>=22` is required. Backend TypeScript is strict; the admin UI uses Vite, Tailwind CSS, ESLint, and the design rules in `docs/DESIGN.md`.
 - `npm run api:build` compiles the API only. Deploy migration sources and scripts separately from `apps/api/migrations/` and `apps/api/scripts/`.
+- When adding or changing a migration, remind operators to back up the database, run `npm run migrate:preflight --workspace @firecrawl/api` for an existing database, and apply pending migrations as a one-off deployment step with `MIGRATION_DATABASE_URL` before rolling out the API. For Compose source deployments, the rollout sequence is:
+  ```bash
+  docker compose build
+  docker compose run --rm --no-deps \
+    -e MIGRATION_DATABASE_URL \
+    gateway node apps/api/scripts/migrate.cjs up
+  docker compose up -d
+  ```
+  Never add automatic DDL to API startup; verify `/ready` after the rollout.
 - Configuration examples belong in `.env.example`; runtime credentials remain local. Source Compose deployments require a rebuild/recreate after source or environment wiring changes.
 
 ## Source-of-Truth Files
