@@ -7,6 +7,8 @@ import {
   isFallbackEligible,
   isCloudQuotaFallbackAllowed,
   hasSensitiveHeaders,
+  tokenScopeAllowsPath,
+  validateGatewayRequest,
 } from "./policy";
 
 describe("getRouteMode", () => {
@@ -233,6 +235,21 @@ describe("hasSensitiveHeaders", () => {
 
   it("returns false for safe headers", () => {
     expect(hasSensitiveHeaders({ "content-type": "application/json" }, null)).toBe(false);
+  });
+});
+
+describe("tenant request guards", () => {
+  it("matches only an explicit route-family token scope", () => {
+    expect(tokenScopeAllowsPath(["v2:scrape"], "/v2/scrape")).toBe(true);
+    expect(tokenScopeAllowsPath(["v2:scrape"], "/v1/scrape")).toBe(false);
+    expect(tokenScopeAllowsPath(["v2:scrape"], "/v2/crawl")).toBe(false);
+  });
+
+  it("rejects non-HTTP target URLs and oversized crawl inputs before dispatch", () => {
+    expect(validateGatewayRequest("/v2/scrape", { url: "ftp://example.com" })?.statusCode).toBe(400);
+    expect(validateGatewayRequest("/v2/scrape", { prompt: "See https://example.com for context" })).toBeNull();
+    expect(validateGatewayRequest("/v2/crawl", { maxPages: 10_001 })?.statusCode).toBe(413);
+    expect(validateGatewayRequest("/v2/crawl", { maxDepth: 11 })?.statusCode).toBe(413);
   });
 });
 

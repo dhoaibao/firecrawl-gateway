@@ -26,6 +26,10 @@ export interface ProxyResult {
   body?: Buffer;
   stream?: ReadableStream<Uint8Array>;
   cleanup?: () => void;
+  /** Provenance of the concrete infrastructure source selected for this attempt. */
+  sourceId?: string;
+  credentialId?: string;
+  fundingType?: "byok" | "included";
   durationMs: number;
 }
 
@@ -42,7 +46,10 @@ export interface GatewayConfig {
   sessionSecret: string;
   publicAppUrl?: string;
   authEncryptionKey?: string;
+  /** Legacy settings encryption key retained during the source conversion window. */
   firecrawlKeysEncryptionKey: string;
+  /** Provider credential vault key; defaults to the legacy key only for compatibility. */
+  providerCredentialsEncryptionKey?: string;
   brevoApiKey?: string;
   brevoSenderEmail?: string;
   brevoSenderName?: string;
@@ -103,16 +110,23 @@ export interface User {
   updated_at: string;
 }
 
-export interface ApiKey {
+export interface GatewayToken {
   id: string;
   user_id: string;
   account_id?: string;
   name: string;
   key_hash: string;
+  /** Legacy ciphertext may exist during migration; it is never returned or read by new code. */
   key_value: string | null;
   key_prefix: string;
+  scopes?: string[];
+  expires_at?: string | null;
+  inactivity_timeout_seconds?: number | null;
   revoked: boolean;
   created_at: string;
   updated_at: string;
   last_used_at: string | null;
 }
+
+/** @deprecated Use GatewayToken. Retained while the admin API path remains /api-keys. */
+export type ApiKey = GatewayToken;

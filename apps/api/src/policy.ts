@@ -150,3 +150,81 @@ export function isCloudQuotaFallbackAllowed(
   if (routeMode !== "cloud-first") return false;
   return !needsCloud.required;
 }
+
+export type GatewayRequestRejection = {
+  statusCode: 400 | 403 | 404 | 413;
+  reason: string;
+};
+
+const MAX_ARRAY_ITEMS = 1_000;
+const MAX_STRING_BYTES = 1_048_576;
+const MAX_CRAWL_PAGES = 10_000;
+const MAX_CRAWL_DEPTH = 10;
+const MAX_BROWSER_TTL_SECONDS = 3_600;
+
+export function isSupportedFirecrawlPath(pathname: string): boolean {
+  return /^\/v[12]\/[^/]+(?:\/|$)/.test(pathname);
+}
+
+/** Token scopes are deliberately route-family based so the public endpoint ID is never a capability. */
+export function tokenScopeAllowsPath(scopes: string[] | null | undefined, pathname: string): boolean {
+  if (!scopes || scopes.includes("*")) return true;
+  const match = pathname.match(/^\/(v[12])\/([^/?]+)/);
+  if (!match) return false;
+  const [, version, family] = match;
+  return scopes.includes(`${version}:*`) || scopes.includes(`${version}:${family}`);
+}
+
+/**
+ * Bounds the request before source selection or dispatch. URL checks are an
+ * application-layer guard; deployments still need source-level network egress
+ * isolation to protect against DNS rebinding and private control planes.
+ */
+export function validateGatewayRequest(pathname: string, body: unknown): GatewayRequestRejection | null {
+  if (!isSupportedFirecrawlPath(pathname)) {
+    return { statusCode: 404, reason: "Only /v1/* and /v2/* Firecrawl paths are supported" };
+  }
+
+  let rejection: GatewayRequestRejection | null = null;
+  walk(body, (value) => {
+    if (rejection) return;
+    if (typeof value === "string") {
+      if (Buffer.byteLength(value, "utf8") > MAX_STRING_BYTES) {
+        rejection = { statusCode: 413, reason: "Request contains a string that exceeds the gateway limit" };
+        return;
+      }
+      if (/^[a-z][a-z\d+.-]*:\/\/\S+$/i.test(value)) {
+        try {
+          const url = new URL(value);
+          if (url.protocol !== "http:" && url.protocol !== "https:") {
+            rejection = { statusCode: 400, reason: "Only HTTP(S) target URLs are allowed" };
+          }
+        } catch {
+          rejection = { statusCode: 400, reason: "Request contains an invalid target URL" };
+        }
+      }
+    }
+    if (Array.isArray(value) && value.length > MAX_ARRAY_ITEMS) {
+      rejection = { statusCode: 413, reason: "Request contains too many array items" };
+    }
+  });
+  if (rejection) return rejection;
+
+  if (/\/v[12]\/(crawl|batch-scrape)(?:\/|$)/.test(pathname) && body && typeof body === "object") {
+    const value = body as Record<string, unknown>;
+    const maxPages = value.maxPages ?? value.limit;
+    if (typeof maxPages === "number" && maxPages > MAX_CRAWL_PAGES) {
+      return { statusCode: 413, reason: "Requested crawl page count exceeds the gateway limit" };
+    }
+    if (typeof value.maxDepth === "number" && value.maxDepth > MAX_CRAWL_DEPTH) {
+      return { statusCode: 413, reason: "Requested crawl depth exceeds the gateway limit" };
+    }
+  }
+  if (/\/v[12]\/browser(?:\/|$)/.test(pathname) && body && typeof body === "object") {
+    const ttl = (body as Record<string, unknown>).ttl;
+    if (typeof ttl === "number" && ttl > MAX_BROWSER_TTL_SECONDS) {
+      return { statusCode: 413, reason: "Requested browser TTL exceeds the gateway limit" };
+    }
+  }
+  return null;
+}

@@ -1,8 +1,11 @@
 import { Router } from "express";
-import type { ApiKey, User } from "../types";
-import { decryptApiKey } from "./crypto";
+import type { GatewayToken, User } from "../types";
 import * as apiKeyService from "./service";
 
+/**
+ * Legacy admin path retained for compatibility. The resources it exposes are
+ * gateway tokens: they authenticate to this gateway, never to an upstream.
+ */
 export function createApiKeysRouter() {
   const router = Router();
 
@@ -11,7 +14,7 @@ export function createApiKeysRouter() {
       const user = req.user as User;
       const isPlatformAdmin = user.platform_role === "admin" || user.is_admin;
       const keys = await apiKeyService.listApiKeys(isPlatformAdmin ? undefined : user.id);
-      res.json({ data: keys.map((key) => sanitizeApiKey(key, key.user_id === user.id)) });
+      res.json({ data: keys.map(sanitizeGatewayToken) });
     } catch (error) {
       next(error);
     }
@@ -24,15 +27,14 @@ export function createApiKeysRouter() {
         ? await apiKeyService.getApiKeyById(req.params.id, user.account_id)
         : await apiKeyService.getApiKeyById(req.params.id);
       if (!key) {
-        res.status(404).json({ success: false, error: "API key not found" });
+        res.status(404).json({ success: false, error: "Gateway token not found" });
         return;
       }
-      // Only the key owner can view
       if (key.user_id !== user.id) {
         res.status(403).json({ success: false, error: "Forbidden" });
         return;
       }
-      res.json({ data: sanitizeApiKey(key, true) });
+      res.json({ data: sanitizeGatewayToken(key) });
     } catch (error) {
       next(error);
     }
@@ -41,19 +43,32 @@ export function createApiKeysRouter() {
   router.post("/", async (req, res, next) => {
     try {
       const user = req.user as User;
-      const { name } = req.body;
-
-      if (!name) {
+      const { name, scopes, expiresAt, inactivityTimeoutSeconds } = req.body;
+      if (typeof name !== "string" || !name.trim()) {
         res.status(400).json({ success: false, error: "name is required" });
         return;
       }
-
+      if (scopes !== undefined && (!Array.isArray(scopes) || scopes.some((scope) => typeof scope !== "string"))) {
+        res.status(400).json({ success: false, error: "scopes must be an array of strings" });
+        return;
+      }
+      if (expiresAt !== undefined && (typeof expiresAt !== "string" || Number.isNaN(Date.parse(expiresAt)))) {
+        res.status(400).json({ success: false, error: "expiresAt must be an ISO timestamp" });
+        return;
+      }
+      if (inactivityTimeoutSeconds !== undefined && (!Number.isInteger(inactivityTimeoutSeconds) || inactivityTimeoutSeconds <= 0)) {
+        res.status(400).json({ success: false, error: "inactivityTimeoutSeconds must be a positive integer" });
+        return;
+      }
       if (user.email_verified_at === null) {
         res.status(403).json({ success: false, error: "Email verification is required" });
         return;
       }
-      // Users can only create keys for themselves
-      const created = await apiKeyService.createApiKey(user.id, name);
+      const created = await apiKeyService.createApiKey(user.id, name.trim(), {
+        scopes,
+        expiresAt: expiresAt ?? null,
+        inactivityTimeoutSeconds: inactivityTimeoutSeconds ?? null,
+      });
       res.status(201).json({ data: created });
     } catch (error) {
       next(error);
@@ -67,10 +82,9 @@ export function createApiKeysRouter() {
         ? await apiKeyService.getApiKeyById(req.params.id, user.account_id)
         : await apiKeyService.getApiKeyById(req.params.id);
       if (!key) {
-        res.status(404).json({ success: false, error: "API key not found" });
+        res.status(404).json({ success: false, error: "Gateway token not found" });
         return;
       }
-      // Only the key owner can revoke
       if (key.user_id !== user.id) {
         res.status(403).json({ success: false, error: "Forbidden" });
         return;
@@ -79,10 +93,10 @@ export function createApiKeysRouter() {
         ? await apiKeyService.revokeApiKey(req.params.id, user.account_id)
         : await apiKeyService.revokeApiKey(req.params.id);
       if (!revoked) {
-        res.status(404).json({ success: false, error: "API key not found" });
+        res.status(404).json({ success: false, error: "Gateway token not found" });
         return;
       }
-      res.json({ data: sanitizeApiKey(revoked, true) });
+      res.json({ data: sanitizeGatewayToken(revoked) });
     } catch (error) {
       next(error);
     }
@@ -91,9 +105,7 @@ export function createApiKeysRouter() {
   return router;
 }
 
-function sanitizeApiKey(key: ApiKey, canViewSecret: boolean) {
-  const { key_hash, key_value, ...rest } = key;
-  return canViewSecret && !key.revoked && key_value
-    ? { ...rest, key: decryptApiKey(key_value) }
-    : rest;
+function sanitizeGatewayToken(token: GatewayToken) {
+  const { key_hash: _keyHash, key_value: _legacyCiphertext, ...safe } = token;
+  return safe;
 }

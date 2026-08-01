@@ -13,6 +13,8 @@
     "migrate:create": "node scripts/migrate.cjs create",
     "migrate:status": "node scripts/migration-status.cjs",
     "migrate:preflight": "node scripts/migration-preflight.cjs",
+    "sources:convert-legacy": "ts-node --transpile-only scripts/convert-legacy-sources.ts",
+    "sources:validate": "ts-node --transpile-only scripts/validate-sources.ts",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

@@ -74,12 +74,12 @@ describe("GET /api-keys", () => {
     expect(mockListApiKeys).toHaveBeenCalledWith("user-1");
   });
 
-  it("omits key_hash but includes the retained key for re-copying", async () => {
+  it("never redisplays a gateway token plaintext", async () => {
     mockListApiKeys.mockResolvedValue([makeKey()]);
     const app = createApp({ id: "user-1", is_admin: false });
     const res = await request(app).get("/api-keys").expect(200);
     expect(res.body.data[0]).not.toHaveProperty("key_hash");
-    expect(res.body.data[0].key).toBe("fc_plainkey");
+    expect(res.body.data[0]).not.toHaveProperty("key");
     expect(res.body.data[0]).not.toHaveProperty("key_value");
   });
 });
@@ -122,7 +122,11 @@ describe("POST /api-keys", () => {
     const app = createApp({ id: "user-1", is_admin: false });
     const res = await request(app).post("/api-keys").send({ name: "New Key" }).expect(201);
     expect(res.body.data.key).toBe("fc_plainkey");
-    expect(mockCreateApiKey).toHaveBeenCalledWith("user-1", "New Key");
+    expect(mockCreateApiKey).toHaveBeenCalledWith("user-1", "New Key", {
+      scopes: undefined,
+      expiresAt: null,
+      inactivityTimeoutSeconds: null,
+    });
   });
 
   it("returns 400 when name is missing", async () => {

@@ -9,7 +9,10 @@ import {
   isFallbackAllowed,
   isFallbackEligible,
   isCloudQuotaFallbackAllowed,
+  isSupportedFirecrawlPath,
   requestNeedsCloud,
+  tokenScopeAllowsPath,
+  validateGatewayRequest,
 } from "./policy";
 import {
   collectTargetUrls,
@@ -22,8 +25,14 @@ import {
 import * as apiKeyService from "./api-keys/service";
 import * as userService from "./users/service";
 import * as settingsService from "./settings/service";
+import * as accountRepository from "./db/accounts";
+import * as sourceRepository from "./sources/repository";
+import type { ResolvedSource } from "./sources/repository";
 import { getRequestLogger } from "./logger";
-import { decryptSettingValue, encryptSettingValue } from "./settings/crypto";
+import { decryptSettingValue } from "./settings/crypto";
+import { completeGatewayJob, createGatewayJob, getGatewayJob } from "./jobs/gateway-jobs";
+import { classifyAsyncRoute, replaceAsyncRouteId, type AsyncRoute } from "./jobs/routes";
+import { virtualizeCreationResponse } from "./jobs/virtualize";
 
 const hopByHopHeaders = new Set([
   "connection",
@@ -43,12 +52,8 @@ async function getCloudApiKeys(config: GatewayConfig): Promise<string[]> {
     const record = await settingsService.getSetting("firecrawl_api_keys");
     if (record?.value) {
       const decrypted = decryptSettingValue(record.value, config.firecrawlKeysEncryptionKey);
-      if (!decrypted.encrypted) {
-        await settingsService.setSetting(
-          "firecrawl_api_keys",
-          encryptSettingValue(record.value, config.firecrawlKeysEncryptionKey),
-        );
-      }
+      // Legacy values are read-only during the explicit conversion window.
+      // Do not mutate settings on proxy traffic; conversion is operator-run.
       const parsed = JSON.parse(decrypted.value) as unknown;
       const keys = Array.isArray(parsed)
         ? parsed.filter((k): k is string => typeof k === "string" && k.length > 0)
@@ -173,6 +178,46 @@ async function readRequestBody(req: Request, maxBodyBytes: number): Promise<Buff
   return Buffer.concat(chunks);
 }
 
+/** Returns null after cancelling an oversized upstream body without retaining it in memory. */
+async function readBoundedResponseBody(response: globalThis.Response, maxBytes: number): Promise<Buffer | null> {
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isSafeInteger(contentLength) && contentLength >= 0 && contentLength > maxBytes) {
+    try {
+      await response.body?.cancel();
+    } catch {
+      // The response is already being rejected; cancellation is best effort.
+    }
+    return null;
+  }
+  if (!response.body) {
+    const body = Buffer.from(await response.arrayBuffer());
+    return body.length <= maxBytes ? body : null;
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return Buffer.concat(chunks, total);
+      const chunk = Buffer.from(value);
+      total += chunk.length;
+      if (total > maxBytes) {
+        try {
+          await reader.cancel();
+        } catch {
+          // The response is already being rejected; cancellation is best effort.
+        }
+        return null;
+      }
+      chunks.push(chunk);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 async function proxyToBackend({
   backend,
   req,
@@ -180,6 +225,9 @@ async function proxyToBackend({
   targetUrl,
   config,
   apiKey,
+  source,
+  bufferSuccess = false,
+  successBufferMaxBytes,
 }: {
   backend: string;
   req: Request;
@@ -187,9 +235,27 @@ async function proxyToBackend({
   targetUrl: string;
   config: GatewayConfig;
   apiKey?: string;
+  source?: ResolvedSource;
+  /** Buffer a successful response only when its body must be safely rewritten. */
+  bufferSuccess?: boolean;
+  /** Buffer a known-small successful status response for terminal-state bookkeeping. */
+  successBufferMaxBytes?: number;
 }): Promise<ProxyResult> {
+  const releaseSource = source ? sourceRepository.tryAcquireSource(source) : () => undefined;
+  if (!releaseSource) {
+    return {
+      kind: "network-error",
+      backend,
+      error: new Error("Selected source is at its concurrency limit"),
+      body: Buffer.from(JSON.stringify({ success: false, error: "Selected source is at its concurrency limit" })),
+      sourceId: source?.id,
+      credentialId: source?.credentialId,
+      fundingType: source?.fundingType,
+      durationMs: 0,
+    };
+  }
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs);
+  const timeout = setTimeout(() => controller.abort(), source?.requestTimeoutMs ?? config.requestTimeoutMs);
   const started = Date.now();
   let streamingResponse = false;
 
@@ -203,26 +269,56 @@ async function proxyToBackend({
       signal: controller.signal,
     });
 
-    // Successful responses are streamed directly to the client. Error responses
-    // remain buffered because routing fallback decisions inspect their payload.
-    if ((response.ok || response.status < 400) && response.body) {
+    const successfulResponse = response.ok || response.status < 400;
+    const contentLength = Number(response.headers.get("content-length"));
+    const bufferBoundedStatus = successBufferMaxBytes !== undefined &&
+      Number.isSafeInteger(contentLength) && contentLength >= 0 && contentLength <= successBufferMaxBytes;
+    // Successful responses normally stream directly to the client. Classified
+    // async creations are the sole exception: their IDs must be rewritten before
+    // a tenant can observe them. A known-small status response may be buffered
+    // solely to record an unambiguous terminal state.
+    if (successfulResponse && response.body && !bufferSuccess && !bufferBoundedStatus) {
       streamingResponse = true;
       return {
         kind: "response",
         backend,
         response,
         stream: response.body,
-        cleanup: () => clearTimeout(timeout),
+        cleanup: () => {
+          clearTimeout(timeout);
+          releaseSource();
+        },
+        sourceId: source?.id,
+        credentialId: source?.credentialId,
+        fundingType: source?.fundingType,
         durationMs: Date.now() - started,
       };
     }
 
-    const arrayBuffer = await response.arrayBuffer();
+    const bufferLimit = successfulResponse && bufferBoundedStatus
+      ? Math.min(successBufferMaxBytes!, source?.responseBufferMaxBytes ?? config.maxBodyBytes)
+      : source?.responseBufferMaxBytes ?? config.maxBodyBytes;
+    const body = await readBoundedResponseBody(response, bufferLimit);
+    if (body === null) {
+      return {
+        kind: "network-error",
+        backend,
+        error: new Error("Upstream response exceeds the gateway buffer limit"),
+        body: Buffer.from(JSON.stringify({ success: false, error: "Upstream response exceeds the gateway buffer limit" })),
+        sourceId: source?.id,
+        credentialId: source?.credentialId,
+        fundingType: source?.fundingType,
+        durationMs: Date.now() - started,
+      };
+    }
     return {
       kind: "response",
       backend,
       response,
-      body: Buffer.from(arrayBuffer),
+      body,
+      sourceId: source?.id,
+      credentialId: source?.credentialId,
+      fundingType: source?.fundingType,
       durationMs: Date.now() - started,
     };
   } catch (error) {
@@ -239,11 +335,17 @@ async function proxyToBackend({
               : (error as Error).message,
         }),
       ),
+      sourceId: source?.id,
+      credentialId: source?.credentialId,
+      fundingType: source?.fundingType,
       durationMs: Date.now() - started,
     };
   } finally {
-    // Streamed responses keep the timeout alive until their body completes.
-    if (!streamingResponse) clearTimeout(timeout);
+    // Streamed responses keep the timeout alive and source reservation held until their body completes.
+    if (!streamingResponse) {
+      clearTimeout(timeout);
+      releaseSource();
+    }
   }
 }
 
@@ -252,8 +354,9 @@ function backendUrl(
   originalUrl: string,
   config: GatewayConfig,
   selfHostedBaseUrl: string,
+  sourceBaseUrl?: string,
 ): string {
-  const base = backend === "cloud" ? config.cloudBaseUrl : selfHostedBaseUrl;
+  const base = sourceBaseUrl || (backend === "cloud" ? config.cloudBaseUrl : selfHostedBaseUrl);
   return `${base}${originalUrl}`;
 }
 
@@ -310,18 +413,71 @@ async function sendProxyResponse(
 
 /** Status codes that suggest trying another cloud API key */
 const RETRYABLE_CLOUD_STATUS = new Set([401, 403, 429]);
+const ASYNC_STATUS_BUFFER_MAX_BYTES = 64 * 1024;
+
+function gatewayErrorResult(backend: string, error: string): ProxyResult {
+  return {
+    kind: "network-error",
+    backend,
+    error: new Error(error),
+    body: Buffer.from(JSON.stringify({ success: false, error })),
+    durationMs: 0,
+  };
+}
+
+function creationDiagnostics(method: string, pathname: string, body: Buffer, json: unknown): Record<string, unknown> {
+  const jsonFields = json && typeof json === "object" && !Array.isArray(json)
+    ? Object.keys(json as Record<string, unknown>).slice(0, 20)
+    : [];
+  return { method, path: pathname, body_bytes: body.length, json_fields: jsonFields };
+}
+
+function isSuccessfulResponse(result: ProxyResult): boolean {
+  const status = result.kind === "response" ? result.response?.status : undefined;
+  return status !== undefined && status >= 200 && status < 300;
+}
+
+function hasTerminalAsyncStatus(body: Buffer | undefined): boolean {
+  if (!body || body.length > ASYNC_STATUS_BUFFER_MAX_BYTES) return false;
+  try {
+    const value = JSON.parse(body.toString("utf8")) as Record<string, unknown>;
+    const nested = value.data && typeof value.data === "object" && !Array.isArray(value.data)
+      ? value.data as Record<string, unknown>
+      : undefined;
+    const status = typeof value.status === "string" ? value.status : nested?.status;
+    return typeof status === "string" && ["completed", "failed", "cancelled"].includes(status.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+type TenantProxyRequest = Request & { tenantEndpointId?: string };
 
 export function createProxyHandler({
   config,
   auditStore,
   getTrustedUserId,
   getTrustedAccountId,
+  resolveEndpoint = accountRepository.getAccountByPublicId,
+  resolveSources,
 }: {
   config: GatewayConfig;
   auditStore: AuditStore;
   getTrustedUserId?: (req: Request) => string | undefined;
   getTrustedAccountId?: (req: Request) => string | undefined;
+  resolveEndpoint?: typeof accountRepository.getAccountByPublicId;
+  resolveSources?: (
+    accountId: string,
+    preference: "byok" | "included" | "auto",
+  ) => Promise<ResolvedSource[]>;
 }) {
+  const sourceResolver = resolveSources ?? ((accountId, preference) =>
+    sourceRepository.resolveInfrastructureSources(
+      accountId,
+      preference,
+      config.providerCredentialsEncryptionKey ?? config.firecrawlKeysEncryptionKey,
+      config.cloudBaseUrl,
+    ));
   return async function handleProxy(
     req: Request,
     res: Response,
@@ -330,7 +486,12 @@ export function createProxyHandler({
     const trustedAccountId = getTrustedAccountId?.(req);
     const log = getRequestLogger(req);
     const started = Date.now();
-    const requestUrl = req.originalUrl || req.url;
+    const tenantEndpointId = (req as TenantProxyRequest).tenantEndpointId;
+    res.set?.("x-firecrawl-gateway-route", tenantEndpointId ? "tenant" : "legacy");
+    if (!tenantEndpointId) res.set?.("deprecation", "true");
+    // A mounted tenant route exposes only the upstream /v1 or /v2 suffix in
+    // req.url. Legacy root routes retain their original URL unchanged.
+    const requestUrl = tenantEndpointId ? req.url : req.originalUrl || req.url;
     let parsedUrl: URL;
     try {
       parsedUrl = new URL(requestUrl, "http://gateway.local");
@@ -340,6 +501,11 @@ export function createProxyHandler({
     }
     let userId: string | undefined;
     let accountId: string | undefined = trustedAccountId;
+    let gatewayTokenScopes: string[] | undefined;
+    let tenantFundingPreference: "byok" | "included" | "auto" | undefined;
+    let tenantSources: ResolvedSource[] = [];
+    let asyncRoute: AsyncRoute | null = null;
+    let lifecycleJob: Awaited<ReturnType<typeof getGatewayJob>> = null;
     let primaryTargetUrl = "";
     let routeMode: string = config.defaultRouteMode;
     const appendAuditEntry = async ({
@@ -385,8 +551,9 @@ export function createProxyHandler({
       defaultRouteMode,
     );
 
-    // Validate virtual API key when auth is enabled and request is not from a trusted session caller
-    if (config.authEnabled && !trustedUserId) {
+    // Tenant routes always require a gateway token, even if legacy root routes
+    // are running with product authentication disabled.
+    if ((config.authEnabled || tenantEndpointId) && !trustedUserId) {
       const authHeader = String(req.headers.authorization || "");
       const match = authHeader.match(/^Bearer\s+(.+)$/i);
       if (!match) {
@@ -424,11 +591,93 @@ export function createProxyHandler({
 
       userId = validKey.user_id;
       accountId = validKey.account_id ?? keyOwner.account_id;
-      apiKeyService.touchApiKey(validKey.id).catch((err) => {
+      gatewayTokenScopes = validKey.scopes;
+      void Promise.resolve(apiKeyService.touchApiKey(validKey.id)).catch((err) => {
         log.warn({ err }, "Failed to update API key last used timestamp");
       });
     } else if (trustedUserId) {
       userId = trustedUserId;
+    }
+
+    if (tenantEndpointId) {
+      // Do not resolve endpoint IDs until after token authentication. A failed
+      // account match intentionally uses the same opaque response as a missing
+      // endpoint so neither resource can be enumerated.
+      const endpoint = await resolveEndpoint(tenantEndpointId);
+      if (!endpoint || endpoint.id !== accountId || endpoint.status !== "active") {
+        await appendAuditEntry({
+          backendUsed: "none",
+          statusCode: 404,
+          fallbackReason: "Tenant endpoint unavailable",
+        });
+        res.status(404).json({ success: false, error: "Tenant endpoint unavailable" });
+        return;
+      }
+      tenantFundingPreference = endpoint.funding_preference ?? "auto";
+      asyncRoute = classifyAsyncRoute(req.method, parsedUrl.pathname);
+      if (asyncRoute?.kind === "lifecycle") {
+        lifecycleJob = await getGatewayJob(endpoint.id, asyncRoute.publicId!);
+        if (!lifecycleJob || lifecycleJob.route_family !== asyncRoute.family) {
+          await appendAuditEntry({ backendUsed: "none", statusCode: 404, fallbackReason: "Tenant async job unavailable" });
+          res.status(404).json({ success: false, error: "Tenant async job unavailable" });
+          return;
+        }
+      }
+      try {
+        tenantSources = await sourceResolver(endpoint.id, tenantFundingPreference);
+      } catch (error) {
+        if (lifecycleJob) {
+          log.warn({ err: error }, "Unable to resolve recorded infrastructure source");
+          await appendAuditEntry({ backendUsed: "none", statusCode: 503, fallbackReason: "Recorded job source unavailable" });
+          res.status(503).json({ success: false, error: "Recorded job source unavailable" });
+          return;
+        }
+        if (asyncRoute?.kind === "create") {
+          log.warn({ err: error }, "Unable to resolve a managed source for tenant async job creation");
+          await appendAuditEntry({ backendUsed: "none", statusCode: 503, fallbackReason: "Managed source unavailable for tenant async job" });
+          res.status(503).json({ success: false, error: "Managed source unavailable for tenant async job" });
+          return;
+        }
+        // Legacy settings remain a dual-read fallback during the migration window.
+        log.warn({ err: error }, "Unable to resolve infrastructure sources; using legacy settings fallback");
+      }
+      if (lifecycleJob) {
+        const pinnedSource = tenantSources.find((source) =>
+          source.id === lifecycleJob!.source_id &&
+          (!lifecycleJob!.credential_id || source.credentialId === lifecycleJob!.credential_id),
+        );
+        if (!pinnedSource) {
+          await appendAuditEntry({ backendUsed: "none", statusCode: 503, fallbackReason: "Recorded job source unavailable" });
+          res.status(503).json({ success: false, error: "Recorded job source unavailable" });
+          return;
+        }
+        tenantSources = [pinnedSource];
+      }
+      if (asyncRoute?.kind === "create" && tenantSources.length === 0) {
+        await appendAuditEntry({ backendUsed: "none", statusCode: 503, fallbackReason: "Managed source unavailable for tenant async job" });
+        res.status(503).json({ success: false, error: "Managed source unavailable for tenant async job" });
+        return;
+      }
+    }
+
+    if (tenantFundingPreference === "byok" && !lifecycleJob && !tenantSources.some((source) => source.kind === "cloud" && source.credential)) {
+      await appendAuditEntry({ backendUsed: "none", statusCode: 503, fallbackReason: "No active BYOK credential source" });
+      res.status(503).json({ success: false, error: "No active BYOK credential source" });
+      return;
+    }
+
+    if (!isSupportedFirecrawlPath(parsedUrl.pathname)) {
+      await appendAuditEntry({ backendUsed: "none", statusCode: 404, fallbackReason: "Unsupported Firecrawl path" });
+      res.status(404).json({ success: false, error: "Only /v1/* and /v2/* are supported" });
+      return;
+    }
+    // Scope enforcement applies to both tenant and deprecated legacy routes.
+    // A legacy URL changes the endpoint selection mechanism, never a token's
+    // route-family capability.
+    if (gatewayTokenScopes && !tokenScopeAllowsPath(gatewayTokenScopes, parsedUrl.pathname)) {
+      await appendAuditEntry({ backendUsed: "none", statusCode: 403, fallbackReason: "Gateway token scope denied" });
+      res.status(403).json({ success: false, error: "Gateway token scope does not allow this route" });
+      return;
     }
 
     let bodyBuffer: Buffer;
@@ -452,6 +701,19 @@ export function createProxyHandler({
       res.status(400).json({ success: false, error: "Invalid JSON body", details: parseError });
       return;
     }
+    const requestRejection = validateGatewayRequest(parsedUrl.pathname, json);
+    if (requestRejection) {
+      await appendAuditEntry({
+        backendUsed: "none",
+        statusCode: requestRejection.statusCode,
+        fallbackReason: requestRejection.reason,
+      });
+      res.status(requestRejection.statusCode).json({ success: false, error: requestRejection.reason });
+      return;
+    }
+    const upstreamRequestUrl = asyncRoute?.kind === "lifecycle"
+      ? `${replaceAsyncRouteId(asyncRoute, lifecycleJob!.upstream_job_id)}${parsedUrl.search}`
+      : requestUrl;
     const targetUrls = collectTargetUrls(json);
     primaryTargetUrl = targetUrls[0] || "";
     const privacyHeaders = headersForPrivacyCheck(req.headers, config.authEnabled);
@@ -460,15 +722,45 @@ export function createProxyHandler({
       hasPrivateTargetUrl: hasPrivateTargetUrl(targetUrls),
     };
     const needsCloud = requestNeedsCloud(parsedUrl.pathname, json);
-    const initialBackend = chooseInitialBackend(routeMode, needsCloud);
-    let cloudApiKeys: string[] = [];
+    // BYOK credentials fund Cloud only. Never satisfy an explicit BYOK choice
+    // with a shared self-hosted/included source merely because its route mode
+    // would otherwise prefer self-hosted.
+    const isPinnedLifecycle = Boolean(lifecycleJob);
+    const isManagedAsyncCreation = tenantEndpointId !== undefined && asyncRoute?.kind === "create";
+    const initialBackend = isPinnedLifecycle
+      ? tenantSources[0].kind === "cloud" ? "cloud" : "self-hosted"
+      : tenantFundingPreference === "byok"
+        ? "cloud"
+        : chooseInitialBackend(routeMode, needsCloud);
+    const cloudSources = tenantSources.filter((source) => source.kind === "cloud" && source.credential);
+    const selfHostedSource = tenantSources.find((source) => source.kind === "self_hosted");
+    const cloudSourceByCredential = new Map(
+      cloudSources.map((source) => [source.credential!, source]),
+    );
+    let cloudApiKeys: string[] = cloudSources.map((source) => source.credential!);
     if (
-      initialBackend === "cloud" ||
-      (initialBackend === "self-hosted" && routeMode !== "self-hosted-only" && isFallbackAllowed(routeMode, privacy))
+      !isPinnedLifecycle &&
+      !isManagedAsyncCreation &&
+      cloudApiKeys.length === 0 &&
+      (initialBackend === "cloud" ||
+        (initialBackend === "self-hosted" && routeMode !== "self-hosted-only" && isFallbackAllowed(routeMode, privacy)))
     ) {
+      // Explicit dual-read window: new sources take priority and legacy
+      // encrypted settings preserve existing integrations until conversion.
       cloudApiKeys = await getCloudApiKeys(config);
     }
     const primaryCloudApiKey = cloudApiKeys[0];
+    const primaryCloudSource = primaryCloudApiKey ? cloudSourceByCredential.get(primaryCloudApiKey) : undefined;
+
+    if (
+      isManagedAsyncCreation &&
+      ((initialBackend === "cloud" && !primaryCloudSource) ||
+        (initialBackend === "self-hosted" && !selfHostedSource))
+    ) {
+      await appendAuditEntry({ backendUsed: "none", statusCode: 503, fallbackReason: "Managed source unavailable for tenant async job" });
+      res.status(503).json({ success: false, error: "Managed source unavailable for tenant async job" });
+      return;
+    }
 
     if (initialBackend === "cloud" && !primaryCloudApiKey) {
       const statusCode = 502;
@@ -522,14 +814,26 @@ export function createProxyHandler({
       backend: initialBackend,
       req,
       bodyBuffer,
-      targetUrl: backendUrl(initialBackend, requestUrl, config, selfHostedBaseUrl),
+      targetUrl: backendUrl(
+        initialBackend,
+        upstreamRequestUrl,
+        config,
+        selfHostedBaseUrl,
+        initialBackend === "cloud" ? primaryCloudSource?.baseUrl : selfHostedSource?.baseUrl,
+      ),
       config,
       apiKey: initialBackend === "cloud" ? primaryCloudApiKey : undefined,
+      source: initialBackend === "cloud" ? primaryCloudSource : selfHostedSource,
+      bufferSuccess: tenantEndpointId !== undefined && asyncRoute?.kind === "create",
+      successBufferMaxBytes: tenantEndpointId !== undefined && asyncRoute?.kind === "lifecycle" && req.method.toUpperCase() === "GET"
+        ? ASYNC_STATUS_BUFFER_MAX_BYTES
+        : undefined,
     });
     let fallbackUsed = false;
     let fallbackReason = "";
 
     if (
+      !isPinnedLifecycle &&
       initialBackend === "self-hosted" &&
       Boolean(primaryCloudApiKey) &&
       isFallbackEligible(result) &&
@@ -548,15 +852,21 @@ export function createProxyHandler({
         backend: "cloud",
         req,
         bodyBuffer,
-        targetUrl: backendUrl("cloud", requestUrl, config, selfHostedBaseUrl),
+        targetUrl: backendUrl("cloud", upstreamRequestUrl, config, selfHostedBaseUrl, primaryCloudSource?.baseUrl),
         config,
         apiKey: primaryCloudApiKey,
+        source: primaryCloudSource,
+        bufferSuccess: tenantEndpointId !== undefined && asyncRoute?.kind === "create",
+        successBufferMaxBytes: tenantEndpointId !== undefined && asyncRoute?.kind === "lifecycle" && req.method.toUpperCase() === "GET"
+          ? ASYNC_STATUS_BUFFER_MAX_BYTES
+          : undefined,
       });
     }
 
     // Try next cloud API keys on auth/rate-limit errors
     let allCloudKeysQuotaLimited = false;
     if (
+      !isPinnedLifecycle &&
       result.backend === "cloud" &&
       result.kind === "response" &&
       result.response &&
@@ -579,9 +889,20 @@ export function createProxyHandler({
             backend: "cloud",
             req,
             bodyBuffer,
-            targetUrl: backendUrl("cloud", requestUrl, config, selfHostedBaseUrl),
+            targetUrl: backendUrl(
+              "cloud",
+              upstreamRequestUrl,
+              config,
+              selfHostedBaseUrl,
+              cloudSourceByCredential.get(nextKey)?.baseUrl,
+            ),
             config,
             apiKey: nextKey,
+            source: cloudSourceByCredential.get(nextKey),
+            bufferSuccess: tenantEndpointId !== undefined && asyncRoute?.kind === "create",
+            successBufferMaxBytes: tenantEndpointId !== undefined && asyncRoute?.kind === "lifecycle" && req.method.toUpperCase() === "GET"
+              ? ASYNC_STATUS_BUFFER_MAX_BYTES
+              : undefined,
           });
           totalAttempts += 1;
           if (
@@ -607,11 +928,13 @@ export function createProxyHandler({
     }
 
     if (
+      !isPinnedLifecycle &&
       allCloudKeysQuotaLimited &&
       result.backend === "cloud" &&
       result.kind === "response" &&
       result.response?.status === 429 &&
-      isCloudQuotaFallbackAllowed(routeMode, needsCloud)
+      isCloudQuotaFallbackAllowed(routeMode, needsCloud) &&
+      (!isManagedAsyncCreation || Boolean(selfHostedSource))
     ) {
       fallbackUsed = true;
       fallbackReason = `all ${cloudApiKeys.length} cloud API key(s) returned 429; falling back to self-hosted`;
@@ -623,9 +946,61 @@ export function createProxyHandler({
         backend: "self-hosted",
         req,
         bodyBuffer,
-        targetUrl: backendUrl("self-hosted", requestUrl, config, selfHostedBaseUrl),
+        targetUrl: backendUrl("self-hosted", upstreamRequestUrl, config, selfHostedBaseUrl, selfHostedSource?.baseUrl),
         config,
+        source: selfHostedSource,
+        bufferSuccess: tenantEndpointId !== undefined && asyncRoute?.kind === "create",
+        successBufferMaxBytes: tenantEndpointId !== undefined && asyncRoute?.kind === "lifecycle" && req.method.toUpperCase() === "GET"
+          ? ASYNC_STATUS_BUFFER_MAX_BYTES
+          : undefined,
       });
+    }
+
+    if (isManagedAsyncCreation && result.kind === "response" && result.response && result.response.status < 400) {
+      if (!isSuccessfulResponse(result) || !result.body) {
+        result = gatewayErrorResult(result.backend, "Gateway could not safely virtualize the async job response");
+      } else {
+        const publicJobId = cryptoRandomId();
+        const publicUrl = `/e/${encodeURIComponent(tenantEndpointId)}${asyncRoute!.family}/${encodeURIComponent(publicJobId)}`;
+        const virtualized = virtualizeCreationResponse(result.body, publicJobId, publicUrl);
+        if (!virtualized) {
+          result = gatewayErrorResult(result.backend, "Gateway could not safely virtualize the async job response");
+        } else {
+          try {
+            await createGatewayJob(accountId!, {
+              publicJobId,
+              upstreamJobId: virtualized.upstreamJobId,
+              routeFamily: asyncRoute!.family,
+              sourceId: result.sourceId,
+              credentialId: result.credentialId,
+              // Legacy-setting dispatches predate source records and are retained
+              // only for the conversion window; all resolved sources carry this.
+              fundingType: result.fundingType ?? "included",
+              creationRequest: creationDiagnostics(req.method, parsedUrl.pathname, bodyBuffer, json),
+            });
+            result = { ...result, body: virtualized.body };
+          } catch (error) {
+            log.error({ err: error }, "Unable to persist virtual async job mapping");
+            result = gatewayErrorResult(result.backend, "Gateway could not persist the async job response");
+          }
+        }
+      }
+    }
+
+    if (
+      tenantEndpointId &&
+      asyncRoute?.kind === "lifecycle" &&
+      isSuccessfulResponse(result) &&
+      (req.method.toUpperCase() === "DELETE" ||
+        (req.method.toUpperCase() === "GET" && hasTerminalAsyncStatus(result.body)))
+    ) {
+      try {
+        await completeGatewayJob(accountId!, asyncRoute.publicId!);
+      } catch (error) {
+        // The upstream cancellation succeeded. Do not turn it into a client
+        // failure, but retain an operator-visible record of the missed update.
+        log.warn({ err: error }, "Unable to mark cancelled gateway job complete");
+      }
     }
 
     const statusCode =

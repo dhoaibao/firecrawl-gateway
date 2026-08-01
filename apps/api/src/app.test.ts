@@ -61,12 +61,28 @@ describe("createApp", () => {
     expect(proxied.body).toEqual({ success: true, data: "proxied" });
   });
 
+  it("mounts tenant routes with only the Firecrawl suffix exposed to the proxy", async () => {
+    const handleTenantProxy = vi.fn(async (req: import("express").Request, res: import("express").Response) => {
+      res.json({ url: req.url, endpointId: (req as import("express").Request & { tenantEndpointId?: string }).tenantEndpointId });
+    });
+    const tenantApp = createApp({
+      config,
+      auditStore,
+      checkDatabase: vi.fn().mockResolvedValue(true),
+      handleProxy: handleTenantProxy,
+    });
+
+    const response = await request(tenantApp).get("/e/public-endpoint/v2/scrape?formats=markdown");
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ url: "/v2/scrape?formats=markdown", endpointId: "public-endpoint" });
+  });
+
   it("returns the established 404 envelope", async () => {
     const response = await request(app).get("/not-found");
     expect(response.status).toBe(404);
     expect(response.body).toEqual({
       success: false,
-      error: "Only /v1/*, /v2/*, /health, and /ready are handled.",
+      error: "Only /e/:endpointId/v1/*, /e/:endpointId/v2/*, /v1/*, /v2/*, /health, and /ready are handled.",
     });
   });
 

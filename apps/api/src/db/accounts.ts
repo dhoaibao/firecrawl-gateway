@@ -6,6 +6,7 @@ export interface AccountRecord {
   public_id: string;
   display_name: string;
   status: string;
+  funding_preference: "byok" | "included" | "auto";
   created_at: string;
   updated_at: string;
 }
@@ -21,7 +22,7 @@ export interface AccountMembershipRecord {
 export async function getAccountByPublicId(publicId: string): Promise<AccountRecord | null> {
   return withOperatorTransaction(async (client) => {
     const result = await client.query<AccountRecord>(
-      `SELECT id, public_id, display_name, status, created_at, updated_at
+      `SELECT id, public_id, display_name, status, funding_preference, created_at, updated_at
        FROM accounts WHERE public_id = $1`,
       [publicId],
     );
@@ -32,7 +33,7 @@ export async function getAccountByPublicId(publicId: string): Promise<AccountRec
 export async function getPersonalAccountForUser(userId: string): Promise<AccountRecord | null> {
   return withOperatorTransaction(async (client) => {
     const result = await client.query<AccountRecord>(
-      `SELECT a.id, a.public_id, a.display_name, a.status, a.created_at, a.updated_at
+      `SELECT a.id, a.public_id, a.display_name, a.status, a.funding_preference, a.created_at, a.updated_at
        FROM accounts a
        INNER JOIN account_memberships m ON m.account_id = a.id
        WHERE m.user_id = $1 AND m.role = 'owner'

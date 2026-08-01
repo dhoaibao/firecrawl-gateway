@@ -14,6 +14,7 @@ import { createAuthRouter } from "./auth/routes";
 import { requireAuth, requireAdmin, requireOperatorMfa, csrfMiddleware } from "./auth/middleware";
 import { createUsersRouter } from "./users/routes";
 import { createApiKeysRouter } from "./api-keys/routes";
+import { createCredentialsRouter } from "./credentials/routes";
 import { createSettingsRouter } from "./settings/routes";
 import { rootLogger } from "./logger";
 import { healthSchema } from "@firecrawl/contracts";
@@ -97,6 +98,7 @@ export function createApp(dependencies: AppDependencies) {
     app.use("/admin/api", requireAuth, adminRouter);
     app.use("/admin/api/users", express.json({ limit: "32kb" }), requireAdmin, requireOperatorMfa, createUsersRouter(config));
     app.use("/admin/api/api-keys", express.json(), requireAuth, createApiKeysRouter());
+    app.use("/admin/api/credentials", express.json({ limit: "32kb" }), requireAuth, createCredentialsRouter(config));
     app.use("/admin/api/settings", express.json({ limit: "32kb" }), requireAdmin, requireOperatorMfa, createSettingsRouter(config));
 
     app.use("/admin/api/playground", requireAuth, async (req, res, next) => {
@@ -137,6 +139,20 @@ export function createApp(dependencies: AppDependencies) {
     app.get("/admin/*", respondAdminUiDisabled);
   }
 
+  app.use("/e/:endpointId", async (req, res, next) => {
+    if (!/^\/v[12]\//.test(req.url)) {
+      return next();
+    }
+    // Express removes the mount path from req.url, which is the exact suffix
+    // the upstream receives. Keep the public endpoint ID out of forwarded URLs.
+    (req as Request & { tenantEndpointId?: string }).tenantEndpointId = req.params.endpointId;
+    try {
+      await handleProxy(req, res);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.use(async (req, res, next) => {
     if (!/^\/v[12]\//.test(req.path)) {
       return next();
@@ -150,8 +166,8 @@ export function createApp(dependencies: AppDependencies) {
 
   app.use((_req, res) => {
     const handledPaths = config.authEnabled
-      ? "/v1/*, /v2/*, /health, /ready, and /admin"
-      : "/v1/*, /v2/*, /health, and /ready";
+      ? "/e/:endpointId/v1/*, /e/:endpointId/v2/*, /v1/*, /v2/*, /health, /ready, and /admin"
+      : "/e/:endpointId/v1/*, /e/:endpointId/v2/*, /v1/*, /v2/*, /health, and /ready";
     res.status(404).json({
       success: false,
       error: `Only ${handledPaths} are handled.`,

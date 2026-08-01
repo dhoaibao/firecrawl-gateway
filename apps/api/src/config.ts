@@ -31,6 +31,7 @@ const GatewayConfigSchema = z.object({
   ).transform((value) => value ? stripTrailingSlash(value) : ""),
   authEncryptionKey: z.string().default(""),
   firecrawlKeysEncryptionKey: z.string().regex(/^[0-9a-fA-F]{64}$/, "must be a 64-character hex string"),
+  providerCredentialsEncryptionKey: z.string().regex(/^[0-9a-fA-F]{64}$/, "must be a 64-character hex string"),
   brevoApiKey: z.string().default(""),
   brevoSenderEmail: z.string().email().default("noreply@example.com"),
   brevoSenderName: z.string().min(1).default("Firecrawl Gateway"),
@@ -69,6 +70,9 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig
     publicAppUrl: env.PUBLIC_APP_URL,
     authEncryptionKey: env.AUTH_ENCRYPTION_KEY,
     firecrawlKeysEncryptionKey: env.FIRECRAWL_KEYS_ENCRYPTION_KEY,
+    // Compatibility fallback is intentionally one-way: new deployments should
+    // configure an independent vault key before converting legacy settings.
+    providerCredentialsEncryptionKey: env.PROVIDER_CREDENTIALS_ENCRYPTION_KEY || env.FIRECRAWL_KEYS_ENCRYPTION_KEY,
     brevoApiKey: env.BREVO_API_KEY,
     brevoSenderEmail: env.BREVO_SENDER_EMAIL,
     brevoSenderName: env.BREVO_SENDER_NAME,
