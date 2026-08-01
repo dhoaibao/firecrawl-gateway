@@ -31,6 +31,12 @@ export interface ProxyResult {
   credentialId?: string;
   fundingType?: "byok" | "included";
   durationMs: number;
+  /** True when an upstream fetch was actually attempted (chargeable dispatch). */
+  dispatched?: boolean;
+  /** True when the request was rejected before any upstream fetch. */
+  preDispatchFailure?: boolean;
+  /** Overrides the 502 default for gateway-originated rejections (e.g. quota). */
+  statusCode?: number;
 }
 
 export interface GatewayConfig {

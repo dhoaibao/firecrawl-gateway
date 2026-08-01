@@ -13,6 +13,8 @@ declare global {
   namespace Express {
     interface Request {
       requestId: string;
+      /** Server-generated per-HTTP-request id used for quota idempotency. */
+      quotaRequestId: string;
     }
   }
 }

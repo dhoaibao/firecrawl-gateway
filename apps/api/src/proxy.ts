@@ -2,6 +2,8 @@ import type { Request, Response } from "express";
 import { Readable } from "node:stream";
 import type { AuditStore } from "./audit-store";
 import type { GatewayConfig, ProxyResult, AuditEntry } from "./types";
+import * as quotaService from "./quota/service";
+import type { QuotaRejection, QuotaReservation } from "./quota/types";
 import {
   chooseInitialBackend,
   getRouteMode,
@@ -228,6 +230,7 @@ async function proxyToBackend({
   source,
   bufferSuccess = false,
   successBufferMaxBytes,
+  onIncludedDispatch,
 }: {
   backend: string;
   req: Request;
@@ -240,6 +243,8 @@ async function proxyToBackend({
   bufferSuccess?: boolean;
   /** Buffer a known-small successful status response for terminal-state bookkeeping. */
   successBufferMaxBytes?: number;
+  /** Atomically reserve an included-quota slot before dispatching to operator infrastructure. */
+  onIncludedDispatch?: (source: ResolvedSource) => Promise<ProxyResult | null>;
 }): Promise<ProxyResult> {
   const releaseSource = source ? sourceRepository.tryAcquireSource(source) : () => undefined;
   if (!releaseSource) {
@@ -252,7 +257,27 @@ async function proxyToBackend({
       credentialId: source?.credentialId,
       fundingType: source?.fundingType,
       durationMs: 0,
+      preDispatchFailure: true,
     };
+  }
+  // Included infrastructure is chargeable: reserve before any upstream fetch so
+  // concurrent requests can never overspend the account or platform counters.
+  if (source?.fundingType === "included" && onIncludedDispatch) {
+    let rejection: ProxyResult | null;
+    try {
+      rejection = await onIncludedDispatch(source);
+    } catch (error) {
+      // An unexpected quota failure must not leak the acquired source slot;
+      // the try/finally below only covers the upstream dispatch.
+      releaseSource();
+      throw error;
+    }
+    if (rejection) {
+      // No upstream dispatch happened: the slot must be returned or the source
+      // will appear saturated after a burst of rejected requests.
+      releaseSource();
+      return rejection;
+    }
   }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), source?.requestTimeoutMs ?? config.requestTimeoutMs);
@@ -292,6 +317,7 @@ async function proxyToBackend({
         credentialId: source?.credentialId,
         fundingType: source?.fundingType,
         durationMs: Date.now() - started,
+        dispatched: true,
       };
     }
 
@@ -309,6 +335,7 @@ async function proxyToBackend({
         credentialId: source?.credentialId,
         fundingType: source?.fundingType,
         durationMs: Date.now() - started,
+        dispatched: true,
       };
     }
     return {
@@ -320,6 +347,7 @@ async function proxyToBackend({
       credentialId: source?.credentialId,
       fundingType: source?.fundingType,
       durationMs: Date.now() - started,
+      dispatched: true,
     };
   } catch (error) {
     return {
@@ -339,6 +367,7 @@ async function proxyToBackend({
       credentialId: source?.credentialId,
       fundingType: source?.fundingType,
       durationMs: Date.now() - started,
+      dispatched: true,
     };
   } finally {
     // Streamed responses keep the timeout alive and source reservation held until their body completes.
@@ -363,10 +392,10 @@ function backendUrl(
 async function sendProxyResponse(
   res: Response,
   result: ProxyResult,
-  meta: { fallbackUsed: boolean; fallbackReason: string },
+  meta: { fallbackUsed: boolean; fallbackReason: string; quota?: QuotaReservation | null },
 ): Promise<void> {
   if (result.kind === "network-error") {
-    res.status(502).set({
+    res.status(result.statusCode || 502).set({
       "content-type": "application/json; charset=utf-8",
       "x-hybrid-firecrawl-backend": result.backend,
       "x-hybrid-firecrawl-fallback": String(meta.fallbackUsed),
@@ -387,6 +416,14 @@ async function sendProxyResponse(
   }
   headers["x-hybrid-firecrawl-backend"] = result.backend;
   headers["x-hybrid-firecrawl-fallback"] = String(meta.fallbackUsed);
+  if (result.fundingType) {
+    headers["x-hybrid-firecrawl-funding"] = result.fundingType;
+  }
+  if (meta.quota) {
+    headers["x-quota-limit"] = String(meta.quota.limit);
+    headers["x-quota-remaining"] = String(meta.quota.remaining);
+    headers["x-quota-reset"] = meta.quota.resetAt;
+  }
   if (meta.fallbackReason) {
     headers["x-hybrid-firecrawl-fallback-reason"] = meta.fallbackReason;
   }
@@ -421,6 +458,18 @@ function gatewayErrorResult(backend: string, error: string): ProxyResult {
     backend,
     error: new Error(error),
     body: Buffer.from(JSON.stringify({ success: false, error })),
+    durationMs: 0,
+  };
+}
+
+/** Stable machine-readable quota rejection delivered through the normal proxy path. */
+function quotaErrorResult(rejection: QuotaRejection): ProxyResult {
+  return {
+    kind: "network-error",
+    backend: "none",
+    error: new Error(rejection.message),
+    body: Buffer.from(JSON.stringify({ success: false, error: rejection.message, code: rejection.code })),
+    statusCode: rejection.statusCode,
     durationMs: 0,
   };
 }
@@ -504,6 +553,9 @@ export function createProxyHandler({
     let gatewayTokenScopes: string[] | undefined;
     let tenantFundingPreference: "byok" | "included" | "auto" | undefined;
     let tenantSources: ResolvedSource[] = [];
+    let quotaReservation: QuotaReservation | null = null;
+    let includedDispatched = false;
+    const quotaRequestId = req.quotaRequestId || cryptoRandomId();
     let asyncRoute: AsyncRoute | null = null;
     let lifecycleJob: Awaited<ReturnType<typeof getGatewayJob>> = null;
     let primaryTargetUrl = "";
@@ -639,7 +691,7 @@ export function createProxyHandler({
           return;
         }
         // Legacy settings remain a dual-read fallback during the migration window.
-        log.warn({ err: error }, "Unable to resolve infrastructure sources; using legacy settings fallback");
+        log.warn({ err: error }, "Unable to resolve infrastructure sources; authenticated account will fail closed");
       }
       if (lifecycleJob) {
         const pinnedSource = tenantSources.find((source) =>
@@ -658,6 +710,20 @@ export function createProxyHandler({
         res.status(503).json({ success: false, error: "Managed source unavailable for tenant async job" });
         return;
       }
+    } else if (accountId) {
+      // Legacy /v1|/v2 root routes are tenant-aware too: the account's funding
+      // preference and infrastructure sources apply, so included traffic can
+      // never bypass quota by using the deprecated surface. Authenticated
+      // accounts without resolvable sources fail closed below.
+      try {
+        const account = await accountRepository.getAccountById(accountId);
+        if (account) {
+          tenantFundingPreference = account.funding_preference ?? "auto";
+          tenantSources = await sourceResolver(accountId, tenantFundingPreference);
+        }
+      } catch (error) {
+        log.warn({ err: error }, "Unable to resolve account infrastructure sources; authenticated account will fail closed");
+      }
     }
 
     if (tenantFundingPreference === "byok" && !lifecycleJob && !tenantSources.some((source) => source.kind === "cloud" && source.credential)) {
@@ -665,6 +731,35 @@ export function createProxyHandler({
       res.status(503).json({ success: false, error: "No active BYOK credential source" });
       return;
     }
+    // Included funding must never silently fall back to user BYOK credentials;
+    // it requires operator infrastructure and an account entitlement (checked
+    // atomically at reservation time).
+    if (
+      tenantFundingPreference === "included" &&
+      !lifecycleJob &&
+      !tenantSources.some((source) => source.fundingType === "included")
+    ) {
+      await appendAuditEntry({ backendUsed: "none", statusCode: 503, fallbackReason: "No included infrastructure source available" });
+      res.status(503).json({
+        success: false,
+        error: "No included infrastructure source available",
+        code: "no_entitlement",
+      });
+      return;
+    }
+
+    // Atomically reserve one included-quota slot before any dispatch to
+    // operator infrastructure; retries and fallbacks share the reservation.
+    const onIncludedDispatch = async (): Promise<ProxyResult | null> => {
+      if (!accountId) return null;
+      if (!quotaReservation) {
+        const outcome = await quotaService.reserveIncluded(accountId, quotaRequestId);
+        if ("code" in outcome) return quotaErrorResult(outcome);
+        quotaReservation = outcome;
+      }
+      includedDispatched = true;
+      return null;
+    };
 
     if (!isSupportedFirecrawlPath(parsedUrl.pathname)) {
       await appendAuditEntry({ backendUsed: "none", statusCode: 404, fallbackReason: "Unsupported Firecrawl path" });
@@ -741,6 +836,7 @@ export function createProxyHandler({
     if (
       !isPinnedLifecycle &&
       !isManagedAsyncCreation &&
+      !accountId &&
       cloudApiKeys.length === 0 &&
       (initialBackend === "cloud" ||
         (initialBackend === "self-hosted" && routeMode !== "self-hosted-only" && isFallbackAllowed(routeMode, privacy)))
@@ -759,6 +855,25 @@ export function createProxyHandler({
     ) {
       await appendAuditEntry({ backendUsed: "none", statusCode: 503, fallbackReason: "Managed source unavailable for tenant async job" });
       res.status(503).json({ success: false, error: "Managed source unavailable for tenant async job" });
+      return;
+    }
+
+    // Authenticated accounts must use an explicitly resolved source. Never
+    // substitute the legacy global Cloud/self-hosted settings for a missing
+    // account source: the resulting source has no funding provenance and would
+    // bypass included-quota reservation.
+    if (
+      accountId &&
+      !isPinnedLifecycle &&
+      ((initialBackend === "cloud" && !primaryCloudSource) ||
+        (initialBackend === "self-hosted" && !selfHostedSource))
+    ) {
+      await appendAuditEntry({ backendUsed: "none", statusCode: 503, fallbackReason: "No active infrastructure source" });
+      res.status(503).json({
+        success: false,
+        error: "No active infrastructure source available for this account",
+        code: "no_entitlement",
+      });
       return;
     }
 
@@ -824,6 +939,7 @@ export function createProxyHandler({
       config,
       apiKey: initialBackend === "cloud" ? primaryCloudApiKey : undefined,
       source: initialBackend === "cloud" ? primaryCloudSource : selfHostedSource,
+      onIncludedDispatch,
       bufferSuccess: tenantEndpointId !== undefined && asyncRoute?.kind === "create",
       successBufferMaxBytes: tenantEndpointId !== undefined && asyncRoute?.kind === "lifecycle" && req.method.toUpperCase() === "GET"
         ? ASYNC_STATUS_BUFFER_MAX_BYTES
@@ -836,6 +952,7 @@ export function createProxyHandler({
       !isPinnedLifecycle &&
       initialBackend === "self-hosted" &&
       Boolean(primaryCloudApiKey) &&
+      !result.statusCode &&
       isFallbackEligible(result) &&
       isFallbackAllowed(routeMode, privacy)
     ) {
@@ -856,6 +973,7 @@ export function createProxyHandler({
         config,
         apiKey: primaryCloudApiKey,
         source: primaryCloudSource,
+        onIncludedDispatch,
         bufferSuccess: tenantEndpointId !== undefined && asyncRoute?.kind === "create",
         successBufferMaxBytes: tenantEndpointId !== undefined && asyncRoute?.kind === "lifecycle" && req.method.toUpperCase() === "GET"
           ? ASYNC_STATUS_BUFFER_MAX_BYTES
@@ -899,6 +1017,7 @@ export function createProxyHandler({
             config,
             apiKey: nextKey,
             source: cloudSourceByCredential.get(nextKey),
+            onIncludedDispatch,
             bufferSuccess: tenantEndpointId !== undefined && asyncRoute?.kind === "create",
             successBufferMaxBytes: tenantEndpointId !== undefined && asyncRoute?.kind === "lifecycle" && req.method.toUpperCase() === "GET"
               ? ASYNC_STATUS_BUFFER_MAX_BYTES
@@ -934,6 +1053,7 @@ export function createProxyHandler({
       result.kind === "response" &&
       result.response?.status === 429 &&
       isCloudQuotaFallbackAllowed(routeMode, needsCloud) &&
+      (!accountId || Boolean(selfHostedSource)) &&
       (!isManagedAsyncCreation || Boolean(selfHostedSource))
     ) {
       fallbackUsed = true;
@@ -949,6 +1069,7 @@ export function createProxyHandler({
         targetUrl: backendUrl("self-hosted", upstreamRequestUrl, config, selfHostedBaseUrl, selfHostedSource?.baseUrl),
         config,
         source: selfHostedSource,
+        onIncludedDispatch,
         bufferSuccess: tenantEndpointId !== undefined && asyncRoute?.kind === "create",
         successBufferMaxBytes: tenantEndpointId !== undefined && asyncRoute?.kind === "lifecycle" && req.method.toUpperCase() === "GET"
           ? ASYNC_STATUS_BUFFER_MAX_BYTES
@@ -1003,14 +1124,35 @@ export function createProxyHandler({
       }
     }
 
+    // Charge exactly once when any operator-infrastructure dispatch occurred;
+    // release when the request never reached an included upstream. Fallbacks
+    // and key-rotation retries stay attached to the same reservation.
+    // (Fresh-typed alias: closure-assigned variables get over-narrowed by TS.)
+    const pendingReservation = ((): QuotaReservation | null => quotaReservation)();
+    if (includedDispatched) {
+      if (pendingReservation) {
+        await quotaService.finalizeReservation(pendingReservation.reservationId).catch((error) => {
+          log.error({ err: error, requestId: pendingReservation.reservationId }, "Unable to finalize included quota reservation");
+        });
+      }
+    } else if (pendingReservation) {
+      await quotaService.releaseReservation(pendingReservation.reservationId).catch((error) => {
+        log.warn({ err: error, requestId: pendingReservation.reservationId }, "Unable to release included quota reservation");
+      });
+    }
+
+    if (result.preDispatchFailure && result.sourceId) {
+      void quotaService.emitSourcePressure(result.sourceId, "source concurrency limit").catch(() => undefined);
+    }
+
     const statusCode =
-      result.kind === "network-error" ? 502 : result.response?.status || 502;
+      result.kind === "network-error" ? result.statusCode || 502 : result.response?.status || 502;
     await appendAuditEntry({
       backendUsed: result.backend,
       statusCode,
       fallbackUsed,
       fallbackReason: fallbackReason || needsCloud.reason || "",
     });
-    await sendProxyResponse(res, result, { fallbackUsed, fallbackReason });
+    await sendProxyResponse(res, result, { fallbackUsed, fallbackReason, quota: quotaReservation });
   };
 }

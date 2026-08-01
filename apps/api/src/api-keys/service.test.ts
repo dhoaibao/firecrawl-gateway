@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import { withClient } from "../db";
 import { validateApiKeyWithUser } from "./service";
 
+const mockResumeAccountEntitlementsWithClient = vi.hoisted(() => vi.fn());
+
 vi.mock("../db", () => ({ withClient: vi.fn() }));
+vi.mock("../quota/service", () => ({ resumeAccountEntitlementsWithClient: mockResumeAccountEntitlementsWithClient }));
 
 describe("validateApiKeyWithUser", () => {
   it("loads the API key and owner in one query", async () => {
@@ -33,6 +36,7 @@ describe("validateApiKeyWithUser", () => {
 
     const result = await validateApiKeyWithUser("fc_test_key");
 
+    expect(mockResumeAccountEntitlementsWithClient).not.toHaveBeenCalled();
     expect(query).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({
       key: { id: "key-1", user_id: "user-1" },
@@ -72,6 +76,7 @@ describe("validateApiKeyWithUser", () => {
         owner_suspended_until: null,
         owner_created_at: "2026-01-01T00:00:00.000Z",
         owner_updated_at: "2026-01-01T00:00:00.000Z",
+        owner_account_id: "account-1",
         owner_expired_suspension: true,
       }] })
       .mockResolvedValueOnce({ rows: [reactivatedUser] });
@@ -79,6 +84,7 @@ describe("validateApiKeyWithUser", () => {
 
     const result = await validateApiKeyWithUser("fc_test_key");
 
+    expect(mockResumeAccountEntitlementsWithClient).toHaveBeenCalledWith(expect.anything(), "account-1");
     expect(query).toHaveBeenCalledTimes(2);
     expect(query).toHaveBeenLastCalledWith(
       "UPDATE users SET status = 'active', suspended_until = NULL WHERE id = $1 RETURNING *",

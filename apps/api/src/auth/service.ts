@@ -3,6 +3,7 @@ import { withOperatorTransaction } from "../db";
 import { hashPassword } from "./password";
 import { createOpaqueToken, hashOpaqueToken } from "./tokens";
 import { queueEmail } from "./email";
+import { admitAccountWithClient } from "../quota/service";
 import type { User } from "../types";
 
 export const GENERIC_AUTH_MESSAGE = "If the account can be processed, you will receive an email shortly.";
@@ -109,6 +110,12 @@ export async function consumeEmailVerification(token: string): Promise<boolean> 
       await client.query("UPDATE users SET email_verified_at = NOW(), updated_at = NOW() WHERE id = $1", [row.user_id]);
     }
     await client.query("INSERT INTO security_events (id, user_id, event_type) VALUES ($1, $2, $3)", [crypto.randomUUID(), row.user_id, row.purpose === "email_change" ? "email_changed" : "email_verified"]);
+    // Admission runs inside the verification transaction: a failure rolls the
+    // token consumption back, so the verified user keeps a valid retry path
+    // instead of being permanently stuck without an entitlement.
+    if (row.purpose === "email_verification") {
+      await admitAccountWithClient(client, `personal:${row.user_id}`);
+    }
     return true;
   });
 }

@@ -10,6 +10,9 @@ const mockValidateApiKeyWithUser = vi.hoisted(() => vi.fn());
 const mockCreateGatewayJob = vi.hoisted(() => vi.fn());
 const mockGetGatewayJob = vi.hoisted(() => vi.fn());
 const mockCompleteGatewayJob = vi.hoisted(() => vi.fn());
+const mockReserveIncluded = vi.hoisted(() => vi.fn());
+const mockFinalizeReservation = vi.hoisted(() => vi.fn());
+const mockReleaseReservation = vi.hoisted(() => vi.fn());
 
 vi.mock("./settings/service", () => ({
   getSetting: mockGetSetting,
@@ -21,10 +24,20 @@ vi.mock("./api-keys/service", () => ({
   touchApiKey: vi.fn(),
 }));
 vi.mock("./users/service", () => ({ checkUserAccess: vi.fn().mockReturnValue({ allowed: true }) }));
+vi.mock("./quota/service", () => ({
+  reserveIncluded: mockReserveIncluded,
+  finalizeReservation: mockFinalizeReservation,
+  releaseReservation: mockReleaseReservation,
+  emitSourcePressure: vi.fn().mockResolvedValue(false),
+}));
 vi.mock("./jobs/gateway-jobs", () => ({
   createGatewayJob: mockCreateGatewayJob,
   getGatewayJob: mockGetGatewayJob,
   completeGatewayJob: mockCompleteGatewayJob,
+}));
+vi.mock("./db/accounts", () => ({
+  getAccountById: vi.fn().mockResolvedValue(null),
+  getAccountByPublicId: vi.fn().mockResolvedValue(null),
 }));
 
 const config: GatewayConfig = {
@@ -101,6 +114,17 @@ describe("tenant data-plane routing", () => {
     mockCreateGatewayJob.mockResolvedValue({});
     mockGetGatewayJob.mockResolvedValue(null);
     mockCompleteGatewayJob.mockResolvedValue(undefined);
+    mockReserveIncluded.mockResolvedValue({
+      reservationId: "reservation-a",
+      reserved: true,
+      limit: 100,
+      remaining: 99,
+      resetAt: "2026-02-01T00:00:00.000Z",
+      periodId: "2026-01",
+      entitlementId: "entitlement-a",
+    });
+    mockFinalizeReservation.mockResolvedValue(true);
+    mockReleaseReservation.mockResolvedValue(true);
     mockGetDefaultRouteMode.mockResolvedValue("self-hosted-only");
     mockGetSetting.mockImplementation(async (key: string) => key === "self_hosted_firecrawl_url"
       ? { key, value: "https://self-hosted.example", updated_at: "2026-01-01T00:00:00.000Z" }
@@ -164,7 +188,7 @@ describe("tenant data-plane routing", () => {
       config,
       auditStore,
       resolveEndpoint: vi.fn().mockResolvedValue({ id: "account-a", public_id: "endpoint-a", status: "active" }),
-      resolveSources: vi.fn().mockResolvedValue([]),
+      resolveSources: vi.fn().mockResolvedValue([selfHostedSource()]),
     });
 
     await handler(requestFor("endpoint-a", "/v1/map"), responseFor());

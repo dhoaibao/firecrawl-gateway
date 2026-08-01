@@ -29,6 +29,10 @@ export function requestIdMiddleware(
   const requestId =
     (req.headers["x-request-id"] as string | undefined) || randomUUID();
   req.requestId = requestId;
+  // X-Request-ID is a client correlation value, not a quota idempotency key:
+  // every HTTP request receives a fresh server-owned quota identity so a
+  // replayed header cannot dispatch for free.
+  req.quotaRequestId = randomUUID();
   next();
 }
 

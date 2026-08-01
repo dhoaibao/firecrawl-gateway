@@ -4,6 +4,8 @@ import * as userService from "./service";
 import { serializeUser } from "./serialization";
 import { registerUser } from "../auth/service";
 import { hashPassword, validatePassword } from "../auth/password";
+import * as quotaService from "../quota/service";
+import { rootLogger } from "../logger";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -200,6 +202,10 @@ export function createUsersRouter(config?: GatewayConfig) {
         res.status(404).json({ success: false, error: "User not found" });
         return;
       }
+      // Suspension blocks included use immediately; the permanent slot stays.
+      await quotaService.suspendAccountEntitlements(`personal:${user.id}`).catch((error) => {
+        rootLogger.warn({ err: error, userId: user.id }, "Unable to suspend quota entitlements");
+      });
       res.json({ data: sanitizeUser(user) });
     } catch (error) {
       next(error);
@@ -219,6 +225,9 @@ export function createUsersRouter(config?: GatewayConfig) {
         res.status(404).json({ success: false, error: "User not found" });
         return;
       }
+      await quotaService.suspendAccountEntitlements(`personal:${user.id}`).catch((error) => {
+        rootLogger.warn({ err: error, userId: user.id }, "Unable to suspend quota entitlements");
+      });
       res.json({ data: sanitizeUser(user) });
     } catch (error) {
       next(error);

@@ -16,6 +16,7 @@ import { createUsersRouter } from "./users/routes";
 import { createApiKeysRouter } from "./api-keys/routes";
 import { createCredentialsRouter } from "./credentials/routes";
 import { createSettingsRouter } from "./settings/routes";
+import { createQuotaRouter } from "./quota/routes";
 import { rootLogger } from "./logger";
 import { healthSchema } from "@firecrawl/contracts";
 import { createBrevoWebhookRouter } from "./auth/email";
@@ -100,6 +101,7 @@ export function createApp(dependencies: AppDependencies) {
     app.use("/admin/api/api-keys", express.json(), requireAuth, createApiKeysRouter());
     app.use("/admin/api/credentials", express.json({ limit: "32kb" }), requireAuth, createCredentialsRouter(config));
     app.use("/admin/api/settings", express.json({ limit: "32kb" }), requireAdmin, requireOperatorMfa, createSettingsRouter(config));
+    app.use("/admin/api/quota", express.json({ limit: "32kb" }), requireAdmin, requireOperatorMfa, createQuotaRouter());
 
     app.use("/admin/api/playground", requireAuth, async (req, res, next) => {
       if (!/^\/v[12]\//.test(req.url)) {

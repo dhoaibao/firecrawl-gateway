@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { withClient, withOperatorTransaction, withTransaction } from "../db";
+import { resumeAccountEntitlementsWithClient } from "../quota/service";
 import type { User } from "../types";
 
 export function normalizeEmail(email: string): string {
@@ -61,7 +62,16 @@ async function maybeReactivate(
         "UPDATE users SET status = 'active', suspended_until = NULL WHERE id = $1 RETURNING *",
         [user.id],
       );
-      return result.rows[0] || user;
+      const reactivated = result.rows[0]
+        ? { ...result.rows[0], account_id: user.account_id }
+        : user;
+      if (user.account_id) {
+        // Keep user and entitlement reactivation in the same operator
+        // transaction. A quota failure rolls back the user update so a later
+        // login/session lookup retries instead of observing a half-reactivated account.
+        await resumeAccountEntitlementsWithClient(client, user.account_id);
+      }
+      return reactivated;
     }
   }
   return user;
@@ -193,8 +203,15 @@ export async function activateUser(id: string): Promise<User | null> {
        WHERE id = $1 RETURNING *`,
       [id],
     );
-    return result.rows[0] || null;
-  });
+    const user = result.rows[0] || null;
+    if (user) {
+      // Explicit activation must not commit a user state that quota could not
+      // restore. Both updates share the operator transaction and roll back
+      // together if entitlement restoration fails.
+      await resumeAccountEntitlementsWithClient(client, `personal:${user.id}`);
+    }
+    return user;
+  }, { operator: true });
 }
 
 export function checkUserAccess(user: User): { allowed: true } | { allowed: false; reason: string } {

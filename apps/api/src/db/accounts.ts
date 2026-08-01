@@ -19,6 +19,17 @@ export interface AccountMembershipRecord {
   updated_at: string;
 }
 
+export async function getAccountById(accountId: string): Promise<AccountRecord | null> {
+  return withOperatorTransaction(async (client) => {
+    const result = await client.query<AccountRecord>(
+      `SELECT id, public_id, display_name, status, funding_preference, created_at, updated_at
+       FROM accounts WHERE id = $1`,
+      [accountId],
+    );
+    return result.rows[0] || null;
+  });
+}
+
 export async function getAccountByPublicId(publicId: string): Promise<AccountRecord | null> {
   return withOperatorTransaction(async (client) => {
     const result = await client.query<AccountRecord>(

@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { withAccountTransaction, withClient, withUserAccountTransaction } from "../db";
+import { resumeAccountEntitlementsWithClient } from "../quota/service";
 import type { GatewayToken, User } from "../types";
 
 /** Compatibility name for the legacy module; product-facing callers should say gateway token. */
@@ -126,7 +127,7 @@ export async function validateApiKey(key: string): Promise<GatewayToken | null> 
 
 export async function validateApiKeyWithUser(key: string): Promise<AuthenticatedApiKey | null> {
   const keyHash = hashApiKey(key);
-  return withClient(async (client) => {
+  const authenticated = await withClient(async (client) => {
     const result = await client.query<GatewayToken & {
       owner_id: string;
       owner_email: string;
@@ -183,9 +184,17 @@ export async function validateApiKeyWithUser(key: string): Promise<Authenticated
         [owner_id],
       );
       user = reactivated.rows[0] || user;
+      if (owner_account_id) {
+        // Keep user and entitlement reactivation in the same transaction. If
+        // quota resume fails, the user update rolls back and a later key
+        // validation can retry the complete reactivation.
+        await resumeAccountEntitlementsWithClient(client, owner_account_id);
+      }
     }
     return { key: gatewayToken, user };
   }, { operator: true });
+
+  return authenticated;
 }
 
 const TOUCH_DEBOUNCE_MS = 60_000;

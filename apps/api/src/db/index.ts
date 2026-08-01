@@ -4,7 +4,7 @@ import { rootLogger } from "../logger";
 let pool: Pool | null = null;
 let operatorPool: Pool | null = null;
 
-export const EXPECTED_SCHEMA_VERSION = "006_data_plane_credentials_routing";
+export const EXPECTED_SCHEMA_VERSION = "007_quota_capacity";
 const MAX_RETRIES = 5;
 const RETRY_DELAY_MS = 2000;
 const STATEMENT_TIMEOUT_MS = 5000;

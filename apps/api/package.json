@@ -19,7 +19,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "quota:reconcile": "ts-node --transpile-only scripts/quota-reconcile.ts"
   },
   "dependencies": {
     "@firecrawl/contracts": "1.0.0",
