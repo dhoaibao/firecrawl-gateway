@@ -7,7 +7,7 @@ import type { User } from "../types";
 const mockListUsers = vi.hoisted(() => vi.fn());
 const mockGetUserById = vi.hoisted(() => vi.fn());
 const mockGetUserByEmail = vi.hoisted(() => vi.fn());
-const mockCreateUser = vi.hoisted(() => vi.fn());
+const mockRegisterUser = vi.hoisted(() => vi.fn());
 const mockUpdateUser = vi.hoisted(() => vi.fn());
 const mockSuspendUser = vi.hoisted(() => vi.fn());
 const mockBlockUser = vi.hoisted(() => vi.fn());
@@ -18,13 +18,14 @@ vi.mock("./service", () => ({
   listUsers: mockListUsers,
   getUserById: mockGetUserById,
   getUserByEmail: mockGetUserByEmail,
-  createUser: mockCreateUser,
   updateUser: mockUpdateUser,
   suspendUser: mockSuspendUser,
   blockUser: mockBlockUser,
   activateUser: mockActivateUser,
   deleteUserSafely: mockDeleteUserSafely,
 }));
+
+vi.mock("../auth/service", () => ({ registerUser: mockRegisterUser }));
 
 function createApp(user: { id: string; is_admin: boolean }) {
   const app = express();
@@ -43,7 +44,10 @@ function createApp(user: { id: string; is_admin: boolean }) {
     };
     next();
   });
-  app.use("/users", createUsersRouter());
+  app.use("/users", createUsersRouter({
+    publicAppUrl: "https://gateway.example.test",
+    authEncryptionKey: "a".repeat(64),
+  } as never));
   return app;
 }
 
@@ -94,11 +98,11 @@ describe("GET /users/:id", () => {
 describe("POST /users", () => {
   it("creates a user with valid input", async () => {
     mockGetUserByEmail.mockResolvedValue(null);
-    mockCreateUser.mockResolvedValue(makeUser({ email: "new@example.com" }));
+    mockRegisterUser.mockResolvedValue(makeUser({ email: "new@example.com" }));
     const app = createApp({ id: "admin-1", is_admin: true });
     const res = await request(app)
       .post("/users")
-      .send({ email: "new@example.com", name: "New User", password: "password123" })
+      .send({ email: "new@example.com", name: "New User", password: "safe-password123" })
       .expect(201);
     expect(res.body.data.email).toBe("new@example.com");
   });
@@ -107,7 +111,7 @@ describe("POST /users", () => {
     const app = createApp({ id: "admin-1", is_admin: true });
     const res = await request(app)
       .post("/users")
-      .send({ email: "not-an-email", name: "User", password: "password123" })
+      .send({ email: "not-an-email", name: "User", password: "safe-password123" })
       .expect(400);
     expect(res.body.error).toContain("Invalid email");
   });
@@ -121,25 +125,39 @@ describe("POST /users", () => {
     expect(res.body.error).toContain("Password");
   });
 
+  it("rejects a common password", async () => {
+    const app = createApp({ id: "admin-1", is_admin: true });
+    const res = await request(app)
+      .post("/users")
+      .send({ email: "new@example.com", name: "User", password: "123456789012" })
+      .expect(400);
+    expect(res.body.error).toContain("less common");
+  });
+
   it("returns 409 for duplicate email", async () => {
     mockGetUserByEmail.mockResolvedValue(makeUser({ email: "exists@example.com" }));
     const app = createApp({ id: "admin-1", is_admin: true });
     const res = await request(app)
       .post("/users")
-      .send({ email: "exists@example.com", name: "User", password: "password123" })
+      .send({ email: "exists@example.com", name: "User", password: "safe-password123" })
       .expect(409);
     expect(res.body.error).toContain("already exists");
   });
 
   it("normalizes email to lowercase", async () => {
     mockGetUserByEmail.mockResolvedValue(null);
-    mockCreateUser.mockResolvedValue(makeUser({ email: "new@example.com" }));
+    mockRegisterUser.mockResolvedValue(makeUser({ email: "new@example.com" }));
     const app = createApp({ id: "admin-1", is_admin: true });
     await request(app)
       .post("/users")
-      .send({ email: "New@Example.com", name: "New User", password: "password123" })
+      .send({ email: "New@Example.com", name: "New User", password: "safe-password123" })
       .expect(201);
-    expect(mockCreateUser).toHaveBeenCalledWith("new@example.com", "New User", expect.any(String), false);
+    expect(mockRegisterUser).toHaveBeenCalledWith(expect.objectContaining({
+      email: "new@example.com",
+      name: "New User",
+      password: "safe-password123",
+      isAdmin: false,
+    }));
   });
 
   it("returns 400 for password exceeding max length", async () => {

@@ -130,7 +130,7 @@ export async function validateApiKeyWithUser(key: string): Promise<Authenticated
               (u.status = 'suspended' AND u.suspended_until <= NOW()) AS owner_expired_suspension
        FROM api_keys ak
        INNER JOIN users u ON u.id = ak.user_id
-       WHERE ak.key_hash = $1 AND ak.revoked = false`,
+       WHERE ak.key_hash = $1 AND ak.revoked = false AND u.email_verified_at IS NOT NULL`,
       [keyHash],
     );
     const row = result.rows[0];

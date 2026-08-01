@@ -19,8 +19,8 @@ export async function bootstrapAdminUser(
     const id = crypto.randomUUID();
     await client.query(
       `INSERT INTO users
-         (id, email, normalized_email, name, password_hash, is_admin, platform_role, status)
-       VALUES ($1, $2, $3, $4, $5, true, 'admin', 'active')`,
+         (id, email, normalized_email, name, password_hash, is_admin, platform_role, status, email_verified_at)
+       VALUES ($1, $2, $3, $4, $5, true, 'admin', 'active', NOW())`,
       [id, email.trim(), normalizedEmail, name, passwordHash],
     );
     await client.query(

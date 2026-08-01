@@ -4,7 +4,7 @@ import { rootLogger } from "../logger";
 let pool: Pool | null = null;
 let operatorPool: Pool | null = null;
 
-export const EXPECTED_SCHEMA_VERSION = "004_operator_role_rls";
+export const EXPECTED_SCHEMA_VERSION = "005_auth_security";
 const MAX_RETRIES = 5;
 const RETRY_DELAY_MS = 2000;
 const STATEMENT_TIMEOUT_MS = 5000;

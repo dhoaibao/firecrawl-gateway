@@ -1,22 +1,17 @@
 import { Router } from "express";
-import bcrypt from "bcrypt";
-import type { User } from "../types";
+import type { GatewayConfig, User } from "../types";
 import * as userService from "./service";
 import { serializeUser } from "./serialization";
+import { registerUser } from "../auth/service";
+import { hashPassword, validatePassword } from "../auth/password";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const MIN_PASSWORD_LENGTH = 8;
-const MAX_PASSWORD_LENGTH = 128;
-
-function getBcryptRounds(): number {
-  return Number(process.env.BCRYPT_ROUNDS || 12);
-}
 
 function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
-export function createUsersRouter() {
+export function createUsersRouter(config?: GatewayConfig) {
   const router = Router();
 
   router.get("/", async (_req, res, next) => {
@@ -55,13 +50,9 @@ export function createUsersRouter() {
         return;
       }
 
-      if (password.length < MIN_PASSWORD_LENGTH) {
-        res.status(400).json({ success: false, error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` });
-        return;
-      }
-
-      if (password.length > MAX_PASSWORD_LENGTH) {
-        res.status(400).json({ success: false, error: `Password must be at most ${MAX_PASSWORD_LENGTH} characters` });
+      const passwordError = validatePassword(password);
+      if (passwordError) {
+        res.status(400).json({ success: false, error: passwordError });
         return;
       }
 
@@ -71,8 +62,21 @@ export function createUsersRouter() {
         return;
       }
 
-      const passwordHash = await bcrypt.hash(password, getBcryptRounds());
-      const user = await userService.createUser(email, name, passwordHash, is_admin === true);
+      if (!config?.publicAppUrl || !config.authEncryptionKey) {
+        throw new Error("Authentication email configuration is required to create users");
+      }
+      const user = await registerUser({
+        email,
+        name,
+        password,
+        isAdmin: is_admin === true,
+        encryptionKey: config.authEncryptionKey,
+        baseUrl: config.publicAppUrl,
+      });
+      if (!user) {
+        res.status(409).json({ success: false, error: "User with this email already exists" });
+        return;
+      }
       res.status(201).json({ data: sanitizeUser(user) });
     } catch (error) {
       next(error);
@@ -94,6 +98,10 @@ export function createUsersRouter() {
         }
         if (req.body.status === "blocked" || req.body.status === "suspended") {
           res.status(400).json({ success: false, error: "Cannot block or suspend yourself" });
+          return;
+        }
+        if (req.body.email !== undefined || req.body.password !== undefined) {
+          res.status(400).json({ success: false, error: "Use the authenticated account security endpoint" });
           return;
         }
         if (req.body.suspended_until) {
@@ -120,15 +128,12 @@ export function createUsersRouter() {
         updates.email = normalized;
       }
       if (req.body.password !== undefined) {
-        if (req.body.password.length < MIN_PASSWORD_LENGTH) {
-          res.status(400).json({ success: false, error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` });
+        const passwordError = validatePassword(req.body.password);
+        if (passwordError) {
+          res.status(400).json({ success: false, error: passwordError });
           return;
         }
-        if (req.body.password.length > MAX_PASSWORD_LENGTH) {
-          res.status(400).json({ success: false, error: `Password must be at most ${MAX_PASSWORD_LENGTH} characters` });
-          return;
-        }
-        updates.password_hash = await bcrypt.hash(req.body.password, getBcryptRounds());
+        updates.password_hash = await hashPassword(req.body.password);
       }
       if (req.body.is_admin !== undefined) {
         if (typeof req.body.is_admin !== "boolean") {

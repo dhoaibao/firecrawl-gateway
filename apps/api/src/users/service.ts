@@ -134,6 +134,7 @@ export async function updateUser(
     if (updates.password_hash !== undefined) {
       fields.push(`password_hash = $${paramIndex++}`);
       values.push(updates.password_hash);
+      fields.push("auth_version = auth_version + 1");
     }
     if (updates.is_admin !== undefined) {
       fields.push(`is_admin = $${paramIndex++}`);

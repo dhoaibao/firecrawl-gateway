@@ -11,12 +11,13 @@ import { createAdminRouter } from "./admin-api";
 import { requestLogger, rateLimiter, requestIdMiddleware } from "./middleware";
 import { passport } from "./auth/passport";
 import { createAuthRouter } from "./auth/routes";
-import { requireAuth, requireAdmin } from "./auth/middleware";
+import { requireAuth, requireAdmin, requireOperatorMfa, csrfMiddleware } from "./auth/middleware";
 import { createUsersRouter } from "./users/routes";
 import { createApiKeysRouter } from "./api-keys/routes";
 import { createSettingsRouter } from "./settings/routes";
 import { rootLogger } from "./logger";
 import { healthSchema } from "@firecrawl/contracts";
+import { createBrevoWebhookRouter } from "./auth/email";
 
 export type ProxyHandler = (req: Request, res: Response) => Promise<void>;
 
@@ -51,15 +52,18 @@ export function createApp(dependencies: AppDependencies) {
   app.set("trust proxy", config.trustProxy);
 
   app.use(helmet());
+  const corsOrigins = (corsOrigin || "").split(",").map((origin) => origin.trim()).filter(Boolean);
   app.use(cors({
-    origin: corsOrigin || true,
-    credentials: Boolean(corsOrigin),
+    origin: corsOrigins.length > 0 ? corsOrigins : false,
+    credentials: corsOrigins.length > 0,
   }));
   app.use(compression());
 
   app.get("/health", (_req, res) => {
     res.json(healthSchema.parse({ status: "ok" }));
   });
+
+  app.use("/api/v1/webhooks", express.json({ limit: "64kb" }), createBrevoWebhookRouter(config));
 
   app.get("/ready", async (_req, res) => {
     const dbOk = await checkDatabase();
@@ -82,17 +86,18 @@ export function createApp(dependencies: AppDependencies) {
     app.use(sessionMiddleware);
     app.use(passport.initialize());
     app.use(passport.session());
+    app.use(csrfMiddleware(corsOrigin));
   }
 
   app.use(requestLogger);
   app.use(rateLimiter(config.trustProxy));
 
   if (config.authEnabled) {
-    app.use("/admin/api/auth", express.json(), createAuthRouter());
+    app.use("/admin/api/auth", express.json({ limit: "32kb" }), createAuthRouter(config));
     app.use("/admin/api", requireAuth, adminRouter);
-    app.use("/admin/api/users", express.json(), requireAdmin, createUsersRouter());
+    app.use("/admin/api/users", express.json({ limit: "32kb" }), requireAdmin, requireOperatorMfa, createUsersRouter(config));
     app.use("/admin/api/api-keys", express.json(), requireAuth, createApiKeysRouter());
-    app.use("/admin/api/settings", express.json(), requireAdmin, createSettingsRouter(config));
+    app.use("/admin/api/settings", express.json({ limit: "32kb" }), requireAdmin, requireOperatorMfa, createSettingsRouter(config));
 
     app.use("/admin/api/playground", requireAuth, async (req, res, next) => {
       if (!/^\/v[12]\//.test(req.url)) {

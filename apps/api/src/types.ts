@@ -40,7 +40,14 @@ export interface GatewayConfig {
   databaseUrl: string;
   operatorDatabaseUrl: string;
   sessionSecret: string;
+  publicAppUrl?: string;
+  authEncryptionKey?: string;
   firecrawlKeysEncryptionKey: string;
+  brevoApiKey?: string;
+  brevoSenderEmail?: string;
+  brevoSenderName?: string;
+  brevoWebhookToken?: string;
+  registrationEnabled?: boolean;
   adminEmail: string;
   adminPassword: string;
   trustProxy: boolean | string;
@@ -68,6 +75,7 @@ declare global {
       platform_role?: string;
       email_verified_at?: string | null;
       auth_version?: number;
+      mfa_enabled?: boolean;
       account_id?: string;
       status: string;
       suspended_until: string | null;
@@ -87,6 +95,7 @@ export interface User {
   platform_role?: string;
   email_verified_at?: string | null;
   auth_version?: number;
+  mfa_enabled?: boolean;
   account_id?: string;
   status: string;
   suspended_until: string | null;

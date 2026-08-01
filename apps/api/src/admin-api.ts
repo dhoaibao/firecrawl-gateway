@@ -1,19 +1,19 @@
 import { json, Router } from "express";
 import type { AuditStore } from "./audit-store";
 import * as usersService from "./users/service";
-import { requireAdmin } from "./auth/middleware";
+import { requireAdmin, requireOperatorMfa } from "./auth/middleware";
 
 const validDeleteFilters = ["today", "week", "month", "all"] as const;
 
 export function createAdminRouter(auditStore: AuditStore) {
   const router = Router();
 
-  router.get("/logs", requireAdmin, async (_req, res) => {
+  router.get("/logs", requireAdmin, requireOperatorMfa, async (_req, res) => {
     const entries = await auditStore.readAuditEntries(500);
     res.json({ data: entries });
   });
 
-  router.delete("/logs/:id", requireAdmin, async (req, res) => {
+  router.delete("/logs/:id", requireAdmin, requireOperatorMfa, async (req, res) => {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     const deleted = await auditStore.deleteAuditEntry(id);
     if (!deleted) {
@@ -23,7 +23,7 @@ export function createAdminRouter(auditStore: AuditStore) {
     res.json({ success: true });
   });
 
-  router.delete("/logs", json(), requireAdmin, async (req, res) => {
+  router.delete("/logs", json(), requireAdmin, requireOperatorMfa, async (req, res) => {
     if (req.body?.ids !== undefined) {
       if (!Array.isArray(req.body.ids)) {
         res.status(400).json({ error: "ids must be an array" });
@@ -53,7 +53,7 @@ export function createAdminRouter(auditStore: AuditStore) {
     res.json({ success: true, deleted });
   });
 
-  router.get("/data", requireAdmin, async (_req, res) => {
+  router.get("/data", requireAdmin, requireOperatorMfa, async (_req, res) => {
     const entries = await auditStore.readAuditEntries(500);
     const durations = entries
       .map((entry) => Number(entry.duration_ms))

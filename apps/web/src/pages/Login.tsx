@@ -8,11 +8,13 @@ import { useAuth } from "@/contexts/AuthContext";
 export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [mfaCode, setMfaCode] = useState("");
+  const [mfaRequired, setMfaRequired] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [shake, setShake] = useState(false);
-  const { login } = useAuth();
+  const { login, completeMfa } = useAuth();
 
   useEffect(() => { document.title = "Sign in — Firecrawl Gateway" }, [])
   const navigate = useNavigate();
@@ -23,7 +25,15 @@ export default function Login() {
     setShake(false);
     setSubmitting(true);
     try {
-      await login(email, password);
+      if (mfaRequired) {
+        await completeMfa(mfaCode);
+      } else {
+        const authenticated = await login(email, password);
+        if (!authenticated) {
+          setMfaRequired(true);
+          return;
+        }
+      }
       navigate("/");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
@@ -83,7 +93,14 @@ export default function Login() {
               />
             </div>
 
-            <div className="space-y-1.5">
+            {mfaRequired && (
+              <div className="space-y-1.5">
+                <label htmlFor="mfa-code" className="text-sm font-medium text-foreground">Authenticator code</label>
+                <Input id="mfa-code" inputMode="numeric" autoComplete="one-time-code" value={mfaCode} onChange={(e) => setMfaCode(e.target.value)} required className="h-11 bg-surface-1 px-4" placeholder="123456" />
+              </div>
+            )}
+
+            {!mfaRequired && <div className="space-y-1.5">
               <label htmlFor="password" className="text-sm font-medium text-foreground">Password</label>
               <div className="relative">
                 <Input
@@ -104,7 +121,7 @@ export default function Login() {
                   {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
                 </button>
               </div>
-            </div>
+            </div>}
 
             <Button
               type="submit"

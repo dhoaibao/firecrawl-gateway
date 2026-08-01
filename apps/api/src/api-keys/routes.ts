@@ -48,6 +48,10 @@ export function createApiKeysRouter() {
         return;
       }
 
+      if (user.email_verified_at === null) {
+        res.status(403).json({ success: false, error: "Email verification is required" });
+        return;
+      }
       // Users can only create keys for themselves
       const created = await apiKeyService.createApiKey(user.id, name);
       res.status(201).json({ data: created });

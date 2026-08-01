@@ -6,7 +6,6 @@ import { decryptSettingValue, encryptSettingValue } from "./crypto";
 
 const VALID_SETTINGS = [
   "firecrawl_api_keys",
-  "user_inactivity_suspend_days",
   "api_key_inactivity_revoke_days",
   "default_route_mode",
   "self_hosted_firecrawl_url",
@@ -14,7 +13,6 @@ const VALID_SETTINGS = [
 
 const SETTING_TYPES: Record<string, "string" | "number" | "boolean" | "json"> = {
   firecrawl_api_keys: "json",
-  user_inactivity_suspend_days: "number",
   api_key_inactivity_revoke_days: "number",
   default_route_mode: "string",
   self_hosted_firecrawl_url: "string",

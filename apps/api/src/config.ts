@@ -25,7 +25,20 @@ const GatewayConfigSchema = z.object({
   databaseUrl: z.string().min(1, "DATABASE_URL is required"),
   operatorDatabaseUrl: z.string().min(1, "OPERATOR_DATABASE_URL is required"),
   sessionSecret: z.string().default(""),
+  publicAppUrl: z.preprocess(
+    (value) => value || undefined,
+    z.string().url().optional(),
+  ).transform((value) => value ? stripTrailingSlash(value) : ""),
+  authEncryptionKey: z.string().default(""),
   firecrawlKeysEncryptionKey: z.string().regex(/^[0-9a-fA-F]{64}$/, "must be a 64-character hex string"),
+  brevoApiKey: z.string().default(""),
+  brevoSenderEmail: z.string().email().default("noreply@example.com"),
+  brevoSenderName: z.string().min(1).default("Firecrawl Gateway"),
+  brevoWebhookToken: z.string().default(""),
+  registrationEnabled: z.preprocess(
+    (val) => val === undefined ? false : ["true", "1", "yes", "on"].includes(String(val).toLowerCase()),
+    z.boolean(),
+  ),
   adminEmail: z.string().default(""),
   adminPassword: z.string().default(""),
   trustProxy: z.preprocess(
@@ -53,14 +66,29 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig
     databaseUrl: env.DATABASE_URL,
     operatorDatabaseUrl: env.OPERATOR_DATABASE_URL,
     sessionSecret: env.SESSION_SECRET,
+    publicAppUrl: env.PUBLIC_APP_URL,
+    authEncryptionKey: env.AUTH_ENCRYPTION_KEY,
     firecrawlKeysEncryptionKey: env.FIRECRAWL_KEYS_ENCRYPTION_KEY,
+    brevoApiKey: env.BREVO_API_KEY,
+    brevoSenderEmail: env.BREVO_SENDER_EMAIL,
+    brevoSenderName: env.BREVO_SENDER_NAME,
+    brevoWebhookToken: env.BREVO_WEBHOOK_TOKEN,
+    registrationEnabled: env.REGISTRATION_ENABLED,
     adminEmail: env.ADMIN_EMAIL,
     adminPassword: env.ADMIN_PASSWORD,
     trustProxy: env.TRUST_PROXY,
   });
 
-  if (!parsed.sessionSecret && env.NODE_ENV === "production") {
-    console.warn("Warning: SESSION_SECRET is empty in production. Sessions may be insecure.");
+  if (env.NODE_ENV === "production" && parsed.authEnabled) {
+    if (parsed.sessionSecret.length < 32) {
+      throw new Error("SESSION_SECRET must be at least 32 characters in production");
+    }
+    if (!/^[0-9a-fA-F]{64}$/.test(parsed.authEncryptionKey)) {
+      throw new Error("AUTH_ENCRYPTION_KEY must be a 64-character hex string in production");
+    }
+    if (!parsed.publicAppUrl) {
+      throw new Error("PUBLIC_APP_URL is required when authentication is enabled in production");
+    }
   }
 
   return parsed;

@@ -7,6 +7,8 @@ import Sidebar from "@/components/Sidebar"
 
 const Dashboard = lazy(() => import("@/pages/Dashboard"))
 const Login = lazy(() => import("@/pages/Login"))
+const VerifyEmail = lazy(() => import("@/pages/VerifyEmail"))
+const ResetPassword = lazy(() => import("@/pages/ResetPassword"))
 const Users = lazy(() => import("@/pages/Users"))
 const ApiKeys = lazy(() => import("@/pages/ApiKeys"))
 const Configure = lazy(() => import("@/pages/Configure"))
@@ -72,6 +74,8 @@ export default function App() {
                 <Login />
               </Suspense>
             } />
+            <Route path="/verify-email" element={<Suspense fallback={<LoadingScreen />}><VerifyEmail /></Suspense>} />
+            <Route path="/reset-password" element={<Suspense fallback={<LoadingScreen />}><ResetPassword /></Suspense>} />
             <Route
               element={
                 <RequireAuth>

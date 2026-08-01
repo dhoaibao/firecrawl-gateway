@@ -5,6 +5,7 @@ import type { AuditStore } from "./audit-store";
 
 vi.mock("./auth/middleware", () => ({
   requireAdmin: (_req: unknown, _res: unknown, next: () => void) => next(),
+  requireOperatorMfa: (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
 
 import { createAdminRouter } from "./admin-api";

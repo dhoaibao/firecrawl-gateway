@@ -39,7 +39,7 @@ export async function startServer() {
     ? createSessionMiddleware(config.sessionSecret)
     : undefined;
   const app = createApp({ config, auditStore, handleProxy, sessionMiddleware });
-  const stopWorker = startWorker();
+  const stopWorker = startWorker(config);
   const server = app.listen(config.port, "0.0.0.0", () => {
     rootLogger.info(
       {

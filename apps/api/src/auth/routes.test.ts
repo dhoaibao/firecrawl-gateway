@@ -2,9 +2,11 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import bcrypt from "bcrypt";
 import express from "express";
 import request from "supertest";
+import type { GatewayConfig } from "../types";
 import { createAuthRouter } from "./routes";
 
 const mockUpdateUser = vi.hoisted(() => vi.fn());
+const mockRequestPasswordReset = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 
 vi.mock("./passport", () => ({
   passport: {
@@ -17,13 +19,18 @@ vi.mock("../users/service", () => ({
   checkUserAccess: () => ({ allowed: true }),
 }));
 
+vi.mock("./service", () => ({
+  GENERIC_AUTH_MESSAGE: "If the account can be processed, you will receive an email shortly.",
+  requestPasswordReset: mockRequestPasswordReset,
+}));
+
 let passwordHash: string;
 
 beforeAll(async () => {
   passwordHash = await bcrypt.hash("current-password", 4);
 });
 
-function createApp(authenticated = true, databaseDates = false) {
+function createApp(authenticated = true, databaseDates = false, config?: GatewayConfig) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -44,7 +51,7 @@ function createApp(authenticated = true, databaseDates = false) {
     }
     next();
   });
-  app.use("/auth", createAuthRouter());
+  app.use("/auth", createAuthRouter(config));
   return app;
 }
 
@@ -58,6 +65,20 @@ describe("GET /auth/me", () => {
       updated_at: "2026-01-01T00:00:00.000Z",
     });
     expect(res.body.data).not.toHaveProperty("password_hash");
+  });
+});
+
+describe("POST /auth/password/forgot", () => {
+  it("uses the configured canonical URL rather than the request Host", async () => {
+    await request(createApp(true, false, { publicAppUrl: "https://gateway.example.test" } as GatewayConfig))
+      .post("/auth/password/forgot")
+      .set("Host", "attacker.example.test")
+      .send({ email: "user@example.com" })
+      .expect(202);
+
+    expect(mockRequestPasswordReset).toHaveBeenCalledWith(expect.objectContaining({
+      baseUrl: "https://gateway.example.test",
+    }));
   });
 });
 

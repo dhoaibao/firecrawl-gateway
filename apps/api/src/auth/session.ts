@@ -2,40 +2,36 @@ import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import crypto from "node:crypto";
 import { getPool } from "../db";
-import { rootLogger } from "../logger";
 
 export function parseCookieSecure(value: string | undefined): boolean | "auto" {
   if (value === undefined || value.trim() === "") return "auto";
   const s = value.toLowerCase().trim();
-  if (s === "false" || s === "0" || s === "no" || s === "off") return false;
-  if (s === "true" || s === "1" || s === "yes" || s === "on") return true;
-  if (s === "auto") return "auto";
+  if (["false", "0", "no", "off"].includes(s)) return false;
+  if (["true", "1", "yes", "on"].includes(s)) return true;
   return "auto";
 }
 
 export function createSessionMiddleware(sessionSecret: string) {
-  const secret = sessionSecret || crypto.randomBytes(32).toString("hex");
-  if (!sessionSecret) {
-    rootLogger.warn("SESSION_SECRET is not set. A random secret was generated. Sessions will not persist across restarts.");
+  if (process.env.NODE_ENV === "production" && sessionSecret.length < 32) {
+    throw new Error("SESSION_SECRET must be at least 32 characters in production");
   }
-
+  const secret = sessionSecret || crypto.randomBytes(32).toString("hex");
+  const secure = parseCookieSecure(process.env.SESSION_SECURE);
+  const production = process.env.NODE_ENV === "production";
   const PgStore = connectPgSimple(session);
 
   return session({
-    store: new PgStore({
-      pool: getPool(),
-      createTableIfMissing: true,
-      tableName: "sessions",
-    }),
+    store: new PgStore({ pool: getPool(), createTableIfMissing: true, tableName: "sessions" }),
     secret,
     resave: false,
     saveUninitialized: false,
-    name: "firecrawl.sid",
+    name: production ? "__Host-firecrawl.sid" : "firecrawl.sid",
     cookie: {
-      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+      maxAge: 30 * 24 * 60 * 60 * 1000,
       httpOnly: true,
-      secure: parseCookieSecure(process.env.SESSION_SECURE),
+      secure: production ? true : secure,
       sameSite: "lax",
+      path: "/",
     },
   });
 }

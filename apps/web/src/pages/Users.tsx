@@ -325,11 +325,12 @@ export default function Users() {
               id="new-user-password"
               className="mt-2"
               type="password"
-              placeholder="At least 8 characters"
+              placeholder="At least 12 characters"
               value={newUser.password}
               onChange={(e) => setNewUser((u) => ({ ...u, password: e.target.value }))}
               required
-              minLength={8}
+              minLength={12}
+              maxLength={128}
               autoComplete="new-password"
             />
           </label>

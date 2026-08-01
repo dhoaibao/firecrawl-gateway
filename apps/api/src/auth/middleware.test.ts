@@ -1,6 +1,15 @@
 import { describe, it, expect, vi } from "vitest";
 import type { Response, NextFunction } from "express";
-import { requireAuth, requireAdmin, type AuthenticatedRequest } from "./middleware";
+
+const mockGetMfaState = vi.hoisted(() => vi.fn());
+const mockSessionHasMfaVerification = vi.hoisted(() => vi.fn());
+vi.mock("./security", () => ({
+  getMfaState: mockGetMfaState,
+  sessionHasMfaVerification: mockSessionHasMfaVerification,
+  validateAndTouchSession: vi.fn(),
+}));
+
+import { requireAuth, requireAdmin, requireOperatorMfa, type AuthenticatedRequest } from "./middleware";
 
 function createReq(overrides: Partial<AuthenticatedRequest> = {}): AuthenticatedRequest {
   return {
@@ -102,6 +111,38 @@ describe("requireAuth", () => {
     requireAuth(req, res, next);
     expect(res.status).toHaveBeenCalledWith(403);
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.stringContaining("suspended") }));
+  });
+});
+
+describe("requireOperatorMfa", () => {
+  it("rejects an admin session that has not completed MFA", async () => {
+    mockGetMfaState.mockResolvedValue({ enabled: true, verified: true });
+    mockSessionHasMfaVerification.mockResolvedValue(false);
+    const req = createReq({
+      sessionID: "session-1",
+      user: { ...createReq().user!, id: "admin-1", is_admin: true, auth_version: 1 },
+    });
+    const res = createRes();
+    const next = createNext();
+
+    requireOperatorMfa(req, res, next);
+    await vi.waitFor(() => expect(res.status).toHaveBeenCalledWith(403));
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("accepts an admin session that completed MFA", async () => {
+    mockGetMfaState.mockResolvedValue({ enabled: true, verified: true });
+    mockSessionHasMfaVerification.mockResolvedValue(true);
+    const req = createReq({
+      sessionID: "session-1",
+      user: { ...createReq().user!, id: "admin-1", is_admin: true, auth_version: 1 },
+    });
+    const res = createRes();
+    const next = createNext();
+
+    requireOperatorMfa(req, res, next);
+    await vi.waitFor(() => expect(next).toHaveBeenCalled());
+    expect(res.status).not.toHaveBeenCalled();
   });
 });
 

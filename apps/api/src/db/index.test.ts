@@ -54,7 +54,7 @@ describe("database transaction primitives", () => {
     expect(state.query).toHaveBeenCalledWith("SELECT 1");
     expect(state.query).toHaveBeenCalledWith(
       "SELECT EXISTS (SELECT 1 FROM pgmigrations WHERE name = $1) AS exists",
-      ["004_operator_role_rls"],
+      ["005_auth_security"],
     );
     expect(state.query.mock.calls.some(([sql]) => String(sql).includes("CREATE TABLE"))).toBe(false);
   });

@@ -59,6 +59,18 @@ describe("config parsing", () => {
     expect(config.trustProxy).toBe(expected);
   });
 
+  it("requires a canonical public URL for production authentication", async () => {
+    await expect(loadConfigWithEnv({
+      NODE_ENV: "production",
+      AUTH_ENABLED: "true",
+      SESSION_SECRET: "a".repeat(32),
+      AUTH_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      PUBLIC_APP_URL: undefined,
+      DATABASE_URL: "postgresql://localhost/test",
+      OPERATOR_DATABASE_URL: "postgresql://localhost/operator-test",
+    })).rejects.toThrow("PUBLIC_APP_URL is required");
+  });
+
   it("uses defaults when env vars are absent", async () => {
     const config = await loadConfigWithEnv({
       DATABASE_URL: "postgresql://localhost/test",

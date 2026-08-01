@@ -1,12 +1,14 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
 import { authenticatedUserResponseSchema, type AuthenticatedUser } from "@firecrawl/contracts";
+import { csrfFetch } from "@/lib/api";
 
 type AuthUser = AuthenticatedUser;
 
 interface AuthContextType {
   user: AuthUser | null;
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<boolean>;
+  completeMfa: (code: string, recovery?: boolean) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -38,7 +40,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [fetchUser]);
 
   const login = useCallback(async (email: string, password: string) => {
-    const res = await fetch("/admin/api/auth/login", {
+    const res = await csrfFetch("/admin/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
@@ -50,12 +52,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       throw new Error(json.error || "Login failed");
     }
 
+    const json = await res.json() as { success?: boolean; mfa_required?: boolean; data?: unknown };
+    if (json.mfa_required) return false;
+    setUser(authenticatedUserResponseSchema.parse(json).data);
+    return true;
+  }, []);
+
+  const completeMfa = useCallback(async (code: string, recovery = false) => {
+    const res = await csrfFetch("/admin/api/auth/login/mfa", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(recovery ? { recovery_code: code } : { code }),
+    });
+    if (!res.ok) throw new Error("Invalid authentication code");
     const json: unknown = await res.json();
     setUser(authenticatedUserResponseSchema.parse(json).data);
   }, []);
 
   const logout = useCallback(async () => {
-    await fetch("/admin/api/auth/logout", {
+    await csrfFetch("/admin/api/auth/logout", {
       method: "POST",
       credentials: "include",
     });
@@ -63,7 +78,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, completeMfa, logout }}>
       {children}
     </AuthContext.Provider>
   );

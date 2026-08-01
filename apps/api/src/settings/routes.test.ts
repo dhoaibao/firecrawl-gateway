@@ -45,14 +45,12 @@ describe("GET /settings", () => {
 
   it("lists parsed settings", async () => {
     mockListSettings.mockResolvedValue([
-      { key: "user_inactivity_suspend_days", value: "30", updated_at: new Date().toISOString() },
       { key: "firecrawl_api_keys", value: '["fc_key1"]', updated_at: new Date().toISOString() },
       { key: "default_route_mode", value: "cloud-first", updated_at: new Date().toISOString() },
     ]);
     const app = createApp();
     const res = await request(app).get("/settings").expect(200);
     expect(res.body.data).toEqual({
-      user_inactivity_suspend_days: 30,
       firecrawl_api_keys: ["fc_key1"],
       default_route_mode: "cloud-first",
     });
