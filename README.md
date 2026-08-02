@@ -9,10 +9,12 @@ The gateway can route requests between an externally hosted Firecrawl instance a
 ```bash
 cp .env.example .env
 # Set DATABASE_URL, OPERATOR_DATABASE_URL, MIGRATION_DATABASE_URL, and the remaining required credentials.
-# Apply migrations before starting the API:
+# MIGRATION_DATABASE_URL is used only for one-off schema/security deployment steps.
 docker compose build
 docker compose run --rm --no-deps \
-  -e MIGRATION_DATABASE_URL gateway node apps/api/scripts/migrate.cjs up
+  -e DATABASE_URL="$MIGRATION_DATABASE_URL" gateway npm run db:deploy --workspace @firecrawl/api
+docker compose run --rm --no-deps \
+  -e DATABASE_URL="$MIGRATION_DATABASE_URL" gateway npm run db:security --workspace @firecrawl/api
 docker compose up -d
 ```
 

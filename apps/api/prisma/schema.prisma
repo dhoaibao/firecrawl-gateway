@@ -1,0 +1,462 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              String    @id @db.Text
+  email           String    @unique @db.VarChar(255)
+  normalizedEmail String    @unique @map("normalized_email") @db.Text
+  name            String    @db.VarChar(255)
+  passwordHash    String    @map("password_hash") @db.VarChar(255)
+  isAdmin         Boolean   @default(false) @map("is_admin")
+  platformRole    String    @default("user") @map("platform_role") @db.Text
+  status          String    @default("active") @db.Text
+  suspendedUntil  DateTime? @map("suspended_until") @db.Timestamptz(6)
+  emailVerifiedAt DateTime? @map("email_verified_at") @db.Timestamptz(6)
+  authVersion     Int       @default(1) @map("auth_version")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  apiKeys        ApiKey[]
+  auditLogs      AuditLog[]
+  memberships    AccountMembership[]
+  authTokens     AuthToken[]
+  mfaFactor      MfaFactor?
+  recoveryCodes  MfaRecoveryCode[]
+  authSessions   AuthSession[]
+  securityEvents SecurityEvent[]
+  emailOutbox    EmailOutbox[]
+
+  @@index([createdAt], map: "idx_users_created_at")
+  @@index([platformRole], map: "idx_users_platform_role")
+  @@map("users")
+}
+
+model Account {
+  id                String   @id @db.Text
+  publicId          String   @unique @default(dbgenerated("md5(random()::text || clock_timestamp()::text)")) @map("public_id") @db.Text
+  displayName       String   @map("display_name") @db.VarChar(255)
+  status            String   @default("active") @db.Text
+  fundingPreference String   @default("auto") @map("funding_preference") @db.Text
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  memberships  AccountMembership[]
+  apiKeys      ApiKey[]
+  auditLogs    AuditLog[]
+  credentials  ProviderCredential[]
+  gatewayJobs  GatewayJob[]
+  enrollment   FreeTierEnrollment?
+  entitlements AccountEntitlement[]
+  reservations UsageReservation[]
+  usageEvents  UsageEvent[]
+  quotaEvents  QuotaEvent[]
+
+  @@map("accounts")
+}
+
+model AccountMembership {
+  accountId String   @map("account_id") @db.Text
+  userId    String   @map("user_id") @db.Text
+  role      String   @default("member") @db.Text
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([accountId, userId])
+  @@index([userId], map: "idx_account_memberships_user_id")
+  @@index([accountId], map: "idx_account_memberships_account_id")
+  @@map("account_memberships")
+}
+
+model ApiKey {
+  id                       String    @id @db.Text
+  userId                   String    @map("user_id") @db.Text
+  accountId                String    @map("account_id") @db.Text
+  name                     String    @db.VarChar(255)
+  keyHash                  String    @map("key_hash") @db.VarChar(255)
+  keyValue                 String?   @map("key_value") @db.VarChar(255)
+  keyPrefix                String    @map("key_prefix") @db.VarChar(255)
+  scopes                   String[]  @default(["*"])
+  expiresAt                DateTime? @map("expires_at") @db.Timestamptz(6)
+  inactivityTimeoutSeconds Int?      @map("inactivity_timeout_seconds")
+  revoked                  Boolean   @default(false)
+  createdAt                DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  lastUsedAt               DateTime? @map("last_used_at") @db.Timestamptz(6)
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([userId], map: "idx_api_keys_user_id")
+  @@index([keyHash], map: "idx_api_keys_key_hash")
+  @@index([keyPrefix], map: "idx_api_keys_key_prefix")
+  @@index([lastUsedAt], map: "idx_api_keys_last_used_at")
+  @@index([accountId], map: "idx_api_keys_account_id")
+  @@map("api_keys")
+}
+
+model AuditLog {
+  id             String   @id @db.Text
+  createdAt      DateTime @map("created_at") @db.Timestamptz(6)
+  method         String   @db.Text
+  path           String   @db.Text
+  routeMode      String   @map("route_mode") @db.Text
+  backendUsed    String   @map("backend_used") @db.Text
+  fallbackUsed   Boolean  @default(false) @map("fallback_used")
+  fallbackReason String   @default("") @map("fallback_reason") @db.Text
+  statusCode     Int      @map("status_code")
+  durationMs     Int      @map("duration_ms")
+  targetUrl      String   @default("") @map("target_url") @db.Text
+  userId         String?  @map("user_id") @db.Text
+  accountId      String?  @map("account_id") @db.Text
+  requestId      String?  @map("request_id") @db.Text
+
+  user    User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  account Account? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt(sort: Desc)], map: "idx_audit_logs_created_at")
+  @@index([userId], map: "idx_audit_logs_user_id")
+  @@index([accountId], map: "idx_audit_logs_account_id")
+  @@map("audit_logs")
+}
+
+model Setting {
+  key       String   @id @db.Text
+  value     String   @db.Text
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("settings")
+}
+
+model Session {
+  sid    String   @id @db.VarChar(255)
+  sess   Json     @db.Json
+  expire DateTime @db.Timestamp(6)
+
+  @@index([expire], map: "IDX_session_expire")
+  @@map("sessions")
+}
+
+model AuthToken {
+  id         String    @id @db.Text
+  userId     String    @map("user_id") @db.Text
+  purpose    String    @db.Text
+  tokenHash  String    @unique @map("token_hash") @db.Text
+  metadata   Json      @default("{}") @db.JsonB
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(6)
+  consumedAt DateTime? @map("consumed_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([purpose, tokenHash, expiresAt], map: "auth_tokens_lookup_idx")
+  @@map("auth_tokens")
+}
+
+model MfaFactor {
+  id                     String    @id @db.Text
+  userId                 String    @unique @map("user_id") @db.Text
+  secretEncrypted        String    @map("secret_encrypted") @db.Text
+  keyVersion             Int       @default(1) @map("key_version")
+  pendingSecretEncrypted String?   @map("pending_secret_encrypted") @db.Text
+  verifiedAt             DateTime? @map("verified_at") @db.Timestamptz(6)
+  enabledAt              DateTime? @map("enabled_at") @db.Timestamptz(6)
+  lastUsedStep           BigInt?   @map("last_used_step")
+  createdAt              DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("mfa_factors")
+}
+
+model MfaRecoveryCode {
+  id         String    @id @db.Text
+  userId     String    @map("user_id") @db.Text
+  codeHash   String    @unique @map("code_hash") @db.Text
+  consumedAt DateTime? @map("consumed_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, consumedAt], map: "mfa_recovery_codes_user_idx")
+  @@map("mfa_recovery_codes")
+}
+
+model AuthSession {
+  id                String    @id @db.Text
+  sessionIdHash     String    @unique @map("session_id_hash") @db.Text
+  userId            String    @map("user_id") @db.Text
+  authVersion       Int       @map("auth_version")
+  mfaVerifiedAt     DateTime? @map("mfa_verified_at") @db.Timestamptz(6)
+  ipLabel           String?   @map("ip_label") @db.Text
+  userAgentLabel    String?   @map("user_agent_label") @db.Text
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  lastSeenAt        DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+  revokedAt         DateTime? @map("revoked_at") @db.Timestamptz(6)
+  idleExpiresAt     DateTime  @map("idle_expires_at") @db.Timestamptz(6)
+  absoluteExpiresAt DateTime  @map("absolute_expires_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt, lastSeenAt(sort: Desc)], map: "auth_sessions_user_idx")
+  @@map("auth_sessions")
+}
+
+model SecurityEvent {
+  id             String   @id @db.Text
+  userId         String?  @map("user_id") @db.Text
+  eventType      String   @map("event_type") @db.Text
+  ipLabel        String?  @map("ip_label") @db.Text
+  userAgentLabel String?  @map("user_agent_label") @db.Text
+  metadata       Json     @default("{}") @db.JsonB
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt(sort: Desc)], map: "security_events_user_idx")
+  @@map("security_events")
+}
+
+model EmailOutbox {
+  id               String    @id @db.Text
+  idempotencyKey   String    @unique @map("idempotency_key") @db.Text
+  userId           String?   @map("user_id") @db.Text
+  kind             String    @db.Text
+  recipient        String    @db.Text
+  payloadEncrypted String    @map("payload_encrypted") @db.Text
+  status           String    @default("pending") @db.Text
+  attempts         Int       @default(0)
+  availableAt      DateTime  @default(now()) @map("available_at") @db.Timestamptz(6)
+  lockedAt         DateTime? @map("locked_at") @db.Timestamptz(6)
+  brevoMessageId   String?   @map("brevo_message_id") @db.Text
+  lastError        String?   @map("last_error") @db.Text
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  sentAt           DateTime? @map("sent_at") @db.Timestamptz(6)
+
+  user           User?                @relation(fields: [userId], references: [id], onDelete: SetNull)
+  deliveryEvents EmailDeliveryEvent[]
+
+  @@index([status, availableAt], map: "email_outbox_claim_idx")
+  @@map("email_outbox")
+}
+
+model EmailDeliveryEvent {
+  id              String   @id @db.Text
+  providerEventId String   @unique @map("provider_event_id") @db.Text
+  outboxId        String?  @map("outbox_id") @db.Text
+  eventType       String   @map("event_type") @db.Text
+  payload         Json     @default("{}") @db.JsonB
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  outbox EmailOutbox? @relation(fields: [outboxId], references: [id], onDelete: SetNull)
+
+  @@map("email_delivery_events")
+}
+
+model ProviderCredential {
+  id               String    @id @db.Text
+  ownerType        String    @map("owner_type") @db.Text
+  accountId        String?   @map("account_id") @db.Text
+  purpose          String    @db.Text
+  encryptedValue   String    @map("encrypted_value") @db.Text
+  keyVersion       Int       @map("key_version")
+  maskedPrefix     String    @map("masked_prefix") @db.Text
+  maskedSuffix     String    @map("masked_suffix") @db.Text
+  status           String    @default("pending") @db.Text
+  providerMetadata Json      @default("{}") @map("provider_metadata") @db.JsonB
+  lastValidatedAt  DateTime? @map("last_validated_at") @db.Timestamptz(6)
+  lastUsedAt       DateTime? @map("last_used_at") @db.Timestamptz(6)
+  supersededAt     DateTime? @map("superseded_at") @db.Timestamptz(6)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  account     Account?               @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  sources     InfrastructureSource[]
+  gatewayJobs GatewayJob[]
+
+  @@map("provider_credentials")
+}
+
+model InfrastructureSource {
+  id                     String    @id @db.Text
+  name                   String    @db.Text
+  kind                   String    @db.Text
+  status                 String    @default("active") @db.Text
+  priority               Int       @default(100)
+  baseUrl                String    @default("") @map("base_url") @db.Text
+  credentialId           String?   @map("credential_id") @db.Text
+  capabilities           Json      @default("[]") @db.JsonB
+  monthlyBudgetCents     BigInt?   @map("monthly_budget_cents")
+  hardConcurrency        Int       @default(1) @map("hard_concurrency")
+  requestTimeoutMs       Int       @default(120000) @map("request_timeout_ms")
+  responseBufferMaxBytes Int       @default(5242880) @map("response_buffer_max_bytes")
+  healthStatus           String    @default("unknown") @map("health_status") @db.Text
+  lastHealthCheckAt      DateTime? @map("last_health_check_at") @db.Timestamptz(6)
+  createdAt              DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  credential ProviderCredential? @relation(fields: [credentialId], references: [id], onDelete: SetNull)
+
+  @@index([status, priority, createdAt], map: "infrastructure_sources_routing_idx")
+  @@map("infrastructure_sources")
+}
+
+model GatewayJob {
+  id              String    @id @db.Text
+  accountId       String    @map("account_id") @db.Text
+  publicJobId     String    @map("public_job_id") @db.Text
+  upstreamJobId   String    @map("upstream_job_id") @db.Text
+  routeFamily     String    @map("route_family") @db.Text
+  sourceId        String?   @map("source_id") @db.Text
+  credentialId    String?   @map("credential_id") @db.Text
+  fundingType     String    @map("funding_type") @db.Text
+  creationRequest Json      @default("{}") @map("creation_request") @db.JsonB
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  completedAt     DateTime? @map("completed_at") @db.Timestamptz(6)
+
+  account    Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  credential ProviderCredential? @relation(fields: [credentialId], references: [id], onDelete: Restrict)
+
+  @@unique([accountId, publicJobId])
+  @@index([accountId, publicJobId], map: "gateway_jobs_account_lookup_idx")
+  @@map("gateway_jobs")
+}
+
+model FreeTierPolicy {
+  id                     String   @id @default("default") @db.Text
+  defaultGrant           Int      @default(100) @map("default_grant")
+  commitmentCeiling      Int      @default(1000) @map("commitment_ceiling")
+  hardMonthlyCap         BigInt   @default(10000) @map("hard_monthly_cap")
+  committedAmount        Int      @default(0) @map("committed_amount")
+  admissionsEnabled      Boolean  @default(false) @map("admissions_enabled")
+  includedTrafficEnabled Boolean  @default(true) @map("included_traffic_enabled")
+  warningThresholds      Json     @default("{}") @map("warning_thresholds") @db.JsonB
+  nextPeriodChanges      Json     @default("[]") @map("next_period_changes") @db.JsonB
+  policyChangeLog        Json     @default("[]") @map("policy_change_log") @db.JsonB
+  version                Int      @default(1)
+  updatedBy              String?  @map("updated_by") @db.Text
+  createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("free_tier_policy")
+}
+
+model FreeTierEnrollment {
+  accountId      String    @id @map("account_id") @db.Text
+  status         String    @default("waitlisted") @db.Text
+  grantAmount    Int       @default(100) @map("grant_amount")
+  admittedAt     DateTime? @map("admitted_at") @db.Timestamptz(6)
+  waitlistedAt   DateTime? @map("waitlisted_at") @db.Timestamptz(6)
+  revokedAt      DateTime? @map("revoked_at") @db.Timestamptz(6)
+  operatorReason String?   @map("operator_reason") @db.Text
+  operatorActor  String?   @map("operator_actor") @db.Text
+  skippedAt      DateTime? @map("skipped_at") @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@map("free_tier_enrollments")
+}
+
+model QuotaPeriod {
+  id          String   @id @db.Text
+  periodStart DateTime @unique @map("period_start") @db.Timestamptz(6)
+  periodEnd   DateTime @map("period_end") @db.Timestamptz(6)
+  hardCap     BigInt   @default(0) @map("hard_cap")
+  reserved    BigInt   @default(0)
+  consumed    BigInt   @default(0)
+  status      String   @default("open") @db.Text
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  entitlements AccountEntitlement[]
+  reservations UsageReservation[]
+  usageEvents  UsageEvent[]
+  quotaEvents  QuotaEvent[]
+
+  @@map("quota_periods")
+}
+
+model AccountEntitlement {
+  id                 String   @id @db.Text
+  accountId          String   @map("account_id") @db.Text
+  periodId           String   @map("period_id") @db.Text
+  allocated          Int      @default(100)
+  reserved           Int      @default(0)
+  consumed           Int      @default(0)
+  status             String   @default("active") @db.Text
+  enrollmentSnapshot Json     @default("{}") @map("enrollment_snapshot") @db.JsonB
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  account      Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  period       QuotaPeriod        @relation(fields: [periodId], references: [id], onDelete: Cascade)
+  reservations UsageReservation[]
+
+  @@unique([accountId, periodId])
+  @@index([periodId, status], map: "idx_account_entitlements_period")
+  @@map("account_entitlements")
+}
+
+model UsageReservation {
+  id            String   @id @db.Text
+  accountId     String   @map("account_id") @db.Text
+  periodId      String   @map("period_id") @db.Text
+  entitlementId String   @map("entitlement_id") @db.Text
+  status        String   @default("reserved") @db.Text
+  expiresAt     DateTime @map("expires_at") @db.Timestamptz(6)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  account     Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  period      QuotaPeriod        @relation(fields: [periodId], references: [id])
+  entitlement AccountEntitlement @relation(fields: [entitlementId], references: [id])
+
+  @@map("usage_reservations")
+}
+
+model UsageEvent {
+  id        String   @id @db.Text
+  requestId String   @unique @map("request_id") @db.Text
+  accountId String   @map("account_id") @db.Text
+  periodId  String?  @map("period_id") @db.Text
+  kind      String   @db.Text
+  amount    Int
+  actor     String?  @db.Text
+  reason    String?  @db.Text
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  account Account      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  period  QuotaPeriod? @relation(fields: [periodId], references: [id])
+
+  @@index([accountId, periodId, createdAt], map: "idx_usage_events_period")
+  @@map("usage_events")
+}
+
+model QuotaEvent {
+  id        String   @id @db.Text
+  dedupKey  String   @unique @map("dedup_key") @db.Text
+  eventType String   @map("event_type") @db.Text
+  severity  String   @db.Text
+  accountId String?  @map("account_id") @db.Text
+  periodId  String?  @map("period_id") @db.Text
+  payload   Json     @default("{}") @db.JsonB
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  account Account?     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  period  QuotaPeriod? @relation(fields: [periodId], references: [id])
+
+  @@index([accountId, createdAt], map: "idx_quota_events_account")
+  @@map("quota_events")
+}

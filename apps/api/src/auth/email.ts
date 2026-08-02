@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
-import { withOperatorTransaction } from "../db";
+import { Prisma } from "@prisma/client";
+import { withOperatorTransaction } from "../infrastructure/database";
 import { encryptAuthValue, decryptAuthValue } from "./crypto";
 import { rootLogger } from "../logger";
 import type { GatewayConfig } from "../types";
@@ -10,8 +11,16 @@ export interface EmailPayload {
   html: string;
 }
 
+interface EmailOutboxRow {
+  id: string;
+  payload_encrypted: string;
+  recipient: string;
+  idempotency_key: string;
+  attempts: number;
+}
+
 export async function queueEmail(input: {
-  client: import("pg").PoolClient;
+  client: Prisma.TransactionClient;
   userId?: string;
   recipient: string;
   kind: string;
@@ -19,30 +28,35 @@ export async function queueEmail(input: {
   payload: EmailPayload;
   encryptionKey: string;
 }): Promise<void> {
-  await input.client.query(
-    `INSERT INTO email_outbox (id, idempotency_key, user_id, kind, recipient, payload_encrypted)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     ON CONFLICT (idempotency_key) DO NOTHING`,
-    [crypto.randomUUID(), input.idempotencyKey, input.userId ?? null, input.kind, input.recipient, encryptAuthValue(JSON.stringify(input.payload), input.encryptionKey)],
-  );
+  await input.client.emailOutbox.createMany({
+    data: {
+      id: crypto.randomUUID(),
+      idempotencyKey: input.idempotencyKey,
+      userId: input.userId ?? null,
+      kind: input.kind,
+      recipient: input.recipient,
+      payloadEncrypted: encryptAuthValue(JSON.stringify(input.payload), input.encryptionKey),
+    },
+    skipDuplicates: true,
+  });
 }
 
 export async function claimEmail(config: GatewayConfig): Promise<boolean> {
   if (!config.brevoApiKey) return false;
-  const row = await withOperatorTransaction(async (client) => {
-    const result = await client.query(
-      `WITH candidate AS (
-         SELECT id FROM email_outbox
-         WHERE status IN ('pending', 'processing') AND available_at <= NOW()
-           AND (status = 'pending' OR locked_at < NOW() - INTERVAL '10 minutes')
-         ORDER BY created_at
-         FOR UPDATE SKIP LOCKED LIMIT 1
-       )
-       UPDATE email_outbox o SET status = 'processing', locked_at = NOW(), attempts = attempts + 1
-       FROM candidate WHERE o.id = candidate.id
-       RETURNING o.*`,
-    );
-    return result.rows[0];
+  const row = await withOperatorTransaction(async (tx) => {
+    const result = await tx.$queryRaw<EmailOutboxRow[]>(Prisma.sql`
+      WITH candidate AS (
+        SELECT id FROM email_outbox
+        WHERE status IN ('pending', 'processing') AND available_at <= NOW()
+          AND (status = 'pending' OR locked_at < NOW() - INTERVAL '10 minutes')
+        ORDER BY created_at
+        FOR UPDATE SKIP LOCKED LIMIT 1
+      )
+      UPDATE email_outbox o SET status = 'processing', locked_at = NOW(), attempts = attempts + 1
+      FROM candidate WHERE o.id = candidate.id
+      RETURNING o.*
+    `);
+    return result[0];
   });
   if (!row) return false;
 
@@ -74,10 +88,10 @@ export async function claimEmail(config: GatewayConfig): Promise<boolean> {
       return true;
     }
     const body = await response.json() as { messageId?: string };
-    await withOperatorTransaction((client) => client.query(
-      `UPDATE email_outbox SET status = 'sent', sent_at = NOW(), brevo_message_id = $2, locked_at = NULL WHERE id = $1`,
-      [row.id, body.messageId ?? null],
-    ).then(() => undefined));
+    await withOperatorTransaction((tx) => tx.emailOutbox.update({
+      where: { id: row.id },
+      data: { status: "sent", sentAt: new Date(), brevoMessageId: body.messageId ?? null, lockedAt: null },
+    }).then(() => undefined));
   } catch (error) {
     await retryEmail(row.id, Math.min(60 * 60 * 1000, 2 ** Math.min(row.attempts, 10) * 1000 + Math.random() * 1000), String(error));
   }
@@ -85,18 +99,27 @@ export async function claimEmail(config: GatewayConfig): Promise<boolean> {
 }
 
 async function retryEmail(id: string, delay: number, error: string): Promise<void> {
-  await withOperatorTransaction((client) => client.query(
-    `UPDATE email_outbox SET status = CASE WHEN attempts >= 8 THEN 'dead' ELSE 'pending' END,
-       available_at = NOW() + ($2 || ' milliseconds')::interval, locked_at = NULL, last_error = $3 WHERE id = $1`,
-    [id, String(Math.max(1000, Math.round(delay))), error.slice(0, 500)],
-  ).then(() => undefined));
+  await withOperatorTransaction((tx) => tx.emailOutbox.update({
+    where: { id },
+    data: {
+      status: { set: "pending" },
+      availableAt: new Date(Date.now() + Math.max(1000, Math.round(delay))),
+      lockedAt: null,
+      lastError: error.slice(0, 500),
+    },
+  }).then(async () => {
+    const row = await tx.emailOutbox.findUnique({ where: { id }, select: { attempts: true } });
+    if (row && row.attempts >= 8) {
+      await tx.emailOutbox.update({ where: { id }, data: { status: "dead" } });
+    }
+  }));
 }
 
 async function markEmailDead(id: string, error: string): Promise<void> {
-  await withOperatorTransaction((client) => client.query(
-    "UPDATE email_outbox SET status = 'dead', locked_at = NULL, last_error = $2 WHERE id = $1",
-    [id, error.slice(0, 500)],
-  ).then(() => undefined));
+  await withOperatorTransaction((tx) => tx.emailOutbox.update({
+    where: { id },
+    data: { status: "dead", lockedAt: null, lastError: error.slice(0, 500) },
+  }).then(() => undefined));
 }
 
 export function createBrevoWebhookRouter(config: GatewayConfig) {
@@ -113,18 +136,22 @@ export function createBrevoWebhookRouter(config: GatewayConfig) {
         res.status(400).json({ success: false, error: "Event identifier is required" });
         return;
       }
-      await withOperatorTransaction(async (client) => {
+      await withOperatorTransaction(async (tx) => {
         const eventType = String(req.body.event || "unknown");
-        const inserted = await client.query(
-          `INSERT INTO email_delivery_events (id, provider_event_id, event_type, payload)
-           VALUES ($1, $2, $3, $4::jsonb) ON CONFLICT (provider_event_id) DO NOTHING RETURNING id`,
-          [crypto.randomUUID(), eventId, eventType, JSON.stringify(req.body)],
-        );
-        if (inserted.rowCount === 1 && ["hard_bounce", "soft_bounce", "blocked", "spam"].includes(eventType)) {
-          await client.query(
-            "UPDATE email_outbox SET status = 'dead', last_error = $2 WHERE brevo_message_id = $1 AND status = 'sent'",
-            [eventId, `Brevo delivery event: ${eventType}`],
-          );
+        const inserted = await tx.emailDeliveryEvent.createMany({
+          data: {
+            id: crypto.randomUUID(),
+            providerEventId: eventId,
+            eventType,
+            payload: req.body as Prisma.InputJsonValue,
+          },
+          skipDuplicates: true,
+        });
+        if (inserted.count === 1 && ["hard_bounce", "soft_bounce", "blocked", "spam"].includes(eventType)) {
+          await tx.emailOutbox.updateMany({
+            where: { brevoMessageId: eventId, status: "sent" },
+            data: { status: "dead", lastError: `Brevo delivery event: ${eventType}` },
+          });
         }
       });
       res.status(202).json({ success: true });

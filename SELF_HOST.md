@@ -36,7 +36,9 @@ Using a source build:
 ```bash
 docker compose build
 docker compose run --rm --no-deps \
-  -e MIGRATION_DATABASE_URL gateway node apps/api/scripts/migrate.cjs up
+  -e DATABASE_URL="$MIGRATION_DATABASE_URL" gateway npm run db:deploy --workspace @firecrawl/api
+docker compose run --rm --no-deps \
+  -e DATABASE_URL="$MIGRATION_DATABASE_URL" gateway npm run db:security --workspace @firecrawl/api
 docker compose up -d
 ```
 
@@ -44,7 +46,9 @@ Using the published gateway image:
 
 ```bash
 docker compose -f docker-compose.prebuilt.yaml run --rm --no-deps \
-  -e MIGRATION_DATABASE_URL gateway node apps/api/scripts/migrate.cjs up
+  -e DATABASE_URL="$MIGRATION_DATABASE_URL" gateway npm run db:deploy --workspace @firecrawl/api
+docker compose -f docker-compose.prebuilt.yaml run --rm --no-deps \
+  -e DATABASE_URL="$MIGRATION_DATABASE_URL" gateway npm run db:security --workspace @firecrawl/api
 docker compose -f docker-compose.prebuilt.yaml up -d
 ```
 
@@ -57,7 +61,7 @@ The gateway is available at `http://localhost:8080` by default. The admin UI is 
 - `cloud-first`: use Cloud first and fall back to the external self-hosted Firecrawl instance when eligible.
 - `cloud-only`: use Cloud exclusively; never fall back to the external self-hosted Firecrawl instance.
 
-The gateway starts cloud-first. Apply database migrations explicitly before startup; the API only checks migration readiness and never applies DDL. Change the live setting in **Configure > Routing**, or override an individual request with:
+The gateway starts cloud-first. Apply the checked-in Prisma migration and PostgreSQL security policies explicitly before startup; the API never applies DDL. Existing databases must follow the reviewed baseline procedure in `docs/operations/database-bootstrap.md`. Change the live setting in **Configure > Routing**, or override an individual request with:
 
 ```text
 X-Firecrawl-Route-Mode: self-hosted-first | self-hosted-only | cloud-first | cloud-only
@@ -75,4 +79,4 @@ docker compose logs gateway
 curl http://localhost:8080/ready
 ```
 
-A readiness failure indicates the gateway cannot connect to PostgreSQL or the expected migration version has not been applied. Upstream Firecrawl connectivity is visible in gateway request audit logs and response headers.
+A readiness failure indicates the gateway cannot connect to PostgreSQL, the Prisma schema is missing, or the required runtime/operator roles are not configured. Upstream Firecrawl connectivity is visible in gateway request audit logs and response headers.

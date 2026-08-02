@@ -1,4 +1,4 @@
-import type { PoolClient } from "pg";
+import type { DatabaseClient } from "../db";
 import * as repo from "./repository";
 import type { FreeTierPolicyRecord, QuotaPeriodRecord } from "./types";
 
@@ -34,7 +34,7 @@ export function thresholdsFrom(policy: Pick<FreeTierPolicyRecord, "warning_thres
 
 /** Emit commitment-capacity, slots-remaining, and waitlist-growth events. */
 export async function detectCommitmentAndWaitlist(
-  client: PoolClient,
+  client: DatabaseClient,
   policy: FreeTierPolicyRecord,
 ): Promise<number> {
   const thresholds = thresholdsFrom(policy);
@@ -91,7 +91,7 @@ export async function detectCommitmentAndWaitlist(
 }
 
 /** Emit consumption-threshold, hard-cap, and projected-exhaustion events. */
-export async function detectConsumption(client: PoolClient, period: QuotaPeriodRecord): Promise<number> {
+export async function detectConsumption(client: DatabaseClient, period: QuotaPeriodRecord): Promise<number> {
   const policy = await repo.getPolicy(client);
   if (!policy) return 0;
   const thresholds = thresholdsFrom(policy);
@@ -161,7 +161,7 @@ export function projectExhaustion(period: QuotaPeriodRecord, leadDays = 3): Date
 }
 
 async function emit(
-  client: PoolClient,
+  client: DatabaseClient,
   dedupKey: string,
   eventType: string,
   severity: "info" | "warn" | "critical",
@@ -175,7 +175,7 @@ async function emit(
 
 /** Source budget/concurrency/health pressure, deduplicated per source per hour. */
 export async function emitSourcePressure(
-  client: PoolClient,
+  client: DatabaseClient,
   sourceId: string,
   detail: string,
 ): Promise<boolean> {

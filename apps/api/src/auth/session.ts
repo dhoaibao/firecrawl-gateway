@@ -1,7 +1,7 @@
 import session from "express-session";
-import connectPgSimple from "connect-pg-simple";
 import crypto from "node:crypto";
-import { getPool } from "../db";
+import { getPrisma } from "../infrastructure/database";
+import { PrismaSessionStore } from "../infrastructure/database/session-store";
 
 export function parseCookieSecure(value: string | undefined): boolean | "auto" {
   if (value === undefined || value.trim() === "") return "auto";
@@ -18,10 +18,8 @@ export function createSessionMiddleware(sessionSecret: string) {
   const secret = sessionSecret || crypto.randomBytes(32).toString("hex");
   const secure = parseCookieSecure(process.env.SESSION_SECURE);
   const production = process.env.NODE_ENV === "production";
-  const PgStore = connectPgSimple(session);
-
   return session({
-    store: new PgStore({ pool: getPool(), createTableIfMissing: true, tableName: "sessions" }),
+    store: new PrismaSessionStore(getPrisma().runtime),
     secret,
     resave: false,
     saveUninitialized: false,

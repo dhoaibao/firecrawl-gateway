@@ -1,43 +1,79 @@
-import { describe, expect, it, vi } from "vitest";
-import { withClient } from "../db";
-import { validateApiKeyWithUser } from "./service";
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import { clearTouchDebouncer, touchApiKey, validateApiKeyWithUser } from "./service";
 
+const state = vi.hoisted(() => ({
+  findValidWithUser: vi.fn(),
+  withOperatorTransaction: vi.fn(),
+  update: vi.fn(),
+  updateMany: vi.fn(),
+}));
 const mockResumeAccountEntitlementsWithClient = vi.hoisted(() => vi.fn());
 
-vi.mock("../db", () => ({ withClient: vi.fn() }));
-vi.mock("../quota/service", () => ({ resumeAccountEntitlementsWithClient: mockResumeAccountEntitlementsWithClient }));
+vi.mock("../db", () => ({
+  asDatabaseClient: (tx: unknown) => tx,
+}));
+vi.mock("../infrastructure/database", () => ({
+  withOperatorTransaction: state.withOperatorTransaction,
+}));
+vi.mock("./repository", () => ({
+  findValidWithUser: state.findValidWithUser,
+  toGatewayToken: (key: { accountId?: string; account_id?: string }) => ({
+    ...key,
+    account_id: key.account_id ?? key.accountId,
+  }),
+  toUser: (user: unknown) => user,
+}));
+vi.mock("../quota/service", () => ({
+  resumeAccountEntitlementsWithClient: mockResumeAccountEntitlementsWithClient,
+}));
+
+const key = {
+  id: "key-1",
+  user_id: "user-1",
+  account_id: "account-1",
+  accountId: "account-1",
+  name: "Production",
+  key_hash: "hash",
+  key_value: null,
+  key_prefix: "fc_test",
+  scopes: ["*"],
+  expires_at: null,
+  inactivity_timeout_seconds: null,
+  revoked: false,
+  created_at: "2026-01-01T00:00:00.000Z",
+  updated_at: "2026-01-01T00:00:00.000Z",
+  last_used_at: null,
+};
+
+const activeUser = {
+  id: "user-1",
+  email: "user@example.com",
+  name: "Test User",
+  password_hash: "password-hash",
+  is_admin: false,
+  status: "active",
+  suspended_until: null,
+  created_at: "2026-01-01T00:00:00.000Z",
+  updated_at: "2026-01-01T00:00:00.000Z",
+};
 
 describe("validateApiKeyWithUser", () => {
-  it("loads the API key and owner in one query", async () => {
-    const query = vi.fn().mockResolvedValue({
-      rows: [{
-        id: "key-1",
-        user_id: "user-1",
-        name: "Production",
-        key_hash: "hash",
-        key_prefix: "fc_test",
-        revoked: false,
-        created_at: "2026-01-01T00:00:00.000Z",
-        updated_at: "2026-01-01T00:00:00.000Z",
-        last_used_at: null,
-        owner_id: "user-1",
-        owner_email: "user@example.com",
-        owner_name: "Test User",
-        owner_password_hash: "password-hash",
-        owner_is_admin: false,
-        owner_status: "active",
-        owner_suspended_until: null,
-        owner_created_at: "2026-01-01T00:00:00.000Z",
-        owner_updated_at: "2026-01-01T00:00:00.000Z",
-        owner_expired_suspension: false,
-      }],
-    });
-    vi.mocked(withClient).mockImplementation(async (fn) => fn({ query } as never));
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.withOperatorTransaction.mockImplementation(async (fn) => fn({
+      user: { update: state.update },
+      apiKey: { updateMany: state.updateMany },
+    }));
+    clearTouchDebouncer();
+  });
+
+  it("loads the API key and owner through the repository", async () => {
+    state.findValidWithUser.mockResolvedValue({ key, user: activeUser });
 
     const result = await validateApiKeyWithUser("fc_test_key");
 
     expect(mockResumeAccountEntitlementsWithClient).not.toHaveBeenCalled();
-    expect(query).toHaveBeenCalledTimes(1);
+    expect(state.findValidWithUser).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({
       key: { id: "key-1", user_id: "user-1" },
       user: { id: "user-1", email: "user@example.com", status: "active" },
@@ -45,51 +81,30 @@ describe("validateApiKeyWithUser", () => {
   });
 
   it("reactivates an expired suspended owner", async () => {
-    const reactivatedUser = {
-      id: "user-1",
-      email: "user@example.com",
-      name: "Test User",
-      password_hash: "password-hash",
-      is_admin: false,
-      status: "active",
-      suspended_until: null,
-      created_at: "2026-01-01T00:00:00.000Z",
-      updated_at: "2026-01-02T00:00:00.000Z",
+    const suspendedUser = {
+      ...activeUser,
+      status: "suspended",
+      suspended_until: "2020-01-01T00:00:00.000Z",
     };
-    const query = vi.fn()
-      .mockResolvedValueOnce({ rows: [{
-        id: "key-1",
-        user_id: "user-1",
-        name: "Production",
-        key_hash: "hash",
-        key_prefix: "fc_test",
-        revoked: false,
-        created_at: "2026-01-01T00:00:00.000Z",
-        updated_at: "2026-01-01T00:00:00.000Z",
-        last_used_at: null,
-        owner_id: "user-1",
-        owner_email: "user@example.com",
-        owner_name: "Test User",
-        owner_password_hash: "password-hash",
-        owner_is_admin: false,
-        owner_status: "active",
-        owner_suspended_until: null,
-        owner_created_at: "2026-01-01T00:00:00.000Z",
-        owner_updated_at: "2026-01-01T00:00:00.000Z",
-        owner_account_id: "account-1",
-        owner_expired_suspension: true,
-      }] })
-      .mockResolvedValueOnce({ rows: [reactivatedUser] });
-    vi.mocked(withClient).mockImplementation(async (fn) => fn({ query } as never));
+    state.findValidWithUser.mockResolvedValue({ key, user: suspendedUser });
+    state.update.mockResolvedValue(activeUser);
 
     const result = await validateApiKeyWithUser("fc_test_key");
 
     expect(mockResumeAccountEntitlementsWithClient).toHaveBeenCalledWith(expect.anything(), "account-1");
-    expect(query).toHaveBeenCalledTimes(2);
-    expect(query).toHaveBeenLastCalledWith(
-      "UPDATE users SET status = 'active', suspended_until = NULL WHERE id = $1 RETURNING *",
-      ["user-1"],
-    );
-    expect(result?.user).toEqual(reactivatedUser);
+    expect(state.update).toHaveBeenCalledWith(expect.objectContaining({ where: { id: "user-1" } }));
+    expect(result?.user).toEqual(activeUser);
+  });
+});
+
+describe("touchApiKey", () => {
+  it("updates the key inside an operator transaction", async () => {
+    await touchApiKey("key-1");
+
+    expect(state.withOperatorTransaction).toHaveBeenCalledWith(expect.any(Function));
+    expect(state.updateMany).toHaveBeenCalledWith({
+      where: { id: "key-1" },
+      data: { lastUsedAt: expect.any(Date) },
+    });
   });
 });

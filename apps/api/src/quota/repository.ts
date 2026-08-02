@@ -1,4 +1,4 @@
-import type { PoolClient } from "pg";
+import type { DatabaseClient } from "../db";
 import type {
   AccountEntitlementRecord,
   EnrollmentStatus,
@@ -12,12 +12,12 @@ import type {
 
 /** Policy ------------------------------------------------------------------ */
 
-export async function getPolicy(client: PoolClient): Promise<FreeTierPolicyRecord | null> {
+export async function getPolicy(client: DatabaseClient): Promise<FreeTierPolicyRecord | null> {
   const result = await client.query<FreeTierPolicyRecord>("SELECT * FROM free_tier_policy WHERE id = 'default'");
   return result.rows[0] ?? null;
 }
 
-export async function lockPolicy(client: PoolClient): Promise<FreeTierPolicyRecord | null> {
+export async function lockPolicy(client: DatabaseClient): Promise<FreeTierPolicyRecord | null> {
   const result = await client.query<FreeTierPolicyRecord>(
     "SELECT * FROM free_tier_policy WHERE id = 'default' FOR UPDATE",
   );
@@ -28,7 +28,7 @@ export async function lockPolicy(client: PoolClient): Promise<FreeTierPolicyReco
  * Atomically commit `grant` against the ceiling. Succeeds only when the
  * increment fits and admissions are enabled; serialized by the policy row lock.
  */
-export async function incrementCommitment(client: PoolClient, grant: number): Promise<boolean> {
+export async function incrementCommitment(client: DatabaseClient, grant: number): Promise<boolean> {
   const result = await client.query(
     `UPDATE free_tier_policy
      SET committed_amount = committed_amount + $1, version = version + 1, updated_at = NOW()
@@ -40,7 +40,7 @@ export async function incrementCommitment(client: PoolClient, grant: number): Pr
 }
 
 /** Release exactly `grant` from the permanent commitment, never below zero. */
-export async function decrementCommitment(client: PoolClient, grant: number): Promise<boolean> {
+export async function decrementCommitment(client: DatabaseClient, grant: number): Promise<boolean> {
   const result = await client.query(
     `UPDATE free_tier_policy
      SET committed_amount = GREATEST(committed_amount - $1, 0), version = version + 1, updated_at = NOW()
@@ -52,7 +52,7 @@ export async function decrementCommitment(client: PoolClient, grant: number): Pr
 
 /** Enrollments -------------------------------------------------------------- */
 
-export async function getEnrollment(client: PoolClient, accountId: string): Promise<FreeTierEnrollmentRecord | null> {
+export async function getEnrollment(client: DatabaseClient, accountId: string): Promise<FreeTierEnrollmentRecord | null> {
   const result = await client.query<FreeTierEnrollmentRecord>(
     "SELECT * FROM free_tier_enrollments WHERE account_id = $1",
     [accountId],
@@ -60,7 +60,7 @@ export async function getEnrollment(client: PoolClient, accountId: string): Prom
   return result.rows[0] ?? null;
 }
 
-export async function lockEnrollment(client: PoolClient, accountId: string): Promise<FreeTierEnrollmentRecord | null> {
+export async function lockEnrollment(client: DatabaseClient, accountId: string): Promise<FreeTierEnrollmentRecord | null> {
   const result = await client.query<FreeTierEnrollmentRecord>(
     "SELECT * FROM free_tier_enrollments WHERE account_id = $1 FOR UPDATE",
     [accountId],
@@ -69,7 +69,7 @@ export async function lockEnrollment(client: PoolClient, accountId: string): Pro
 }
 
 export async function insertEnrollment(
-  client: PoolClient,
+  client: DatabaseClient,
   accountId: string,
   status: EnrollmentStatus,
   grant: number,
@@ -96,7 +96,7 @@ export async function insertEnrollment(
 }
 
 export async function updateEnrollmentStatus(
-  client: PoolClient,
+  client: DatabaseClient,
   accountId: string,
   status: EnrollmentStatus,
   actor: string,
@@ -117,7 +117,7 @@ export async function updateEnrollmentStatus(
 }
 
 export async function markWaitlistSkipped(
-  client: PoolClient,
+  client: DatabaseClient,
   accountId: string,
   actor: string,
   reason: string,
@@ -133,13 +133,13 @@ export async function markWaitlistSkipped(
 
 /** Periods ------------------------------------------------------------------ */
 
-export async function getPeriod(client: PoolClient, periodId: string): Promise<QuotaPeriodRecord | null> {
+export async function getPeriod(client: DatabaseClient, periodId: string): Promise<QuotaPeriodRecord | null> {
   const result = await client.query<QuotaPeriodRecord>("SELECT * FROM quota_periods WHERE id = $1", [periodId]);
   return result.rows[0] ?? null;
 }
 
 /** Lock the open current-period row so hard-cap validation serializes with reservations. */
-export async function lockOpenPeriod(client: PoolClient): Promise<QuotaPeriodRecord | null> {
+export async function lockOpenPeriod(client: DatabaseClient): Promise<QuotaPeriodRecord | null> {
   const result = await client.query<QuotaPeriodRecord>(
     `SELECT * FROM quota_periods
      WHERE status = 'open' AND period_start <= NOW() AND period_end > NOW()
@@ -150,7 +150,7 @@ export async function lockOpenPeriod(client: PoolClient): Promise<QuotaPeriodRec
 }
 
 export async function upsertPeriod(
-  client: PoolClient,
+  client: DatabaseClient,
   periodId: string,
   start: Date,
   end: Date,
@@ -170,7 +170,7 @@ export async function upsertPeriod(
 }
 
 export async function setPeriodStatus(
-  client: PoolClient,
+  client: DatabaseClient,
   periodId: string,
   status: QuotaPeriodRecord["status"],
 ): Promise<QuotaPeriodRecord | null> {
@@ -184,7 +184,7 @@ export async function setPeriodStatus(
 /** Entitlements ------------------------------------------------------------- */
 
 export async function getEntitlement(
-  client: PoolClient,
+  client: DatabaseClient,
   accountId: string,
   periodId: string,
 ): Promise<AccountEntitlementRecord | null> {
@@ -196,7 +196,7 @@ export async function getEntitlement(
 }
 
 export async function insertEntitlement(
-  client: PoolClient,
+  client: DatabaseClient,
   accountId: string,
   periodId: string,
   allocated: number,
@@ -216,7 +216,7 @@ export async function insertEntitlement(
 }
 
 export async function setEntitlementStatusForAccount(
-  client: PoolClient,
+  client: DatabaseClient,
   accountId: string,
   status: AccountEntitlementRecord["status"],
   periodId?: string,
@@ -235,7 +235,7 @@ export async function setEntitlementStatusForAccount(
  * enrollment never receives one. Allocated mirrors the committed per-account
  * grant. Returns the number of rows inserted.
  */
-export async function issueEntitlementsForPeriod(client: PoolClient, periodId: string): Promise<number> {
+export async function issueEntitlementsForPeriod(client: DatabaseClient, periodId: string): Promise<number> {
   const result = await client.query(
     `INSERT INTO account_entitlements (id, account_id, period_id, allocated, status, enrollment_snapshot)
      SELECT md5(random()::text || clock_timestamp()::text), e.account_id, $1, e.grant_amount, 'active',
@@ -266,7 +266,7 @@ export async function issueEntitlementsForPeriod(client: PoolClient, periodId: s
  * is active and has headroom; the row lock serializes concurrent requests.
  */
 export async function reserveAccountSlot(
-  client: PoolClient,
+  client: DatabaseClient,
   accountId: string,
   periodId: string,
 ): Promise<AccountEntitlementRecord | null> {
@@ -282,7 +282,7 @@ export async function reserveAccountSlot(
 }
 
 /** Atomically reserve one platform request while the period is open with headroom. */
-export async function reservePeriodSlot(client: PoolClient, periodId: string): Promise<QuotaPeriodRecord | null> {
+export async function reservePeriodSlot(client: DatabaseClient, periodId: string): Promise<QuotaPeriodRecord | null> {
   const result = await client.query<QuotaPeriodRecord>(
     `UPDATE quota_periods
      SET reserved = reserved + 1, updated_at = NOW()
@@ -297,7 +297,7 @@ export async function reservePeriodSlot(client: PoolClient, periodId: string): P
 /** Reservations ------------------------------------------------------------- */
 
 export async function insertReservation(
-  client: PoolClient,
+  client: DatabaseClient,
   input: { id: string; accountId: string; periodId: string; entitlementId: string; expiresAt: Date },
 ): Promise<UsageReservationRecord | null> {
   const result = await client.query<UsageReservationRecord>(
@@ -310,7 +310,7 @@ export async function insertReservation(
   return result.rows[0] ?? null;
 }
 
-export async function getReservation(client: PoolClient, id: string): Promise<UsageReservationRecord | null> {
+export async function getReservation(client: DatabaseClient, id: string): Promise<UsageReservationRecord | null> {
   const result = await client.query<UsageReservationRecord>(
     "SELECT * FROM usage_reservations WHERE id = $1",
     [id],
@@ -322,7 +322,7 @@ export async function getReservation(client: PoolClient, id: string): Promise<Us
  * Lock a reservation row for ownership/idempotency decisions. Blocks until a
  * concurrent writer commits so duplicate retries serialize on the row.
  */
-export async function lockReservation(client: PoolClient, id: string): Promise<UsageReservationRecord | null> {
+export async function lockReservation(client: DatabaseClient, id: string): Promise<UsageReservationRecord | null> {
   const result = await client.query<UsageReservationRecord>(
     "SELECT * FROM usage_reservations WHERE id = $1 FOR UPDATE",
     [id],
@@ -335,7 +335,7 @@ export async function lockReservation(client: PoolClient, id: string): Promise<U
  * Caller must re-bump the counters in the same transaction.
  */
 export async function rearmReservation(
-  client: PoolClient,
+  client: DatabaseClient,
   id: string,
   expiresAt: Date,
 ): Promise<UsageReservationRecord | null> {
@@ -349,7 +349,7 @@ export async function rearmReservation(
 
 /** Charge exactly once: mark consumed and append the immutable ledger row. */
 export async function finalizeReservation(
-  client: PoolClient,
+  client: DatabaseClient,
   requestId: string,
   reason: string,
 ): Promise<UsageReservationRecord | null> {
@@ -390,7 +390,7 @@ export async function finalizeReservation(
 
 /** Release a reservation that never reached an operator upstream. */
 export async function releaseReservation(
-  client: PoolClient,
+  client: DatabaseClient,
   requestId: string,
 ): Promise<UsageReservationRecord | null> {
   const result = await client.query<UsageReservationRecord>(
@@ -415,7 +415,7 @@ export async function releaseReservation(
 }
 
 /** Claim expired in-flight reservations; charge conservatively. */
-export async function listExpiredReservations(client: PoolClient, limit: number): Promise<UsageReservationRecord[]> {
+export async function listExpiredReservations(client: DatabaseClient, limit: number): Promise<UsageReservationRecord[]> {
   const result = await client.query<UsageReservationRecord>(
     `SELECT * FROM usage_reservations
      WHERE status = 'reserved' AND expires_at < NOW()
@@ -430,7 +430,7 @@ export async function listExpiredReservations(client: PoolClient, limit: number)
 /** Ledger ------------------------------------------------------------------- */
 
 export async function insertAdjustmentEvent(
-  client: PoolClient,
+  client: DatabaseClient,
   input: { requestId: string; accountId: string; periodId: string | null; amount: number; actor: string; reason: string },
 ): Promise<UsageEventRecord> {
   const result = await client.query<UsageEventRecord>(
@@ -460,7 +460,7 @@ export interface WaitlistCandidate extends FreeTierEnrollmentRecord {
 }
 
 /** Claim the oldest eligible waitlist rows FIFO, skipping operator-skipped rows. */
-export async function claimWaitlistCandidates(client: PoolClient, batch: number): Promise<WaitlistCandidate[]> {
+export async function claimWaitlistCandidates(client: DatabaseClient, batch: number): Promise<WaitlistCandidate[]> {
   const result = await client.query<WaitlistCandidate>(
     `SELECT e.*, a.status AS account_status, u.email_verified_at
      FROM free_tier_enrollments e
@@ -477,7 +477,7 @@ export async function claimWaitlistCandidates(client: PoolClient, batch: number)
   return result.rows;
 }
 
-export async function countWaitlist(client: PoolClient): Promise<number> {
+export async function countWaitlist(client: DatabaseClient): Promise<number> {
   const result = await client.query<{ count: string }>(
     "SELECT COUNT(*) AS count FROM free_tier_enrollments WHERE status = 'waitlisted' AND skipped_at IS NULL",
   );
@@ -487,7 +487,7 @@ export async function countWaitlist(client: PoolClient): Promise<number> {
 /** Quota events ------------------------------------------------------------- */
 
 export async function insertQuotaEvent(
-  client: PoolClient,
+  client: DatabaseClient,
   input: {
     dedupKey: string;
     eventType: string;

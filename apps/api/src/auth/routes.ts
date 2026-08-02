@@ -7,7 +7,7 @@ import type { AuthenticatedRequest } from "./middleware";
 import { serializeUser } from "../users/serialization";
 import { authenticatedUserSchema } from "@firecrawl/contracts";
 import * as userService from "../users/service";
-import { getMfaState, beginMfaSetup, verifyMfaCode, disableMfa, createRecoveryCodes, consumeRecoveryCode, createSessionRecord, markSessionMfaVerified, revokeSession, revokeAllSessions, listSessions } from "./security";
+import { getMfaState, beginMfaSetup, verifyMfaCode, disableMfa, createRecoveryCodes, consumeRecoveryCode, createSessionRecord, markSessionMfaVerified, revokeSession, revokeSessionById, revokeAllSessions, listSessions } from "./security";
 import { GENERIC_AUTH_MESSAGE, registerUser, requestEmailVerification, consumeEmailVerification, requestPasswordReset, resetPassword, requestEmailChange } from "./service";
 import { hashPassword, validatePassword } from "./password";
 
@@ -319,7 +319,7 @@ export function createAuthRouter(config?: GatewayConfig) {
   router.delete("/sessions/:id", requireAuth, async (req: AuthenticatedRequest, res, next) => {
     try {
       // Inventory IDs are opaque database identifiers, never raw session IDs.
-      await require("../db").withOperatorTransaction((client: import("pg").PoolClient) => client.query("UPDATE auth_sessions SET revoked_at = NOW() WHERE id = $1 AND user_id = $2", [req.params.id, (req.user as User).id]).then(() => undefined));
+      await revokeSessionById(String(req.params.id), (req.user as User).id);
       res.json({ success: true });
     } catch (error) { next(error); }
   });

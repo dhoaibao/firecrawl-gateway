@@ -1,5 +1,5 @@
-import { withClient } from "../db";
 import { routeModeSchema, type RouteMode } from "@firecrawl/contracts";
+import { getPrisma } from "../infrastructure/database";
 
 export const VALID_ROUTE_MODES = routeModeSchema.options;
 
@@ -20,6 +20,14 @@ interface CacheEntry {
 
 const settingsCache = new Map<string, CacheEntry>();
 const inFlightSettings = new Map<string, Promise<SettingRecord | null>>();
+
+function mapSetting(setting: { key: string; value: string; updatedAt: Date }): SettingRecord {
+  return {
+    key: setting.key,
+    value: setting.value,
+    updated_at: setting.updatedAt.toISOString(),
+  };
+}
 
 export function clearSettingsCache(): void {
   settingsCache.clear();
@@ -52,21 +60,13 @@ export async function getSetting(key: string): Promise<SettingRecord | null> {
   const existing = inFlightSettings.get(key);
   if (existing) return existing;
 
-  const promise = withClient(async (client) => {
-    const result = await client.query<SettingRecord>(
-      "SELECT key, value, updated_at FROM settings WHERE key = $1",
-      [key],
-    );
-    return result.rows[0] || null;
-  });
+  const promise = getPrisma().runtime.setting.findUnique({ where: { key } })
+    .then((setting) => setting ? mapSetting(setting) : null);
 
   inFlightSettings.set(key, promise);
 
   try {
     const value = await promise;
-    // Only cache if our in-flight request is still the active one. If the
-    // setting was written while we were fetching, invalidateCachedSetting will
-    // have removed the in-flight entry and we must not overwrite the new value.
     if (inFlightSettings.get(key) === promise) {
       setCachedSetting(key, value);
     }
@@ -79,49 +79,27 @@ export async function getSetting(key: string): Promise<SettingRecord | null> {
 }
 
 export async function listSettings(): Promise<SettingRecord[]> {
-  return withClient(async (client) => {
-    const result = await client.query<SettingRecord>(
-      "SELECT key, value, updated_at FROM settings ORDER BY key",
-    );
-    return result.rows;
-  });
+  const settings = await getPrisma().runtime.setting.findMany({ orderBy: { key: "asc" } });
+  return settings.map(mapSetting);
 }
 
-export async function setSetting(
-  key: string,
-  value: string,
-): Promise<SettingRecord> {
-  const record = await withClient(async (client) => {
-    const result = await client.query<SettingRecord>(
-      `INSERT INTO settings (key, value, updated_at)
-       VALUES ($1, $2, NOW())
-       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
-       RETURNING key, value, updated_at`,
-      [key, value],
-    );
-    return result.rows[0];
+export async function setSetting(key: string, value: string): Promise<SettingRecord> {
+  const setting = await getPrisma().runtime.setting.upsert({
+    where: { key },
+    create: { key, value },
+    update: { value, updatedAt: new Date() },
   });
   invalidateCachedSetting(key);
-  return record;
+  return mapSetting(setting);
 }
 
 export async function deleteSetting(key: string): Promise<boolean> {
-  const deleted = await withClient(async (client) => {
-    const result = await client.query(
-      "DELETE FROM settings WHERE key = $1",
-      [key],
-    );
-    return result.rowCount !== null && result.rowCount > 0;
-  });
-  if (deleted) {
-    invalidateCachedSetting(key);
-  }
-  return deleted;
+  const result = await getPrisma().runtime.setting.deleteMany({ where: { key } });
+  if (result.count > 0) invalidateCachedSetting(key);
+  return result.count > 0;
 }
 
-export async function getDefaultRouteMode(
-  fallback: RouteMode,
-): Promise<RouteMode> {
+export async function getDefaultRouteMode(fallback: RouteMode): Promise<RouteMode> {
   const record = await getSetting("default_route_mode");
   if (record?.value && (VALID_ROUTE_MODES as readonly string[]).includes(record.value)) {
     return record.value as RouteMode;

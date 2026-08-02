@@ -226,7 +226,7 @@ export default function Dashboard() {
         `/admin/api/logs?filter=${deleteFilter}`,
       )
       addToast(
-        json.deleted === -1
+        deleteFilter === "all"
           ? "All history deleted"
           : `${json.deleted} entries deleted`,
         "success",

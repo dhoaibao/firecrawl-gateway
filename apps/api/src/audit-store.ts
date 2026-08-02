@@ -5,7 +5,7 @@ import { createReadStream } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { rootLogger } from "./logger";
-import { withClient } from "./db";
+import * as auditRepository from "./audit-repository";
 
 export type DeleteFilter = "today" | "week" | "month" | "all";
 
@@ -74,29 +74,7 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
 
   async function persistAuditEntryToDatabase(entry: AuditEntry): Promise<void> {
     try {
-      await withClient((client) => client.query(
-        `INSERT INTO audit_logs
-           (id, created_at, method, path, route_mode, backend_used, fallback_used,
-            fallback_reason, status_code, duration_ms, target_url, user_id, account_id, request_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-         ON CONFLICT (id) DO NOTHING`,
-        [
-          entry.id,
-          entry.created_at,
-          entry.method,
-          entry.path,
-          entry.route_mode,
-          entry.backend_used,
-          entry.fallback_used,
-          entry.fallback_reason,
-          entry.status_code,
-          entry.duration_ms,
-          entry.target_url,
-          entry.user_id ?? null,
-          entry.account_id ?? null,
-          entry.request_id ?? null,
-        ],
-      ), { operator: true });
+      await auditRepository.appendAuditEntries([entry]);
     } catch (err) {
       rootLogger.warn({ err, auditId: entry.id }, "Failed to write audit entry to database");
     }
@@ -105,37 +83,8 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
   async function persistAuditBatchToDatabase(entries: AuditEntry[]): Promise<void> {
     if (entries.length === 0) return;
 
-    const values: unknown[] = [];
-    const placeholders = entries.map((entry, entryIndex) => {
-      const offset = entryIndex * 14;
-      values.push(
-        entry.id,
-        entry.created_at,
-        entry.method,
-        entry.path,
-        entry.route_mode,
-        entry.backend_used,
-        entry.fallback_used,
-        entry.fallback_reason,
-        entry.status_code,
-        entry.duration_ms,
-        entry.target_url,
-        entry.user_id ?? null,
-        entry.account_id ?? null,
-        entry.request_id ?? null,
-      );
-      return `(${Array.from({ length: 14 }, (_, valueIndex) => `$${offset + valueIndex + 1}`).join(", ")})`;
-    }).join(",\n           ");
-
     try {
-      await withClient((client) => client.query(
-        `INSERT INTO audit_logs
-           (id, created_at, method, path, route_mode, backend_used, fallback_used,
-            fallback_reason, status_code, duration_ms, target_url, user_id, account_id, request_id)
-         VALUES ${placeholders}
-         ON CONFLICT (id) DO NOTHING`,
-        values,
-      ), { operator: true });
+      await auditRepository.appendAuditEntries(entries);
     } catch (err) {
       const errorCode = (err as { code?: string }).code;
       rootLogger.warn(
@@ -199,6 +148,9 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
   }
 
   function enqueueDatabaseWrite(entry: AuditEntry): void {
+    // A timed shutdown flush only discards work pending at that moment. A
+    // reused store must be able to start database writes again.
+    discardPending = false;
     if (pendingDatabaseEntries.length >= MAX_PENDING_AUDITS) {
       rootLogger.warn({ maxPending: MAX_PENDING_AUDITS }, "Dropping database audit entry: queue is full");
       return;
@@ -250,15 +202,7 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
     const databaseEntries: AuditEntry[] = [];
     if (options.persistToDatabase) {
       try {
-        const result = await withClient((client) => client.query<AuditEntry>(
-          `SELECT id, created_at, method, path, route_mode, backend_used, fallback_used,
-                  fallback_reason, status_code, duration_ms, target_url, user_id, account_id, request_id
-           FROM audit_logs
-           ORDER BY created_at DESC
-           LIMIT $1`,
-          [limit],
-        ), { operator: true });
-        databaseEntries.push(...result.rows);
+        databaseEntries.push(...await auditRepository.readAuditEntries(limit));
       } catch (err) {
         rootLogger.warn({ err }, "Failed to read audit entries from database");
       }
@@ -295,17 +239,11 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
     if (uniqueIds.size === 0) return 0;
 
     await flush();
-    const deletedIds = new Set<string>();
+    let deletedDatabaseIds = new Set<string>();
 
     if (options.persistToDatabase) {
       try {
-        const result = await withClient((client) => client.query(
-          "DELETE FROM audit_logs WHERE id = ANY($1::text[]) RETURNING id",
-          [[...uniqueIds]],
-        ), { operator: true });
-        for (const row of (result.rows ?? []) as Array<{ id?: string }>) {
-          if (row.id) deletedIds.add(row.id);
-        }
+        deletedDatabaseIds = new Set(await auditRepository.deleteAuditEntriesByIds([...uniqueIds]));
       } catch (err) {
         rootLogger.warn({ err, count: uniqueIds.size }, "Failed to delete selected audit entries from database");
       }
@@ -313,9 +251,10 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
 
     return enqueueFileOperation(async () => {
       const exists = await fs.access(logFile).then(() => true).catch(() => false);
-      if (!exists) return deletedIds.size;
+      if (!exists) return deletedDatabaseIds.size;
 
       const kept: string[] = [];
+      const deletedFileIds = new Set<string>();
       const stream = createReadStream(logFile, { encoding: "utf8" });
       const rl = createInterface({ input: stream, crlfDelay: Infinity });
 
@@ -330,12 +269,13 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
         }
 
         if (uniqueIds.has(entry.id)) {
-          deletedIds.add(entry.id);
+          deletedFileIds.add(entry.id);
         } else {
           kept.push(line);
         }
       }
 
+      const deletedIds = new Set([...deletedDatabaseIds, ...deletedFileIds]);
       if (deletedIds.size === 0) return 0;
       const tmpFile = `${logFile}.tmp-${crypto.randomUUID()}`;
       await fs.writeFile(tmpFile, kept.join("\n") + (kept.length > 0 ? "\n" : ""), "utf8");
@@ -346,15 +286,11 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
 
   async function deleteAuditEntry(id: string): Promise<boolean> {
     await flush();
-    let deleted = false;
+    let deletedFromDatabase = false;
 
     if (options.persistToDatabase) {
       try {
-        const result = await withClient((client) => client.query(
-          "DELETE FROM audit_logs WHERE id = $1 RETURNING id",
-          [id],
-        ), { operator: true });
-        deleted = (result.rowCount ?? 0) > 0;
+        deletedFromDatabase = await auditRepository.deleteAuditEntry(id);
       } catch (err) {
         rootLogger.warn({ err, id }, "Failed to delete audit entry from database");
       }
@@ -362,9 +298,10 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
 
     return enqueueFileOperation(async () => {
       const exists = await fs.access(logFile).then(() => true).catch(() => false);
-      if (!exists) return deleted;
+      if (!exists) return deletedFromDatabase;
 
       const kept: string[] = [];
+      const deletedFileIds = new Set<string>();
       const stream = createReadStream(logFile, { encoding: "utf8" });
       const rl = createInterface({ input: stream, crlfDelay: Infinity });
 
@@ -379,13 +316,13 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
         }
 
         if (entry.id === id) {
-          deleted = true;
+          deletedFileIds.add(entry.id);
         } else {
           kept.push(line);
         }
       }
 
-      if (!deleted) return false;
+      if (!deletedFromDatabase && deletedFileIds.size === 0) return false;
       const tmpFile = `${logFile}.tmp-${crypto.randomUUID()}`;
       await fs.writeFile(tmpFile, kept.join("\n") + (kept.length > 0 ? "\n" : ""), "utf8");
       await fs.rename(tmpFile, logFile);
@@ -395,38 +332,10 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
 
   async function deleteAuditEntries(filter: DeleteFilter): Promise<number> {
     await flush();
-    let deletedFromDatabase = 0;
-    const deletedDatabaseIds = new Set<string>();
+    let deletedDatabaseIds = new Set<string>();
     if (options.persistToDatabase) {
       try {
-        const result = await withClient((client) => {
-          if (filter === "all") {
-            return client.query("DELETE FROM audit_logs RETURNING id");
-          }
-          if (filter === "today") {
-            return client.query(
-              `DELETE FROM audit_logs
-               WHERE created_at >= date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
-                 AND created_at < date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' + interval '1 day'
-               RETURNING id`,
-            );
-          }
-          if (filter === "month") {
-            return client.query(
-              `DELETE FROM audit_logs
-               WHERE created_at >= date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
-                 AND created_at < date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' + interval '1 month'
-               RETURNING id`,
-            );
-          }
-          return client.query(
-            "DELETE FROM audit_logs WHERE created_at >= NOW() - interval '7 days' RETURNING id",
-          );
-        }, { operator: true });
-        deletedFromDatabase = result.rowCount ?? 0;
-        for (const row of (result.rows ?? []) as Array<{ id?: string }>) {
-          if (row.id) deletedDatabaseIds.add(row.id);
-        }
+        deletedDatabaseIds = new Set(await auditRepository.deleteAuditEntries(filter));
       } catch (err) {
         rootLogger.warn({ err, filter }, "Failed to delete audit entries from database");
       }
@@ -434,13 +343,23 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
 
     if (filter === "all") {
       return enqueueFileOperation(async () => {
-        try {
-          await fs.writeFile(logFile, "", "utf8");
-          return deletedFromDatabase || -1;
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "ENOENT") return deletedFromDatabase;
-          throw error;
+        const exists = await fs.access(logFile).then(() => true).catch(() => false);
+        if (!exists) return deletedDatabaseIds.size;
+
+        const deletedFileIds = new Set<string>();
+        const stream = createReadStream(logFile, { encoding: "utf8" });
+        const rl = createInterface({ input: stream, crlfDelay: Infinity });
+        for await (const line of rl) {
+          if (!line.trim()) continue;
+          try {
+            const entry = JSON.parse(line) as AuditEntry;
+            if (entry.id) deletedFileIds.add(entry.id);
+          } catch {
+            // The all-history operation removes malformed lines as before.
+          }
         }
+        await fs.writeFile(logFile, "", "utf8");
+        return new Set([...deletedDatabaseIds, ...deletedFileIds]).size;
       });
     }
 
@@ -449,12 +368,10 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
       const nowDate = now.toISOString().slice(0, 10);
       const nowMonth = now.toISOString().slice(0, 7);
       const exists = await fs.access(logFile).then(() => true).catch(() => false);
-      if (!exists) return deletedFromDatabase;
+      if (!exists) return deletedDatabaseIds.size;
 
-      let deleted = 0;
       const deletedFileIds = new Set<string>();
       const kept: string[] = [];
-
       const stream = createReadStream(logFile, { encoding: "utf8" });
       const rl = createInterface({ input: stream, crlfDelay: Infinity });
 
@@ -482,23 +399,18 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
         }
 
         if (shouldDelete) {
-          deleted++;
           deletedFileIds.add(entry.id);
         } else {
           kept.push(line);
         }
       }
 
+      const deletedIds = new Set([...deletedDatabaseIds, ...deletedFileIds]);
+      if (deletedIds.size === 0) return 0;
       const tmpFile = `${logFile}.tmp-${crypto.randomUUID()}`;
       await fs.writeFile(tmpFile, kept.join("\n") + (kept.length > 0 ? "\n" : ""), "utf8");
       await fs.rename(tmpFile, logFile);
-      if (deletedDatabaseIds.size > 0) {
-        const uniqueDeletedIds = new Set(deletedDatabaseIds);
-        for (const id of deletedFileIds) uniqueDeletedIds.add(id);
-        return uniqueDeletedIds.size;
-      }
-      // Keep compatibility with database clients/tests that only expose rowCount.
-      return Math.max(deleted, deletedFromDatabase);
+      return deletedIds.size;
     });
   }
 

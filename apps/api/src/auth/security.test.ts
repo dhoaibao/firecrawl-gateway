@@ -1,10 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mockQuery = vi.hoisted(() => vi.fn());
+const state = vi.hoisted(() => ({
+  upsert: vi.fn(),
+  findUnique: vi.fn(),
+  update: vi.fn(),
+  withOperatorTransaction: vi.fn(),
+}));
 const mockVerify = vi.hoisted(() => vi.fn());
 
-vi.mock("../db", () => ({
-  withOperatorTransaction: (callback: (client: { query: typeof mockQuery }) => unknown) => callback({ query: mockQuery }),
+vi.mock("../infrastructure/database", () => ({
+  withOperatorTransaction: state.withOperatorTransaction,
 }));
 
 vi.mock("otplib", () => ({
@@ -23,33 +28,37 @@ import { beginMfaSetup, verifyMfaCode } from "./security";
 describe("verifyMfaCode", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    state.upsert.mockResolvedValue({});
+    state.update.mockResolvedValue({});
+    state.withOperatorTransaction.mockImplementation(async (callback) => callback({
+      mfaFactor: { upsert: state.upsert, findUnique: state.findUnique, update: state.update },
+    }));
   });
 
   it("stages a replacement secret without disabling the active factor", async () => {
-    mockQuery.mockResolvedValueOnce({ rowCount: 1 });
-
     await beginMfaSetup("user-1", "user@example.com", "a".repeat(64));
 
-    const [query] = mockQuery.mock.calls[0] as [string];
-    expect(query).toContain("pending_secret_encrypted = EXCLUDED.secret_encrypted");
-    expect(query).not.toContain("enabled_at = NULL");
+    expect(state.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { userId: "user-1" },
+      update: expect.objectContaining({ pendingSecretEncrypted: "encrypted-secret" }),
+    }));
+    expect(state.upsert.mock.calls[0][0].update).not.toHaveProperty("enabledAt", null);
   });
 
   it("records the enrollment TOTP step and rejects its replay", async () => {
-    mockQuery
-      .mockResolvedValueOnce({ rows: [{ secret_encrypted: "encrypted" }] })
-      .mockResolvedValueOnce({ rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [{ secret_encrypted: "encrypted" }] })
-      .mockResolvedValueOnce({ rowCount: 0 });
+    state.findUnique
+      .mockResolvedValueOnce({ secretEncrypted: "encrypted", pendingSecretEncrypted: null })
+      .mockResolvedValueOnce({ pendingSecretEncrypted: "encrypted", secretEncrypted: "old", lastUsedStep: null, enabledAt: null })
+      .mockResolvedValueOnce({ secretEncrypted: "encrypted", pendingSecretEncrypted: null })
+      .mockResolvedValueOnce({ pendingSecretEncrypted: null, secretEncrypted: "encrypted", lastUsedStep: BigInt(12345), enabledAt: new Date() });
     mockVerify.mockResolvedValue({ valid: true, timeStep: 12345 });
 
     await expect(verifyMfaCode("user-1", "123456", "a".repeat(64), true)).resolves.toBe(true);
     await expect(verifyMfaCode("user-1", "123456", "a".repeat(64))).resolves.toBe(false);
 
-    expect(mockQuery).toHaveBeenNthCalledWith(
-      2,
-      expect.stringContaining("last_used_step = $2"),
-      ["user-1", 12345],
-    );
+    expect(state.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { userId: "user-1" },
+      data: expect.objectContaining({ lastUsedStep: BigInt(12345) }),
+    }));
   });
 });

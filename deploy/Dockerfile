@@ -25,7 +25,7 @@ COPY --from=builder --chown=gateway:gateway /app/node_modules ./node_modules
 COPY --from=builder --chown=gateway:gateway /app/package*.json ./
 COPY --from=builder --chown=gateway:gateway /app/apps/api/package.json ./apps/api/package.json
 COPY --from=builder --chown=gateway:gateway /app/apps/api/dist/ ./apps/api/dist/
-COPY --from=builder --chown=gateway:gateway /app/apps/api/migrations/ ./apps/api/migrations/
+COPY --from=builder --chown=gateway:gateway /app/apps/api/prisma/ ./apps/api/prisma/
 COPY --from=builder --chown=gateway:gateway /app/apps/api/scripts/ ./apps/api/scripts/
 COPY --from=builder --chown=gateway:gateway /app/apps/web/package.json ./apps/web/package.json
 COPY --from=builder --chown=gateway:gateway /app/apps/web/dist/ ./apps/web/dist/

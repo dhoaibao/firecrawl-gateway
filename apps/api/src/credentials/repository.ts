@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
-import { withAccountTransaction, withOperatorTransaction } from "../db";
+import { Prisma } from "@prisma/client";
+import { withAccountTransaction, withOperatorTransaction } from "../infrastructure/database";
 import { decryptProviderCredential, encryptProviderCredential, maskCredential, type CredentialContext } from "./crypto";
 
 export type CredentialPurpose = CredentialContext["purpose"];
@@ -34,8 +35,52 @@ export interface CreateCredentialInput {
   providerMetadata?: Record<string, unknown>;
 }
 
-function metadata(record: ProviderCredentialRecord): CredentialMetadata {
-  const { encrypted_value: _encryptedValue, ...safe } = record;
+const credentialSelect = Prisma.validator<Prisma.ProviderCredentialSelect>()({
+  id: true,
+  ownerType: true,
+  accountId: true,
+  purpose: true,
+  encryptedValue: true,
+  keyVersion: true,
+  maskedPrefix: true,
+  maskedSuffix: true,
+  status: true,
+  providerMetadata: true,
+  lastValidatedAt: true,
+  lastUsedAt: true,
+  supersededAt: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+type CredentialRow = Prisma.ProviderCredentialGetPayload<{ select: typeof credentialSelect }>;
+
+function jsonValue(value: Record<string, unknown>): Prisma.InputJsonValue {
+  return value as Prisma.InputJsonValue;
+}
+
+function record(row: CredentialRow): ProviderCredentialRecord {
+  return {
+    id: row.id,
+    owner_type: row.ownerType as ProviderCredentialRecord["owner_type"],
+    account_id: row.accountId,
+    purpose: row.purpose as CredentialPurpose,
+    encrypted_value: row.encryptedValue,
+    key_version: row.keyVersion,
+    masked_prefix: row.maskedPrefix,
+    masked_suffix: row.maskedSuffix,
+    status: row.status as CredentialStatus,
+    provider_metadata: row.providerMetadata as Record<string, unknown>,
+    last_validated_at: row.lastValidatedAt?.toISOString() ?? null,
+    last_used_at: row.lastUsedAt?.toISOString() ?? null,
+    superseded_at: row.supersededAt?.toISOString() ?? null,
+    created_at: row.createdAt.toISOString(),
+    updated_at: row.updatedAt.toISOString(),
+  };
+}
+
+function metadata(value: ProviderCredentialRecord): CredentialMetadata {
+  const { encrypted_value: _encryptedValue, ...safe } = value;
   return safe;
 }
 
@@ -43,12 +88,12 @@ export function accountCredentialSourceId(accountId: string, credentialId: strin
   return `account:${accountId}:${credentialId}`;
 }
 
-function contextFor(record: ProviderCredentialRecord, sourceId: string): CredentialContext {
+function contextFor(recordValue: ProviderCredentialRecord, sourceId: string): CredentialContext {
   return {
-    purpose: record.purpose,
-    ownerId: record.owner_type === "account" ? record.account_id! : "operator",
+    purpose: recordValue.purpose,
+    ownerId: recordValue.owner_type === "account" ? recordValue.account_id! : "operator",
     sourceId,
-    keyVersion: record.key_version,
+    keyVersion: recordValue.key_version,
   };
 }
 
@@ -65,16 +110,22 @@ export async function createAccountCredential(
     sourceId: accountCredentialSourceId(accountId, id),
     keyVersion: input.keyVersion,
   });
-  return withAccountTransaction(accountId, async (client) => {
-    const result = await client.query<ProviderCredentialRecord>(
-      `INSERT INTO provider_credentials (
-        id, owner_type, account_id, purpose, encrypted_value, key_version,
-        masked_prefix, masked_suffix, provider_metadata
-      ) VALUES ($1, 'account', $2, $3, $4, $5, $6, $7, $8)
-      RETURNING *`,
-      [id, accountId, input.purpose, encryptedValue, input.keyVersion, masked.prefix, masked.suffix, input.providerMetadata ?? {}],
-    );
-    return metadata(result.rows[0]);
+  return withAccountTransaction(accountId, async (tx) => {
+    const created = await tx.providerCredential.create({
+      data: {
+        id,
+        ownerType: "account",
+        accountId,
+        purpose: input.purpose,
+        encryptedValue,
+        keyVersion: input.keyVersion,
+        maskedPrefix: masked.prefix,
+        maskedSuffix: masked.suffix,
+        providerMetadata: jsonValue(input.providerMetadata ?? {}),
+      },
+      select: credentialSelect,
+    });
+    return metadata(record(created));
   });
 }
 
@@ -91,16 +142,21 @@ export async function createOperatorCredential(
     sourceId: input.sourceId,
     keyVersion: input.keyVersion,
   });
-  return withOperatorTransaction(async (client) => {
-    const result = await client.query<ProviderCredentialRecord>(
-      `INSERT INTO provider_credentials (
-        id, owner_type, purpose, encrypted_value, key_version,
-        masked_prefix, masked_suffix, provider_metadata
-      ) VALUES ($1, 'operator', $2, $3, $4, $5, $6, $7)
-      RETURNING *`,
-      [id, input.purpose, encryptedValue, input.keyVersion, masked.prefix, masked.suffix, input.providerMetadata ?? {}],
-    );
-    return metadata(result.rows[0]);
+  return withOperatorTransaction(async (tx) => {
+    const created = await tx.providerCredential.create({
+      data: {
+        id,
+        ownerType: "operator",
+        purpose: input.purpose,
+        encryptedValue,
+        keyVersion: input.keyVersion,
+        maskedPrefix: masked.prefix,
+        maskedSuffix: masked.suffix,
+        providerMetadata: jsonValue(input.providerMetadata ?? {}),
+      },
+      select: credentialSelect,
+    });
+    return metadata(record(created));
   });
 }
 
@@ -110,15 +166,12 @@ export async function replaceAccountCredential(
   input: CreateCredentialInput,
   encryptionKey: string,
 ): Promise<CredentialMetadata | null> {
-  return withAccountTransaction(accountId, async (client) => {
-    const previous = await client.query<Pick<ProviderCredentialRecord, "id">>(
-      `UPDATE provider_credentials
-       SET superseded_at = NOW(), status = 'revoked', updated_at = NOW()
-       WHERE id = $1 AND account_id = $2 AND owner_type = 'account' AND superseded_at IS NULL
-       RETURNING id`,
-      [previousId, accountId],
-    );
-    if (!previous.rows[0]) return null;
+  return withAccountTransaction(accountId, async (tx) => {
+    const previous = await tx.providerCredential.updateMany({
+      where: { id: previousId, accountId, ownerType: "account", supersededAt: null },
+      data: { supersededAt: new Date(), status: "revoked", updatedAt: new Date() },
+    });
+    if (previous.count === 0) return null;
 
     const id = crypto.randomUUID();
     const masked = maskCredential(input.value);
@@ -128,27 +181,32 @@ export async function replaceAccountCredential(
       sourceId: accountCredentialSourceId(accountId, id),
       keyVersion: input.keyVersion,
     });
-    const result = await client.query<ProviderCredentialRecord>(
-      `INSERT INTO provider_credentials (
-        id, owner_type, account_id, purpose, encrypted_value, key_version,
-        masked_prefix, masked_suffix, provider_metadata
-      ) VALUES ($1, 'account', $2, $3, $4, $5, $6, $7, $8)
-      RETURNING *`,
-      [id, accountId, input.purpose, encryptedValue, input.keyVersion, masked.prefix, masked.suffix, input.providerMetadata ?? {}],
-    );
-    return metadata(result.rows[0]);
+    const created = await tx.providerCredential.create({
+      data: {
+        id,
+        ownerType: "account",
+        accountId,
+        purpose: input.purpose,
+        encryptedValue,
+        keyVersion: input.keyVersion,
+        maskedPrefix: masked.prefix,
+        maskedSuffix: masked.suffix,
+        providerMetadata: jsonValue(input.providerMetadata ?? {}),
+      },
+      select: credentialSelect,
+    });
+    return metadata(record(created));
   });
 }
 
 export async function listAccountCredentialMetadata(accountId: string): Promise<CredentialMetadata[]> {
-  return withAccountTransaction(accountId, async (client) => {
-    const result = await client.query<ProviderCredentialRecord>(
-      `SELECT * FROM provider_credentials
-       WHERE account_id = $1 AND owner_type = 'account'
-       ORDER BY created_at DESC`,
-      [accountId],
-    );
-    return result.rows.map(metadata);
+  return withAccountTransaction(accountId, async (tx) => {
+    const rows = await tx.providerCredential.findMany({
+      where: { accountId, ownerType: "account" },
+      orderBy: { createdAt: "desc" },
+      select: credentialSelect,
+    });
+    return rows.map((row) => metadata(record(row)));
   });
 }
 
@@ -159,14 +217,11 @@ export async function validateAccountCredential(
   cloudBaseUrl: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<CredentialMetadata | null> {
-  const credential = await withAccountTransaction(accountId, async (client) => {
-    const result = await client.query<ProviderCredentialRecord>(
-      `SELECT * FROM provider_credentials
-       WHERE id = $1 AND account_id = $2 AND owner_type = 'account' AND status != 'revoked' AND superseded_at IS NULL`,
-      [credentialId, accountId],
-    );
-    return result.rows[0] ?? null;
-  });
+  const credential = await withAccountTransaction(accountId, (tx) =>
+    tx.providerCredential.findFirst({
+      where: { id: credentialId, accountId, ownerType: "account", status: { not: "revoked" }, supersededAt: null },
+      select: credentialSelect,
+    }).then((row) => row ? record(row) : null));
   if (!credential) return null;
 
   const controller = new AbortController();
@@ -189,15 +244,14 @@ export async function validateAccountCredential(
     clearTimeout(timeout);
   }
 
-  return withAccountTransaction(accountId, async (client) => {
-    const result = await client.query<ProviderCredentialRecord>(
-      `UPDATE provider_credentials
-       SET status = $3, last_validated_at = NOW(), updated_at = NOW()
-       WHERE id = $1 AND account_id = $2
-       RETURNING *`,
-      [credentialId, accountId, valid ? "valid" : "invalid"],
-    );
-    return result.rows[0] ? metadata(result.rows[0]) : null;
+  return withAccountTransaction(accountId, async (tx) => {
+    const updated = await tx.providerCredential.updateMany({
+      where: { id: credentialId, accountId },
+      data: { status: valid ? "valid" : "invalid", lastValidatedAt: new Date(), updatedAt: new Date() },
+    });
+    if (updated.count === 0) return null;
+    const row = await tx.providerCredential.findUnique({ where: { id: credentialId }, select: credentialSelect });
+    return row ? metadata(record(row)) : null;
   });
 }
 
@@ -206,14 +260,13 @@ export async function decryptOperatorCredential(
   sourceId: string,
   encryptionKey: string,
 ): Promise<{ value: string; credential: CredentialMetadata } | null> {
-  return withOperatorTransaction(async (client) => {
-    const result = await client.query<ProviderCredentialRecord>(
-      `SELECT * FROM provider_credentials
-       WHERE id = $1 AND owner_type = 'operator' AND status != 'revoked' AND superseded_at IS NULL`,
-      [credentialId],
-    );
-    const credential = result.rows[0];
-    if (!credential) return null;
+  return withOperatorTransaction(async (tx) => {
+    const row = await tx.providerCredential.findFirst({
+      where: { id: credentialId, ownerType: "operator", status: { not: "revoked" }, supersededAt: null },
+      select: credentialSelect,
+    });
+    if (!row) return null;
+    const credential = record(row);
     return {
       value: decryptProviderCredential(credential.encrypted_value, encryptionKey, contextFor(credential, sourceId)),
       credential: metadata(credential),
@@ -221,10 +274,7 @@ export async function decryptOperatorCredential(
   });
 }
 
-/**
- * Explicit operator action for pending credentials. Callers decide when an
- * external health check is approved; this repository never validates on read.
- */
+/** Explicit operator action for pending credentials. */
 export async function validateOperatorCredential(
   credentialId: string,
   sourceId: string,
@@ -256,26 +306,20 @@ export async function markCredentialValidated(
   credentialId: string,
   status: Extract<CredentialStatus, "valid" | "invalid">,
 ): Promise<void> {
-  await withOperatorTransaction(async (client) => {
-    await client.query(
-      `UPDATE provider_credentials
-       SET status = $2, last_validated_at = NOW(), updated_at = NOW()
-       WHERE id = $1`,
-      [credentialId, status],
-    );
-  });
+  await withOperatorTransaction((tx) => tx.providerCredential.updateMany({
+    where: { id: credentialId },
+    data: { status, lastValidatedAt: new Date(), updatedAt: new Date() },
+  }).then(() => undefined));
 }
 
 export async function touchCredential(credentialId: string): Promise<void> {
-  await withOperatorTransaction(async (client) => {
-    await client.query("UPDATE provider_credentials SET last_used_at = NOW(), updated_at = NOW() WHERE id = $1", [credentialId]);
-  });
+  await withOperatorTransaction((tx) => tx.providerCredential.updateMany({
+    where: { id: credentialId },
+    data: { lastUsedAt: new Date(), updatedAt: new Date() },
+  }).then(() => undefined));
 }
 
-/**
- * Operational re-encryption primitive. Operators provide the old and new keys
- * out of band; this function returns only a count and never serializes secrets.
- */
+/** Operational re-encryption primitive. Returns only a count. */
 export async function rotateProviderCredentials(
   oldKey: string,
   newKey: string,
@@ -284,17 +328,16 @@ export async function rotateProviderCredentials(
   if (!Number.isInteger(newKeyVersion) || newKeyVersion < 1) {
     throw new Error("New provider credential key version must be a positive integer");
   }
-  return withOperatorTransaction(async (client) => {
-    const result = await client.query<ProviderCredentialRecord & { source_id: string | null }>(
-      `SELECT c.*, s.id AS source_id
-       FROM provider_credentials c
-       LEFT JOIN infrastructure_sources s ON s.credential_id = c.id
-       WHERE c.status != 'revoked'`,
-    );
-    for (const credential of result.rows) {
+  return withOperatorTransaction(async (tx) => {
+    const rows = await tx.providerCredential.findMany({
+      where: { status: { not: "revoked" } },
+      select: { ...credentialSelect, sources: { select: { id: true }, take: 1 } },
+    });
+    for (const row of rows) {
+      const credential = record(row);
       const sourceId = credential.owner_type === "account"
-        ? `account:${credential.account_id}:${credential.id}`
-        : credential.source_id;
+        ? accountCredentialSourceId(credential.account_id!, credential.id)
+        : row.sources[0]?.id;
       if (!sourceId) throw new Error("Operator credential is not bound to an infrastructure source");
       const oldContext = contextFor(credential, sourceId);
       const plaintext = decryptProviderCredential(credential.encrypted_value, oldKey, oldContext);
@@ -302,13 +345,11 @@ export async function rotateProviderCredentials(
         ...oldContext,
         keyVersion: newKeyVersion,
       });
-      await client.query(
-        `UPDATE provider_credentials
-         SET encrypted_value = $2, key_version = $3, updated_at = NOW()
-         WHERE id = $1`,
-        [credential.id, encryptedValue, newKeyVersion],
-      );
+      await tx.providerCredential.update({
+        where: { id: credential.id },
+        data: { encryptedValue, keyVersion: newKeyVersion, updatedAt: new Date() },
+      });
     }
-    return result.rows.length;
+    return rows.length;
   });
 }

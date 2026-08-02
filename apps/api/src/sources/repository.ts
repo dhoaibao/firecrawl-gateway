@@ -1,6 +1,7 @@
-import { withOperatorTransaction } from "../db";
+import { Prisma } from "@prisma/client";
+import { withOperatorTransaction } from "../infrastructure/database";
 import { decryptProviderCredential } from "../credentials/crypto";
-import { accountCredentialSourceId, type ProviderCredentialRecord } from "../credentials/repository";
+import { accountCredentialSourceId } from "../credentials/repository";
 import { hasPrivateTargetUrl } from "../utils";
 
 export type SourceKind = "cloud" | "self_hosted";
@@ -52,32 +53,92 @@ export interface CreateInfrastructureSourceInput {
   allowPrivateNetwork?: boolean;
 }
 
+const sourceSelect = Prisma.validator<Prisma.InfrastructureSourceSelect>()({
+  id: true,
+  name: true,
+  kind: true,
+  status: true,
+  priority: true,
+  baseUrl: true,
+  credentialId: true,
+  capabilities: true,
+  monthlyBudgetCents: true,
+  hardConcurrency: true,
+  requestTimeoutMs: true,
+  responseBufferMaxBytes: true,
+  healthStatus: true,
+  lastHealthCheckAt: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+const credentialSelect = {
+  id: true,
+  ownerType: true,
+  accountId: true,
+  purpose: true,
+  encryptedValue: true,
+  keyVersion: true,
+  status: true,
+  supersededAt: true,
+} satisfies Prisma.ProviderCredentialSelect;
+
+function mapSource(row: Prisma.InfrastructureSourceGetPayload<{ select: typeof sourceSelect }>): InfrastructureSourceRecord {
+  return {
+    id: row.id,
+    name: row.name,
+    kind: row.kind as SourceKind,
+    status: row.status as InfrastructureSourceRecord["status"],
+    priority: row.priority,
+    base_url: row.baseUrl,
+    credential_id: row.credentialId,
+    capabilities: Array.isArray(row.capabilities) ? row.capabilities.filter((item): item is string => typeof item === "string") : [],
+    monthly_budget_cents: row.monthlyBudgetCents === null ? null : row.monthlyBudgetCents.toString(),
+    hard_concurrency: row.hardConcurrency,
+    request_timeout_ms: row.requestTimeoutMs,
+    response_buffer_max_bytes: row.responseBufferMaxBytes,
+    health_status: row.healthStatus as InfrastructureSourceRecord["health_status"],
+    last_health_check_at: row.lastHealthCheckAt?.toISOString() ?? null,
+    created_at: row.createdAt.toISOString(),
+    updated_at: row.updatedAt.toISOString(),
+  };
+}
+
 export async function createInfrastructureSource(input: CreateInfrastructureSourceInput): Promise<InfrastructureSourceRecord> {
   const baseUrl = normalizeSourceUrl(input.kind, input.baseUrl ?? "", input.allowPrivateNetwork ?? false);
-  return withOperatorTransaction(async (client) => {
-    const result = await client.query<InfrastructureSourceRecord>(
-      `INSERT INTO infrastructure_sources (
-        id, name, kind, base_url, credential_id, priority, hard_concurrency,
-        request_timeout_ms, response_buffer_max_bytes, capabilities
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-      ON CONFLICT (id) DO UPDATE SET
-        name = EXCLUDED.name, base_url = EXCLUDED.base_url, credential_id = EXCLUDED.credential_id,
-        priority = EXCLUDED.priority, hard_concurrency = EXCLUDED.hard_concurrency,
-        request_timeout_ms = EXCLUDED.request_timeout_ms,
-        response_buffer_max_bytes = EXCLUDED.response_buffer_max_bytes,
-        capabilities = EXCLUDED.capabilities, updated_at = NOW()
-      RETURNING *`,
-      [
-        input.id, input.name, input.kind, baseUrl, input.credentialId ?? null,
-        input.priority ?? 100, input.hardConcurrency ?? 1, input.requestTimeoutMs ?? 120_000,
-        input.responseBufferMaxBytes ?? 5_242_880, input.capabilities ?? [],
-      ],
-    );
-    return result.rows[0];
+  return withOperatorTransaction(async (tx) => {
+    const row = await tx.infrastructureSource.upsert({
+      where: { id: input.id },
+      create: {
+        id: input.id,
+        name: input.name,
+        kind: input.kind,
+        baseUrl,
+        credentialId: input.credentialId ?? null,
+        priority: input.priority ?? 100,
+        hardConcurrency: input.hardConcurrency ?? 1,
+        requestTimeoutMs: input.requestTimeoutMs ?? 120_000,
+        responseBufferMaxBytes: input.responseBufferMaxBytes ?? 5_242_880,
+        capabilities: (input.capabilities ?? []) as Prisma.InputJsonValue,
+      },
+      update: {
+        name: input.name,
+        baseUrl,
+        credentialId: input.credentialId ?? null,
+        priority: input.priority ?? 100,
+        hardConcurrency: input.hardConcurrency ?? 1,
+        requestTimeoutMs: input.requestTimeoutMs ?? 120_000,
+        responseBufferMaxBytes: input.responseBufferMaxBytes ?? 5_242_880,
+        capabilities: (input.capabilities ?? []) as Prisma.InputJsonValue,
+        updatedAt: new Date(),
+      },
+      select: sourceSelect,
+    });
+    return mapSource(row);
   });
 }
 
-function normalizeSourceUrl(kind: SourceKind, value: string, allowPrivateNetwork: boolean): string {
+export function normalizeSourceUrl(kind: SourceKind, value: string, allowPrivateNetwork: boolean): string {
   if (kind === "cloud") return "";
   let url: URL;
   try {
@@ -101,27 +162,25 @@ export async function resolveInfrastructureSources(
   encryptionKey: string,
   cloudBaseUrl: string,
 ): Promise<ResolvedSource[]> {
-  return withOperatorTransaction(async (client) => {
+  return withOperatorTransaction(async (tx) => {
     const sources: ResolvedSource[] = [];
     if (fundingPreference !== "included") {
-      const byok = await client.query<ProviderCredentialRecord>(
-        `SELECT * FROM provider_credentials
-         WHERE owner_type = 'account' AND account_id = $1 AND purpose = 'firecrawl_cloud'
-           AND status = 'valid' AND superseded_at IS NULL
-         ORDER BY created_at DESC`,
-        [accountId],
-      );
-      for (const credential of byok.rows) {
+      const byok = await tx.providerCredential.findMany({
+        where: { ownerType: "account", accountId, purpose: "firecrawl_cloud", status: "valid", supersededAt: null },
+        orderBy: { createdAt: "desc" },
+        select: { ...credentialSelect, createdAt: true },
+      });
+      for (const credential of byok) {
         const sourceId = accountCredentialSourceId(accountId, credential.id);
         sources.push({
           id: sourceId,
           kind: "cloud",
           baseUrl: cloudBaseUrl,
-          credential: decryptProviderCredential(credential.encrypted_value, encryptionKey, {
-            purpose: credential.purpose,
+          credential: decryptProviderCredential(credential.encryptedValue, encryptionKey, {
+            purpose: credential.purpose as "firecrawl_cloud",
             ownerId: accountId,
             sourceId,
-            keyVersion: credential.key_version,
+            keyVersion: credential.keyVersion,
           }),
           credentialId: credential.id,
           fundingType: "byok",
@@ -133,40 +192,33 @@ export async function resolveInfrastructureSources(
       if (fundingPreference === "byok") return sources;
     }
 
-    const operatorSources = await client.query<InfrastructureSourceRecord & {
-      encrypted_value: string | null;
-      key_version: number | null;
-      purpose: "firecrawl_cloud" | "self_hosted_upstream" | null;
-    }>(
-      `SELECT s.*, c.encrypted_value, c.key_version, c.purpose
-       FROM infrastructure_sources s
-       LEFT JOIN provider_credentials c ON c.id = s.credential_id
-         AND c.status = 'valid' AND c.superseded_at IS NULL
-       WHERE s.status = 'active' AND (s.health_status != 'unhealthy' OR s.health_status = 'unknown')
-       ORDER BY s.priority ASC, s.created_at ASC`,
-    );
-    for (const source of operatorSources.rows) {
+    const operatorSources = await tx.infrastructureSource.findMany({
+      where: { status: "active", healthStatus: { not: "unhealthy" } },
+      orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
+      select: { ...sourceSelect, credential: { select: credentialSelect } },
+    });
+    for (const source of operatorSources) {
       let credential: string | undefined;
-      if (source.credential_id && source.encrypted_value && source.key_version && source.purpose) {
-        credential = decryptProviderCredential(source.encrypted_value, encryptionKey, {
-          purpose: source.purpose,
+      const stored = source.credential;
+      if (stored && stored.status === "valid" && !stored.supersededAt) {
+        credential = decryptProviderCredential(stored.encryptedValue, encryptionKey, {
+          purpose: stored.purpose as "firecrawl_cloud" | "self_hosted_upstream",
           ownerId: "operator",
           sourceId: source.id,
-          keyVersion: source.key_version,
+          keyVersion: stored.keyVersion,
         });
       }
-      // A Cloud source without a current valid credential is not dispatchable.
       if (source.kind === "cloud" && !credential) continue;
       sources.push({
         id: source.id,
-        kind: source.kind,
-        baseUrl: source.kind === "cloud" ? cloudBaseUrl : source.base_url,
+        kind: source.kind as SourceKind,
+        baseUrl: source.kind === "cloud" ? cloudBaseUrl : source.baseUrl,
         credential,
-        credentialId: source.credential_id ?? undefined,
+        credentialId: source.credentialId ?? undefined,
         fundingType: "included",
-        hardConcurrency: source.hard_concurrency,
-        requestTimeoutMs: source.request_timeout_ms,
-        responseBufferMaxBytes: source.response_buffer_max_bytes,
+        hardConcurrency: source.hardConcurrency,
+        requestTimeoutMs: source.requestTimeoutMs,
+        responseBufferMaxBytes: source.responseBufferMaxBytes,
       });
     }
     return sources;

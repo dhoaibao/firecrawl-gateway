@@ -1,23 +1,96 @@
 import crypto from "node:crypto";
-import { withClient, withOperatorTransaction, withTransaction } from "../db";
-import { resumeAccountEntitlementsWithClient } from "../quota/service";
+import { Prisma } from "@prisma/client";
+import { asDatabaseClient } from "../db";
+import { withOperatorTransaction } from "../infrastructure/database";
+import {
+  resumeAccountEntitlementsWithClient,
+  suspendAccountEntitlementsWithClient,
+} from "../quota/service";
 import type { User } from "../types";
 
 export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
-const USER_SELECT = `
-  SELECT u.*, personal_account.id AS account_id
-  FROM users u
-  LEFT JOIN LATERAL (
-    SELECT a.id
-    FROM accounts a
-    INNER JOIN account_memberships m ON m.account_id = a.id
-    WHERE m.user_id = u.id AND m.role = 'owner'
-    ORDER BY a.created_at ASC
-    LIMIT 1
-  ) personal_account ON true`;
+const userSelect = Prisma.validator<Prisma.UserSelect>()({
+  id: true,
+  email: true,
+  normalizedEmail: true,
+  name: true,
+  passwordHash: true,
+  isAdmin: true,
+  platformRole: true,
+  emailVerifiedAt: true,
+  authVersion: true,
+  status: true,
+  suspendedUntil: true,
+  createdAt: true,
+  updatedAt: true,
+  memberships: {
+    where: { role: "owner" },
+    orderBy: { createdAt: "asc" },
+    take: 1,
+    select: { accountId: true },
+  },
+});
+
+type SelectedUser = Prisma.UserGetPayload<{ select: typeof userSelect }>;
+
+function mapUser(row: SelectedUser, accountId = row.memberships[0]?.accountId): User {
+  return {
+    id: row.id,
+    email: row.email,
+    normalized_email: row.normalizedEmail,
+    name: row.name,
+    password_hash: row.passwordHash,
+    is_admin: row.isAdmin,
+    platform_role: row.platformRole,
+    email_verified_at: row.emailVerifiedAt?.toISOString() ?? null,
+    auth_version: row.authVersion,
+    mfa_enabled: undefined,
+    account_id: accountId,
+    status: row.status,
+    suspended_until: row.suspendedUntil?.toISOString() ?? null,
+    created_at: row.createdAt.toISOString(),
+    updated_at: row.updatedAt.toISOString(),
+  };
+}
+
+async function syncEntitlementsForStatus(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  status: string,
+): Promise<void> {
+  const client = asDatabaseClient(tx);
+  const accountId = `personal:${userId}`;
+  if (status === "active") {
+    await resumeAccountEntitlementsWithClient(client, accountId);
+  } else if (status === "suspended" || status === "blocked") {
+    await suspendAccountEntitlementsWithClient(client, accountId);
+  }
+}
+
+async function maybeReactivate(
+  tx: Prisma.TransactionClient,
+  row: SelectedUser | null,
+): Promise<User | null> {
+  if (!row) return null;
+  const user = mapUser(row);
+  if (user.status !== "suspended" || !user.suspended_until) return user;
+
+  const until = new Date(user.suspended_until);
+  if (until.getTime() > Date.now()) return user;
+
+  const reactivated = await tx.user.update({
+    where: { id: user.id },
+    data: { status: "active", suspendedUntil: null, updatedAt: new Date() },
+    select: userSelect,
+  });
+  if (user.account_id) {
+    await resumeAccountEntitlementsWithClient(asDatabaseClient(tx), user.account_id);
+  }
+  return mapUser(reactivated, user.account_id);
+}
 
 export async function createUser(
   email: string,
@@ -25,94 +98,68 @@ export async function createUser(
   passwordHash: string,
   isAdmin = false,
 ): Promise<User> {
-  return withOperatorTransaction(async (client) => {
+  return withOperatorTransaction(async (tx) => {
     const id = crypto.randomUUID();
     const normalizedEmail = normalizeEmail(email);
-    const result = await client.query<User>(
-      `INSERT INTO users (id, email, normalized_email, name, password_hash, is_admin, platform_role, status, suspended_until)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', NULL)
-       RETURNING *`,
-      [id, email.trim(), normalizedEmail, name, passwordHash, isAdmin, isAdmin ? 'admin' : 'user'],
-    );
-    await client.query(
-      `INSERT INTO accounts (id, display_name)
-       VALUES ($1, $2)
-       ON CONFLICT (id) DO NOTHING`,
-      [`personal:${id}`, name.trim() || normalizedEmail],
-    );
-    await client.query(
-      `INSERT INTO account_memberships (account_id, user_id, role)
-       VALUES ($1, $2, 'owner')
-       ON CONFLICT (account_id, user_id) DO NOTHING`,
-      [`personal:${id}`, id],
-    );
-    return { ...result.rows[0], account_id: `personal:${id}` };
+    const user = await tx.user.create({
+      data: {
+        id,
+        email: email.trim(),
+        normalizedEmail,
+        name,
+        passwordHash,
+        isAdmin,
+        platformRole: isAdmin ? "admin" : "user",
+        status: "active",
+      },
+      select: userSelect,
+    });
+    const accountId = `personal:${id}`;
+    await tx.account.upsert({
+      where: { id: accountId },
+      create: { id: accountId, displayName: name.trim() || normalizedEmail },
+      update: {},
+    });
+    await tx.accountMembership.upsert({
+      where: { accountId_userId: { accountId, userId: id } },
+      create: { accountId, userId: id, role: "owner" },
+      update: {},
+    });
+    return mapUser(user, accountId);
   });
 }
 
-async function maybeReactivate(
-  client: import("pg").PoolClient,
-  user: User | null,
-): Promise<User | null> {
-  if (!user) return null;
-  if (user.status === "suspended" && user.suspended_until) {
-    const until = new Date(user.suspended_until);
-    if (until.getTime() <= Date.now()) {
-      const result = await client.query<User>(
-        "UPDATE users SET status = 'active', suspended_until = NULL WHERE id = $1 RETURNING *",
-        [user.id],
-      );
-      const reactivated = result.rows[0]
-        ? { ...result.rows[0], account_id: user.account_id }
-        : user;
-      if (user.account_id) {
-        // Keep user and entitlement reactivation in the same operator
-        // transaction. A quota failure rolls back the user update so a later
-        // login/session lookup retries instead of observing a half-reactivated account.
-        await resumeAccountEntitlementsWithClient(client, user.account_id);
-      }
-      return reactivated;
-    }
-  }
-  return user;
-}
-
 export async function getUserByEmail(email: string): Promise<User | null> {
-  return withClient(async (client) => {
-    const result = await client.query<User>(
-      `${USER_SELECT}\n  WHERE u.normalized_email = $1`,
-      [normalizeEmail(email)],
-    );
-    return maybeReactivate(client, result.rows[0] || null);
-  }, { operator: true });
+  return withOperatorTransaction(async (tx) => {
+    const row = await tx.user.findUnique({
+      where: { normalizedEmail: normalizeEmail(email) },
+      select: userSelect,
+    });
+    return maybeReactivate(tx, row);
+  });
 }
 
 export async function getUserById(id: string): Promise<User | null> {
-  return withClient(async (client) => {
-    const result = await client.query<User>(
-      `${USER_SELECT}\n  WHERE u.id = $1`,
-      [id],
-    );
-    return maybeReactivate(client, result.rows[0] || null);
-  }, { operator: true });
+  return withOperatorTransaction(async (tx) => {
+    const row = await tx.user.findUnique({ where: { id }, select: userSelect });
+    return maybeReactivate(tx, row);
+  });
 }
 
 export async function listUsers(): Promise<User[]> {
-  return withClient(async (client) => {
-    const result = await client.query<User>(
-      `${USER_SELECT}\n  ORDER BY u.created_at DESC`,
-    );
-    // Only reactivate in-place without DB writes to avoid side effects on reads
-    return result.rows.map((u) => {
-      if (u.status === "suspended" && u.suspended_until) {
-        const until = new Date(u.suspended_until);
-        if (until.getTime() <= Date.now()) {
-          return { ...u, status: "active" as const, suspended_until: null };
-        }
-      }
-      return u;
+  return withOperatorTransaction(async (tx) => {
+    const rows = await tx.user.findMany({
+      orderBy: { createdAt: "desc" },
+      select: userSelect,
     });
-  }, { operator: true });
+    return rows.map((row) => {
+      const user = mapUser(row);
+      if (user.status === "suspended" && user.suspended_until && new Date(user.suspended_until).getTime() <= Date.now()) {
+        return { ...user, status: "active", suspended_until: null };
+      }
+      return user;
+    });
+  });
 }
 
 export async function updateUser(
@@ -126,111 +173,99 @@ export async function updateUser(
     suspended_until?: string | null;
   },
 ): Promise<User | null> {
-  return withClient(async (client) => {
-    const fields: string[] = [];
-    const values: unknown[] = [];
-    let paramIndex = 1;
+  const data: Prisma.UserUpdateInput = {};
+  if (updates.name !== undefined) data.name = updates.name;
+  if (updates.email !== undefined) {
+    data.email = updates.email.trim();
+    data.normalizedEmail = normalizeEmail(updates.email);
+  }
+  if (updates.password_hash !== undefined) {
+    data.passwordHash = updates.password_hash;
+    data.authVersion = { increment: 1 };
+  }
+  if (updates.is_admin !== undefined) {
+    data.isAdmin = updates.is_admin;
+    data.platformRole = updates.is_admin ? "admin" : "user";
+  }
+  if (updates.status !== undefined) data.status = updates.status;
+  if (updates.suspended_until !== undefined) {
+    data.suspendedUntil = updates.suspended_until ? new Date(updates.suspended_until) : null;
+  }
+  if (Object.keys(data).length === 0) return getUserById(id);
 
-    if (updates.name !== undefined) {
-      fields.push(`name = $${paramIndex++}`);
-      values.push(updates.name);
-    }
-    if (updates.email !== undefined) {
-      fields.push(`email = $${paramIndex++}`);
-      values.push(updates.email.trim());
-      fields.push(`normalized_email = $${paramIndex++}`);
-      values.push(normalizeEmail(updates.email));
-    }
-    if (updates.password_hash !== undefined) {
-      fields.push(`password_hash = $${paramIndex++}`);
-      values.push(updates.password_hash);
-      fields.push("auth_version = auth_version + 1");
-    }
-    if (updates.is_admin !== undefined) {
-      fields.push(`is_admin = $${paramIndex++}`);
-      values.push(updates.is_admin);
-      fields.push(`platform_role = $${paramIndex++}`);
-      values.push(updates.is_admin ? "admin" : "user");
-    }
-    if (updates.status !== undefined) {
-      fields.push(`status = $${paramIndex++}`);
-      values.push(updates.status);
-    }
-    if (updates.suspended_until !== undefined) {
-      fields.push(`suspended_until = $${paramIndex++}`);
-      values.push(updates.suspended_until);
-    }
-
-    if (fields.length === 0) {
-      return getUserById(id);
-    }
-
-    values.push(id);
-    const result = await client.query<User>(
-      `UPDATE users SET ${fields.join(", ")}, updated_at = NOW() WHERE id = $${paramIndex} RETURNING *`,
-      values,
-    );
-    return result.rows[0] || null;
+  return withOperatorTransaction(async (tx) => {
+    const row = await tx.user.update({ where: { id }, data, select: userSelect }).catch((error: unknown) => {
+      if ((error as { code?: string }).code === "P2025") return null;
+      throw error;
+    });
+    if (!row) return null;
+    if (updates.status !== undefined) await syncEntitlementsForStatus(tx, id, updates.status);
+    return mapUser(row);
   });
 }
 
 export async function suspendUser(id: string, durationMs: number): Promise<User | null> {
-  return withClient(async (client) => {
-    const result = await client.query<User>(
-      `UPDATE users SET status = 'suspended', suspended_until = NOW() + ($1 || ' milliseconds')::interval, updated_at = NOW()
-       WHERE id = $2 RETURNING *`,
-      [String(durationMs), id],
-    );
-    return result.rows[0] || null;
+  return withOperatorTransaction(async (tx) => {
+    const row = await tx.user.update({
+      where: { id },
+      data: { status: "suspended", suspendedUntil: new Date(Date.now() + durationMs), updatedAt: new Date() },
+      select: userSelect,
+    }).catch((error: unknown) => {
+      if ((error as { code?: string }).code === "P2025") return null;
+      throw error;
+    });
+    if (!row) return null;
+    await syncEntitlementsForStatus(tx, id, "suspended");
+    return mapUser(row);
   });
 }
 
 export async function blockUser(id: string): Promise<User | null> {
-  return withClient(async (client) => {
-    const result = await client.query<User>(
-      `UPDATE users SET status = 'blocked', suspended_until = NULL, updated_at = NOW()
-       WHERE id = $1 RETURNING *`,
-      [id],
-    );
-    return result.rows[0] || null;
+  return withOperatorTransaction(async (tx) => {
+    const row = await tx.user.update({
+      where: { id },
+      data: { status: "blocked", suspendedUntil: null, updatedAt: new Date() },
+      select: userSelect,
+    }).catch((error: unknown) => {
+      if ((error as { code?: string }).code === "P2025") return null;
+      throw error;
+    });
+    if (!row) return null;
+    await syncEntitlementsForStatus(tx, id, "blocked");
+    return mapUser(row);
   });
 }
 
 export async function activateUser(id: string): Promise<User | null> {
-  return withClient(async (client) => {
-    const result = await client.query<User>(
-      `UPDATE users SET status = 'active', suspended_until = NULL, updated_at = NOW()
-       WHERE id = $1 RETURNING *`,
-      [id],
-    );
-    const user = result.rows[0] || null;
-    if (user) {
-      // Explicit activation must not commit a user state that quota could not
-      // restore. Both updates share the operator transaction and roll back
-      // together if entitlement restoration fails.
-      await resumeAccountEntitlementsWithClient(client, `personal:${user.id}`);
-    }
+  return withOperatorTransaction(async (tx) => {
+    const row = await tx.user.update({
+      where: { id },
+      data: { status: "active", suspendedUntil: null, updatedAt: new Date() },
+      select: userSelect,
+    }).catch((error: unknown) => {
+      if ((error as { code?: string }).code === "P2025") return null;
+      throw error;
+    });
+    if (!row) return null;
+    const user = mapUser(row);
+    await syncEntitlementsForStatus(tx, user.id, "active");
     return user;
-  }, { operator: true });
+  });
 }
 
 export function checkUserAccess(user: User): { allowed: true } | { allowed: false; reason: string } {
-  if (user.status === "blocked") {
-    return { allowed: false, reason: "Account blocked" };
-  }
+  if (user.status === "blocked") return { allowed: false, reason: "Account blocked" };
   if (user.status === "suspended") {
     if (user.suspended_until) {
       const until = new Date(user.suspended_until);
-      const now = Date.now();
-      if (until.getTime() > now) {
-        const diff = until.getTime() - now;
+      if (until.getTime() > Date.now()) {
+        const diff = until.getTime() - Date.now();
         const hours = Math.ceil(diff / (1000 * 60 * 60));
         const days = Math.ceil(diff / (1000 * 60 * 60 * 24));
         const label = days > 1 ? `${days} days` : `${hours} hour${hours > 1 ? "s" : ""}`;
         return { allowed: false, reason: `Account suspended. Try again in ${label}.` };
       }
     }
-    // Auto-suspension (suspended_until = NULL) or any other suspended state blocks access.
     return { allowed: false, reason: "Account suspended" };
   }
   return { allowed: true };
@@ -240,41 +275,27 @@ export type DeleteUserResult = "deleted" | "not_found" | "last_admin";
 const ADMIN_DELETE_GUARD_LOCK = 4_271_001;
 
 export async function deleteUserSafely(id: string): Promise<DeleteUserResult> {
-  return withTransaction(async (client) => {
-    const targetResult = await client.query<Pick<User, "id" | "is_admin">>(
-      "SELECT id, is_admin FROM users WHERE id = $1 FOR UPDATE",
-      [id],
+  return withOperatorTransaction(async (tx) => {
+    const target = await tx.$queryRaw<Array<{ id: string; is_admin: boolean }>>(
+      Prisma.sql`SELECT id, is_admin FROM users WHERE id = ${id} FOR UPDATE`,
     );
-    const target = targetResult.rows[0];
-    if (!target) return "not_found";
+    if (!target[0]) return "not_found";
 
-    if (target.is_admin) {
-      await client.query("SELECT pg_advisory_xact_lock($1)", [ADMIN_DELETE_GUARD_LOCK]);
-      const adminCount = await client.query<{ count: string }>(
-        "SELECT COUNT(*) as count FROM users WHERE platform_role = 'admin' OR is_admin = true",
-      );
-      if (parseInt(adminCount.rows[0].count, 10) <= 1) return "last_admin";
+    if (target[0].is_admin) {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${ADMIN_DELETE_GUARD_LOCK})`;
+      const adminCount = await tx.user.count({ where: { OR: [{ platformRole: "admin" }, { isAdmin: true }] } });
+      if (adminCount <= 1) return "last_admin";
     }
 
-    await client.query("DELETE FROM users WHERE id = $1", [id]);
+    await tx.user.delete({ where: { id } });
     return "deleted";
   });
 }
 
 export async function countUsers(): Promise<number> {
-  return withClient(async (client) => {
-    const result = await client.query<{ count: string }>(
-      "SELECT COUNT(*) as count FROM users",
-    );
-    return parseInt(result.rows[0].count, 10);
-  });
+  return withOperatorTransaction((tx) => tx.user.count());
 }
 
 export async function countAdmins(): Promise<number> {
-  return withClient(async (client) => {
-    const result = await client.query<{ count: string }>(
-      "SELECT COUNT(*) as count FROM users WHERE platform_role = 'admin' OR is_admin = true",
-    );
-    return parseInt(result.rows[0].count, 10);
-  });
+  return withOperatorTransaction((tx) => tx.user.count({ where: { OR: [{ platformRole: "admin" }, { isAdmin: true }] } }));
 }

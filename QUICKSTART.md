@@ -13,9 +13,11 @@ Run the gateway with a pre-built image. Firecrawl and PostgreSQL are external se
 ```bash
 cp .env.example .env
 # Set DATABASE_URL, OPERATOR_DATABASE_URL, MIGRATION_DATABASE_URL, and the remaining required credentials in .env
-# Apply migrations as a one-off deployment step before starting the API.
+# Bootstrap the fresh database as a one-off deployment step; use db:baseline for an existing database after review.
 docker compose -f docker-compose.prebuilt.yaml run --rm --no-deps \
-  -e MIGRATION_DATABASE_URL gateway node apps/api/scripts/migrate.cjs up
+  -e DATABASE_URL="$MIGRATION_DATABASE_URL" gateway npm run db:deploy --workspace @firecrawl/api
+docker compose -f docker-compose.prebuilt.yaml run --rm --no-deps \
+  -e DATABASE_URL="$MIGRATION_DATABASE_URL" gateway npm run db:security --workspace @firecrawl/api
 docker compose -f docker-compose.prebuilt.yaml up -d
 ```
 
@@ -24,7 +26,9 @@ For a source build instead:
 ```bash
 docker compose build
 docker compose run --rm --no-deps \
-  -e MIGRATION_DATABASE_URL gateway node apps/api/scripts/migrate.cjs up
+  -e DATABASE_URL="$MIGRATION_DATABASE_URL" gateway npm run db:deploy --workspace @firecrawl/api
+docker compose run --rm --no-deps \
+  -e DATABASE_URL="$MIGRATION_DATABASE_URL" gateway npm run db:security --workspace @firecrawl/api
 docker compose up -d
 ```
 

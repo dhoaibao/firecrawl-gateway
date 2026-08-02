@@ -1,24 +1,24 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { getDefaultRouteMode, clearSettingsCache } from "./service";
 
-const mockQuery = vi.hoisted(() => vi.fn());
-const mockRelease = vi.hoisted(() => vi.fn());
-const mockConnect = vi.hoisted(() => vi.fn());
+const state = vi.hoisted(() => ({
+  findUnique: vi.fn(),
+  findMany: vi.fn(),
+  upsert: vi.fn(),
+  deleteMany: vi.fn(),
+}));
 
-vi.mock("../db", () => ({
-  withClient: async <T, >(fn: (client: unknown) => Promise<T>): Promise<T> => {
-    const client = { query: mockQuery, release: mockRelease };
-    try {
-      return await fn(client);
-    } finally {
-      mockRelease();
-    }
-  },
-  getPool: () => ({
-    connect: mockConnect,
+vi.mock("../infrastructure/database", () => ({
+  getPrisma: () => ({
+    runtime: {
+      setting: {
+        findUnique: state.findUnique,
+        findMany: state.findMany,
+        upsert: state.upsert,
+        deleteMany: state.deleteMany,
+      },
+    },
   }),
-  initDatabase: vi.fn(),
-  pingDatabase: vi.fn(),
 }));
 
 describe("getDefaultRouteMode", () => {
@@ -28,34 +28,26 @@ describe("getDefaultRouteMode", () => {
   });
 
   it("returns the stored value when valid", async () => {
-    mockQuery.mockResolvedValue({
-      rows: [
-        {
-          key: "default_route_mode",
-          value: "cloud-first",
-          updated_at: new Date().toISOString(),
-        },
-      ],
+    state.findUnique.mockResolvedValue({
+      key: "default_route_mode",
+      value: "cloud-first",
+      updatedAt: new Date(),
     });
     const result = await getDefaultRouteMode("self-hosted-first");
     expect(result).toBe("cloud-first");
   });
 
   it("falls back when setting is missing", async () => {
-    mockQuery.mockResolvedValue({ rows: [] });
+    state.findUnique.mockResolvedValue(null);
     const result = await getDefaultRouteMode("self-hosted-first");
     expect(result).toBe("self-hosted-first");
   });
 
   it("falls back when stored value is invalid", async () => {
-    mockQuery.mockResolvedValue({
-      rows: [
-        {
-          key: "default_route_mode",
-          value: "invalid",
-          updated_at: new Date().toISOString(),
-        },
-      ],
+    state.findUnique.mockResolvedValue({
+      key: "default_route_mode",
+      value: "invalid",
+      updatedAt: new Date(),
     });
     const result = await getDefaultRouteMode("self-hosted-only");
     expect(result).toBe("self-hosted-only");

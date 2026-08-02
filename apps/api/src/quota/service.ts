@@ -3,7 +3,7 @@ import { withOperatorTransaction } from "../db";
 import { rootLogger } from "../logger";
 import { currentPeriodRange } from "./periods";
 import * as repo from "./repository";
-import type { PoolClient } from "pg";
+import type { DatabaseClient } from "../db";
 import type {
   AccountEntitlementRecord,
   AdmissionOutcome,
@@ -51,7 +51,7 @@ function grantForPeriod(policy: FreeTierPolicyRecord, periodId: string): number 
   return Number(grant) > 0 ? Number(grant) : policy.default_grant;
 }
 
-export async function isAccountEligible(client: PoolClient, accountId: string): Promise<boolean> {
+export async function isAccountEligible(client: DatabaseClient, accountId: string): Promise<boolean> {
   const result = await client.query<{ email_verified_at: string | null; user_status: string; account_status: string }>(
     `SELECT u.email_verified_at, u.status AS user_status, a.status AS account_status
      FROM accounts a
@@ -66,7 +66,7 @@ export async function isAccountEligible(client: PoolClient, accountId: string): 
 
 /** Idempotent per-account entitlement issuance (lazy recovery path). */
 export async function ensureEntitlementFor(
-  client: PoolClient,
+  client: DatabaseClient,
   accountId: string,
   periodId: string,
 ): Promise<AccountEntitlementRecord | null> {
@@ -94,7 +94,7 @@ export async function admitAccount(accountId: string, actor = "verification", no
 
 /** Transaction-scoped admission used by verification and other callers that already own a client. */
 export async function admitAccountWithClient(
-  client: PoolClient,
+  client: DatabaseClient,
   accountId: string,
   actor = "verification",
   now = new Date(),
@@ -160,7 +160,7 @@ export async function openNextPeriod(now = new Date()): Promise<{ period: QuotaP
 
 /** Apply scheduled next-period changes to the policy and enrollments. */
 async function applyScheduledChanges(
-  client: PoolClient,
+  client: DatabaseClient,
   policy: FreeTierPolicyRecord,
   periodId: string,
   period: QuotaPeriodRecord,
@@ -245,7 +245,7 @@ async function applyScheduledChanges(
 }
 
 async function applyGrantChangeToEnrollments(
-  client: PoolClient,
+  client: DatabaseClient,
   newGrant: number,
 ): Promise<{ applied: number; skipped: number; commitmentDelta: number }> {
   const result = await client.query<{ account_id: string; grant_amount: number }>(
@@ -288,7 +288,7 @@ async function applyGrantChangeToEnrollments(
 }
 
 function appendPolicyChange(
-  client: PoolClient,
+  client: DatabaseClient,
   before: FreeTierPolicyRecord,
   after: FreeTierPolicyRecord,
   actor: string,
@@ -446,11 +446,17 @@ export async function reconcileExpiredReservations(batch = WAITLIST_BATCH): Prom
 
 /** Step 2: suspension blocks spending without freeing the permanent slot. */
 export async function suspendAccountEntitlements(accountId: string): Promise<number> {
-  return withOperatorTransaction(async (client) => {
-    const updated = await repo.setEntitlementStatusForAccount(client, accountId, "suspended");
-    if (updated > 0) logger.info({ accountId, updated }, "Suspended account entitlements");
-    return updated;
-  });
+  return withOperatorTransaction((client) => suspendAccountEntitlementsWithClient(client, accountId));
+}
+
+/** Transaction-scoped quota suspension used by user status transitions. */
+export async function suspendAccountEntitlementsWithClient(
+  client: DatabaseClient,
+  accountId: string,
+): Promise<number> {
+  const updated = await repo.setEntitlementStatusForAccount(client, accountId, "suspended");
+  if (updated > 0) logger.info({ accountId, updated }, "Suspended account entitlements");
+  return updated;
 }
 
 /** Reactivation resumes the remaining entitlement or issues one for the period. */
@@ -460,7 +466,7 @@ export async function resumeAccountEntitlements(accountId: string, now = new Dat
 
 /** Transaction-scoped quota resume used by authentication reactivation flows. */
 export async function resumeAccountEntitlementsWithClient(
-  client: PoolClient,
+  client: DatabaseClient,
   accountId: string,
   now = new Date(),
 ): Promise<AccountEntitlementRecord | null> {

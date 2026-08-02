@@ -1,7 +1,7 @@
 import bcrypt from "bcrypt";
 import type { Socket } from "node:net";
 import { parseConfig } from "./config";
-import { initDatabase, getOperatorPool, getPool } from "./db";
+import { closeDatabase, initDatabase } from "./db";
 import { bootstrapAdminUser } from "./db/bootstrap";
 import { createAuditStore } from "./audit-store";
 import { createProxyHandler } from "./proxy";
@@ -66,9 +66,8 @@ export async function startServer() {
       rootLogger.info("HTTP server closed");
       try {
         await auditStore.flush?.(5_000);
-        await getPool().end();
-        await getOperatorPool().end();
-        rootLogger.info("Database pools closed");
+        await closeDatabase();
+        rootLogger.info("Prisma database clients closed");
         process.exit(0);
       } catch (poolErr) {
         rootLogger.error({ err: poolErr }, "Error closing database pool");

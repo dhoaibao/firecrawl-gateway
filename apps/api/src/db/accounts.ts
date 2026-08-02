@@ -1,5 +1,5 @@
-import type { PoolClient } from "pg";
-import { withAccountTransaction, withOperatorTransaction } from "./index";
+import type { Prisma } from "@prisma/client";
+import { withAccountTransaction, withOperatorTransaction } from "../infrastructure/database";
 
 export interface AccountRecord {
   id: string;
@@ -19,59 +19,90 @@ export interface AccountMembershipRecord {
   updated_at: string;
 }
 
+function accountRecord(account: {
+  id: string;
+  publicId: string;
+  displayName: string;
+  status: string;
+  fundingPreference: string;
+  createdAt: Date;
+  updatedAt: Date;
+}): AccountRecord {
+  return {
+    id: account.id,
+    public_id: account.publicId,
+    display_name: account.displayName,
+    status: account.status,
+    funding_preference: account.fundingPreference as AccountRecord["funding_preference"],
+    created_at: account.createdAt.toISOString(),
+    updated_at: account.updatedAt.toISOString(),
+  };
+}
+
+function membershipRecord(membership: {
+  accountId: string;
+  userId: string;
+  role: string;
+  createdAt: Date;
+  updatedAt: Date;
+}): AccountMembershipRecord {
+  return {
+    account_id: membership.accountId,
+    user_id: membership.userId,
+    role: membership.role as AccountMembershipRecord["role"],
+    created_at: membership.createdAt.toISOString(),
+    updated_at: membership.updatedAt.toISOString(),
+  };
+}
+
+const accountSelect = {
+  id: true,
+  publicId: true,
+  displayName: true,
+  status: true,
+  fundingPreference: true,
+  createdAt: true,
+  updatedAt: true,
+} satisfies Prisma.AccountSelect;
+
 export async function getAccountById(accountId: string): Promise<AccountRecord | null> {
-  return withOperatorTransaction(async (client) => {
-    const result = await client.query<AccountRecord>(
-      `SELECT id, public_id, display_name, status, funding_preference, created_at, updated_at
-       FROM accounts WHERE id = $1`,
-      [accountId],
-    );
-    return result.rows[0] || null;
+  return withOperatorTransaction(async (tx) => {
+    const account = await tx.account.findUnique({ where: { id: accountId }, select: accountSelect });
+    return account ? accountRecord(account) : null;
   });
 }
 
 export async function getAccountByPublicId(publicId: string): Promise<AccountRecord | null> {
-  return withOperatorTransaction(async (client) => {
-    const result = await client.query<AccountRecord>(
-      `SELECT id, public_id, display_name, status, funding_preference, created_at, updated_at
-       FROM accounts WHERE public_id = $1`,
-      [publicId],
-    );
-    return result.rows[0] || null;
+  return withOperatorTransaction(async (tx) => {
+    const account = await tx.account.findUnique({ where: { publicId }, select: accountSelect });
+    return account ? accountRecord(account) : null;
   });
 }
 
 export async function getPersonalAccountForUser(userId: string): Promise<AccountRecord | null> {
-  return withOperatorTransaction(async (client) => {
-    const result = await client.query<AccountRecord>(
-      `SELECT a.id, a.public_id, a.display_name, a.status, a.funding_preference, a.created_at, a.updated_at
-       FROM accounts a
-       INNER JOIN account_memberships m ON m.account_id = a.id
-       WHERE m.user_id = $1 AND m.role = 'owner'
-       ORDER BY a.created_at ASC
-       LIMIT 1`,
-      [userId],
-    );
-    return result.rows[0] || null;
+  return withOperatorTransaction(async (tx) => {
+    const membership = await tx.accountMembership.findFirst({
+      where: { userId, role: "owner" },
+      orderBy: { createdAt: "asc" },
+      select: { account: { select: accountSelect } },
+    });
+    return membership?.account ? accountRecord(membership.account) : null;
   });
 }
 
 export async function listAccountMemberships(accountId: string): Promise<AccountMembershipRecord[]> {
-  return withAccountTransaction(accountId, async (client) => {
-    const result = await client.query<AccountMembershipRecord>(
-      `SELECT account_id, user_id, role, created_at, updated_at
-       FROM account_memberships
-       WHERE account_id = $1
-       ORDER BY created_at ASC, user_id ASC`,
-      [accountId],
-    );
-    return result.rows;
+  return withAccountTransaction(accountId, async (tx) => {
+    const memberships = await tx.accountMembership.findMany({
+      where: { accountId },
+      orderBy: [{ createdAt: "asc" }, { userId: "asc" }],
+    });
+    return memberships.map(membershipRecord);
   });
 }
 
 export async function withAccountRepository<T>(
   accountId: string,
-  fn: (client: PoolClient) => Promise<T>,
+  fn: (tx: Prisma.TransactionClient) => Promise<T>,
 ): Promise<T> {
   return withAccountTransaction(accountId, fn);
 }

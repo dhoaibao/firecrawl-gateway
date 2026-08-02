@@ -1,5 +1,3 @@
 -- Deprecated compatibility marker.
--- Database DDL is managed by ordered migrations in apps/api/migrations.
--- Apply them explicitly with:
---   MIGRATION_DATABASE_URL=... npm run migrate:up --workspace @firecrawl/api
--- The API never executes this file during startup.
+-- The database schema is defined by apps/api/prisma/schema.prisma and its checked-in Prisma baseline migration.
+-- PostgreSQL-specific security objects are in apps/api/prisma/security.sql.

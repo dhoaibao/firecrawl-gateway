@@ -1,37 +1,34 @@
 import crypto from "node:crypto";
-import { rootLogger } from "../logger";
-import { withOperatorTransaction } from "./index";
+import { withOperatorTransaction } from "../infrastructure/database";
 import { normalizeEmail } from "../users/service";
+import { rootLogger } from "../logger";
 
 export async function bootstrapAdminUser(
   email: string,
   name: string,
   passwordHash: string,
 ): Promise<void> {
-  await withOperatorTransaction(async (client) => {
+  await withOperatorTransaction(async (tx) => {
     const normalizedEmail = normalizeEmail(email);
-    const existing = await client.query<{ id: string }>(
-      "SELECT id FROM users WHERE normalized_email = $1",
-      [normalizedEmail],
-    );
-    if (existing.rows.length > 0) return;
+    const existing = await tx.user.findUnique({ where: { normalizedEmail }, select: { id: true } });
+    if (existing) return;
 
     const id = crypto.randomUUID();
-    await client.query(
-      `INSERT INTO users
-         (id, email, normalized_email, name, password_hash, is_admin, platform_role, status, email_verified_at)
-       VALUES ($1, $2, $3, $4, $5, true, 'admin', 'active', NOW())`,
-      [id, email.trim(), normalizedEmail, name, passwordHash],
-    );
-    await client.query(
-      "INSERT INTO accounts (id, display_name) VALUES ($1, $2)",
-      [`personal:${id}`, name.trim() || normalizedEmail],
-    );
-    await client.query(
-      `INSERT INTO account_memberships (account_id, user_id, role)
-       VALUES ($1, $2, 'owner')`,
-      [`personal:${id}`, id],
-    );
+    await tx.user.create({
+      data: {
+        id,
+        email: email.trim(),
+        normalizedEmail,
+        name,
+        passwordHash,
+        isAdmin: true,
+        platformRole: "admin",
+        status: "active",
+        emailVerifiedAt: new Date(),
+      },
+    });
+    await tx.account.create({ data: { id: `personal:${id}`, displayName: name.trim() || normalizedEmail } });
+    await tx.accountMembership.create({ data: { accountId: `personal:${id}`, userId: id, role: "owner" } });
 
     rootLogger.info({ email: normalizedEmail }, "Admin user created");
   });

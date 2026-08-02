@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { PoolClient } from "pg";
+import type { DatabaseClient } from "../db";
 import type {
   AccountEntitlementRecord,
   FreeTierEnrollmentRecord,
@@ -55,15 +55,15 @@ function entitlementKey(accountId: string, periodId: string): string {
 class FakeRepo {
   constructor(public state: FakeState) {}
 
-  async getPolicy(_client: PoolClient): Promise<FreeTierPolicyRecord | null> {
+  async getPolicy(_client: DatabaseClient): Promise<FreeTierPolicyRecord | null> {
     return { ...this.state.policy };
   }
 
-  async lockPolicy(_client: PoolClient): Promise<FreeTierPolicyRecord | null> {
+  async lockPolicy(_client: DatabaseClient): Promise<FreeTierPolicyRecord | null> {
     return { ...this.state.policy };
   }
 
-  async incrementCommitment(_client: PoolClient, grant: number): Promise<boolean> {
+  async incrementCommitment(_client: DatabaseClient, grant: number): Promise<boolean> {
     const policy = this.state.policy;
     if (!policy.admissions_enabled) return false;
     if (policy.committed_amount + grant > policy.commitment_ceiling) return false;
@@ -72,24 +72,24 @@ class FakeRepo {
     return true;
   }
 
-  async decrementCommitment(_client: PoolClient, grant: number): Promise<boolean> {
+  async decrementCommitment(_client: DatabaseClient, grant: number): Promise<boolean> {
     if (this.state.policy.committed_amount < grant) return false;
     this.state.policy.committed_amount = Math.max(this.state.policy.committed_amount - grant, 0);
     this.state.policy.version += 1;
     return true;
   }
 
-  async getEnrollment(_client: PoolClient, accountId: string): Promise<FreeTierEnrollmentRecord | null> {
+  async getEnrollment(_client: DatabaseClient, accountId: string): Promise<FreeTierEnrollmentRecord | null> {
     const row = this.state.enrollments.get(accountId);
     return row ? { ...row } : null;
   }
 
-  async lockEnrollment(_client: PoolClient, accountId: string): Promise<FreeTierEnrollmentRecord | null> {
+  async lockEnrollment(_client: DatabaseClient, accountId: string): Promise<FreeTierEnrollmentRecord | null> {
     return this.getEnrollment(_client, accountId);
   }
 
   async insertEnrollment(
-    _client: PoolClient,
+    _client: DatabaseClient,
     accountId: string,
     status: FreeTierEnrollmentRecord["status"],
     grant: number,
@@ -116,7 +116,7 @@ class FakeRepo {
   }
 
   async updateEnrollmentStatus(
-    _client: PoolClient,
+    _client: DatabaseClient,
     accountId: string,
     status: FreeTierEnrollmentRecord["status"],
     actor: string,
@@ -135,7 +135,7 @@ class FakeRepo {
     return { ...row };
   }
 
-  async markWaitlistSkipped(_client: PoolClient, accountId: string, actor: string, reason: string): Promise<FreeTierEnrollmentRecord | null> {
+  async markWaitlistSkipped(_client: DatabaseClient, accountId: string, actor: string, reason: string): Promise<FreeTierEnrollmentRecord | null> {
     const row = this.state.enrollments.get(accountId);
     if (!row || row.status !== "waitlisted") return null;
     row.operator_reason = reason;
@@ -145,17 +145,17 @@ class FakeRepo {
     return { ...row };
   }
 
-  async getPeriod(_client: PoolClient, periodId: string): Promise<QuotaPeriodRecord | null> {
+  async getPeriod(_client: DatabaseClient, periodId: string): Promise<QuotaPeriodRecord | null> {
     const row = this.state.periods.get(periodId);
     return row ? { ...row } : null;
   }
 
-  async lockOpenPeriod(_client: PoolClient): Promise<QuotaPeriodRecord | null> {
+  async lockOpenPeriod(_client: DatabaseClient): Promise<QuotaPeriodRecord | null> {
     const row = [...this.state.periods.values()].find((period) => period.status === "open");
     return row ? { ...row } : null;
   }
 
-  async upsertPeriod(_client: PoolClient, periodId: string, start: Date, end: Date, hardCap: number): Promise<QuotaPeriodRecord> {
+  async upsertPeriod(_client: DatabaseClient, periodId: string, start: Date, end: Date, hardCap: number): Promise<QuotaPeriodRecord> {
     const existing = this.state.periods.get(periodId);
     if (existing) return { ...existing };
     const row: QuotaPeriodRecord = {
@@ -173,13 +173,13 @@ class FakeRepo {
     return { ...row };
   }
 
-  async getEntitlement(_client: PoolClient, accountId: string, periodId: string): Promise<AccountEntitlementRecord | null> {
+  async getEntitlement(_client: DatabaseClient, accountId: string, periodId: string): Promise<AccountEntitlementRecord | null> {
     const row = this.state.entitlements.get(entitlementKey(accountId, periodId));
     return row ? { ...row } : null;
   }
 
   async insertEntitlement(
-    _client: PoolClient,
+    _client: DatabaseClient,
     accountId: string,
     periodId: string,
     allocated: number,
@@ -204,7 +204,7 @@ class FakeRepo {
     return { ...row };
   }
 
-  async issueEntitlementsForPeriod(_client: PoolClient, periodId: string): Promise<number> {
+  async issueEntitlementsForPeriod(_client: DatabaseClient, periodId: string): Promise<number> {
     let issued = 0;
     for (const [accountId, enrollment] of this.state.enrollments) {
       if (enrollment.status !== "enrolled") continue;
@@ -230,7 +230,7 @@ class FakeRepo {
     return issued;
   }
 
-  async setEntitlementStatusForAccount(_client: PoolClient, accountId: string, status: AccountEntitlementRecord["status"], periodId?: string): Promise<number> {
+  async setEntitlementStatusForAccount(_client: DatabaseClient, accountId: string, status: AccountEntitlementRecord["status"], periodId?: string): Promise<number> {
     let updated = 0;
     for (const entitlement of this.state.entitlements.values()) {
       if (entitlement.account_id !== accountId) continue;
@@ -243,7 +243,7 @@ class FakeRepo {
     return updated;
   }
 
-  async reserveAccountSlot(_client: PoolClient, accountId: string, periodId: string): Promise<AccountEntitlementRecord | null> {
+  async reserveAccountSlot(_client: DatabaseClient, accountId: string, periodId: string): Promise<AccountEntitlementRecord | null> {
     const entitlement = this.state.entitlements.get(entitlementKey(accountId, periodId));
     if (!entitlement || entitlement.status !== "active") return null;
     if (entitlement.consumed + entitlement.reserved >= entitlement.allocated) return null;
@@ -251,7 +251,7 @@ class FakeRepo {
     return { ...entitlement };
   }
 
-  async reservePeriodSlot(_client: PoolClient, periodId: string): Promise<QuotaPeriodRecord | null> {
+  async reservePeriodSlot(_client: DatabaseClient, periodId: string): Promise<QuotaPeriodRecord | null> {
     const period = this.state.periods.get(periodId);
     if (!period || period.status !== "open") return null;
     if (period.consumed + period.reserved >= period.hard_cap) return null;
@@ -259,18 +259,18 @@ class FakeRepo {
     return { ...period };
   }
 
-  async getReservation(_client: PoolClient, id: string): Promise<UsageReservationRecord | null> {
+  async getReservation(_client: DatabaseClient, id: string): Promise<UsageReservationRecord | null> {
     const row = this.state.reservations.get(id);
     return row ? { ...row } : null;
   }
 
-  async lockReservation(_client: PoolClient, id: string): Promise<UsageReservationRecord | null> {
+  async lockReservation(_client: DatabaseClient, id: string): Promise<UsageReservationRecord | null> {
     // The runner serializes transactions, so locking is equivalent to a read.
     const row = this.state.reservations.get(id);
     return row ? { ...row } : null;
   }
 
-  async insertReservation(_client: PoolClient, input: { id: string; accountId: string; periodId: string; entitlementId: string; expiresAt: Date }): Promise<UsageReservationRecord | null> {
+  async insertReservation(_client: DatabaseClient, input: { id: string; accountId: string; periodId: string; entitlementId: string; expiresAt: Date }): Promise<UsageReservationRecord | null> {
     if (this.state.reservations.has(input.id)) return null;
     const row: UsageReservationRecord = {
       id: input.id,
@@ -286,7 +286,7 @@ class FakeRepo {
     return { ...row };
   }
 
-  async rearmReservation(_client: PoolClient, id: string, expiresAt: Date): Promise<UsageReservationRecord | null> {
+  async rearmReservation(_client: DatabaseClient, id: string, expiresAt: Date): Promise<UsageReservationRecord | null> {
     const row = this.state.reservations.get(id);
     if (!row || row.status !== "released") return null;
     row.status = "reserved";
@@ -295,7 +295,7 @@ class FakeRepo {
     return { ...row };
   }
 
-  async finalizeReservation(_client: PoolClient, requestId: string, reason: string): Promise<UsageReservationRecord | null> {
+  async finalizeReservation(_client: DatabaseClient, requestId: string, reason: string): Promise<UsageReservationRecord | null> {
     const reservation = this.state.reservations.get(requestId);
     if (!reservation || reservation.status !== "reserved") return null;
     if (this.state.events.some((event) => event.request_id === requestId)) return null;
@@ -325,7 +325,7 @@ class FakeRepo {
     return { ...reservation };
   }
 
-  async releaseReservation(_client: PoolClient, requestId: string): Promise<UsageReservationRecord | null> {
+  async releaseReservation(_client: DatabaseClient, requestId: string): Promise<UsageReservationRecord | null> {
     const reservation = this.state.reservations.get(requestId);
     if (!reservation || reservation.status !== "reserved") return null;
     reservation.status = "released";
@@ -337,14 +337,14 @@ class FakeRepo {
     return { ...reservation };
   }
 
-  async listExpiredReservations(_client: PoolClient, limit: number): Promise<UsageReservationRecord[]> {
+  async listExpiredReservations(_client: DatabaseClient, limit: number): Promise<UsageReservationRecord[]> {
     return [...this.state.reservations.values()]
       .filter((row) => row.status === "reserved" && row.expires_at < nowIso())
       .slice(0, limit)
       .map((row) => ({ ...row }));
   }
 
-  async insertAdjustmentEvent(_client: PoolClient, input: { requestId: string; accountId: string; periodId: string | null; amount: number; actor: string; reason: string }): Promise<UsageEventRecord> {
+  async insertAdjustmentEvent(_client: DatabaseClient, input: { requestId: string; accountId: string; periodId: string | null; amount: number; actor: string; reason: string }): Promise<UsageEventRecord> {
     if (this.state.events.some((event) => event.request_id === input.requestId)) {
       throw new Error(`Adjustment event ${input.requestId} already exists`);
     }
@@ -363,7 +363,7 @@ class FakeRepo {
     return event;
   }
 
-  async claimWaitlistCandidates(_client: PoolClient, batch: number): Promise<Array<FreeTierEnrollmentRecord & { account_status: string; email_verified_at: string | null }>> {
+  async claimWaitlistCandidates(_client: DatabaseClient, batch: number): Promise<Array<FreeTierEnrollmentRecord & { account_status: string; email_verified_at: string | null }>> {
     return [...this.state.enrollments.values()]
       .filter((row) => {
         if (row.status !== "waitlisted" || row.skipped_at) return false;
@@ -380,12 +380,12 @@ class FakeRepo {
       }));
   }
 
-  async countWaitlist(_client: PoolClient): Promise<number> {
+  async countWaitlist(_client: DatabaseClient): Promise<number> {
     return [...this.state.enrollments.values()].filter((row) => row.status === "waitlisted" && !row.skipped_at).length;
   }
 
   async insertQuotaEvent(
-    _client: PoolClient,
+    _client: DatabaseClient,
     input: { dedupKey: string; eventType: string; severity: "info" | "warn" | "critical"; accountId?: string; periodId?: string; payload?: Record<string, unknown> },
   ): Promise<QuotaEventRecord | null> {
     if (this.state.quotaEvents.some((event) => event.dedupKey === input.dedupKey)) return null;
@@ -426,7 +426,7 @@ class FakeRepo {
   }
 
   /** Mirrors client-side SQL the service issues directly. */
-  function fakeClient(): PoolClient {
+  function fakeClient(): DatabaseClient {
     const query = vi.fn(async (sql: string, params: unknown[]) => {
       const store = holder.store;
       if (sql.includes("FROM accounts a") && sql.includes("account_memberships m")) {
@@ -541,7 +541,7 @@ class FakeRepo {
       }
       return { rows: [] };
     });
-    return { query } as unknown as PoolClient;
+    return { query } as unknown as DatabaseClient;
   }
 
   /** A global mutex so concurrent service calls behave like serialized row locks. */
@@ -633,7 +633,7 @@ const seedAccount = (state: Parameters<typeof holder.seedAccount>[0], accountId:
 const nowIso = (): string => new Date().toISOString();
 
 vi.mock("../db", () => ({
-  withOperatorTransaction: vi.fn(async (fn: (client: PoolClient) => Promise<unknown>) => {
+  withOperatorTransaction: vi.fn(async (fn: (client: DatabaseClient) => Promise<unknown>) => {
     const snapshot = holder.cloneState();
     try {
       return await holder.runSerialized(() => fn(holder.fakeClient()));

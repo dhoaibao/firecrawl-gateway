@@ -1,15 +1,29 @@
-import { describe, expect, it, vi } from "vitest";
-import { withOperatorTransaction } from "../db";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import { clearSourceConcurrency, resolveInfrastructureSources, tryAcquireSource } from "./repository";
 
-vi.mock("../db", () => ({ withOperatorTransaction: vi.fn() }));
+const state = vi.hoisted(() => ({
+  withOperatorTransaction: vi.fn(),
+  providerFindMany: vi.fn(),
+  sourceFindMany: vi.fn(),
+}));
 
-const source = {
-  id: "source-a",
-  hardConcurrency: 1,
-};
+vi.mock("../infrastructure/database", () => ({
+  withOperatorTransaction: state.withOperatorTransaction,
+}));
+
+const source = { id: "source-a", hardConcurrency: 1 };
 
 describe("source concurrency", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.withOperatorTransaction.mockImplementation(async (callback) => callback({
+      providerCredential: { findMany: state.providerFindMany },
+      infrastructureSource: { findMany: state.sourceFindMany },
+    }));
+    state.providerFindMany.mockResolvedValue([]);
+    state.sourceFindMany.mockResolvedValue([]);
+  });
+
   it("releases capacity exactly once", () => {
     clearSourceConcurrency();
     const release = tryAcquireSource(source);
@@ -21,18 +35,37 @@ describe("source concurrency", () => {
   });
 
   it("does not resolve a Cloud source after its credential is revoked", async () => {
-    const query = vi.fn()
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [{
-        id: "source-a", kind: "cloud", status: "active", health_status: "healthy",
-        credential_id: "revoked-credential", encrypted_value: null, key_version: null, purpose: null,
-        hard_concurrency: 1, request_timeout_ms: 120_000, response_buffer_max_bytes: 5_242_880,
-      }] });
-    vi.mocked(withOperatorTransaction).mockImplementation(async (fn) => fn({ query } as never));
+    state.sourceFindMany.mockResolvedValue([{
+      id: "source-a",
+      name: "Cloud",
+      kind: "cloud",
+      status: "active",
+      priority: 1,
+      baseUrl: "",
+      credentialId: "revoked-credential",
+      capabilities: [],
+      monthlyBudgetCents: null,
+      hardConcurrency: 1,
+      requestTimeoutMs: 120_000,
+      responseBufferMaxBytes: 5_242_880,
+      healthStatus: "healthy",
+      lastHealthCheckAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      credential: {
+        id: "revoked-credential",
+        ownerType: "operator",
+        accountId: null,
+        purpose: "firecrawl_cloud",
+        encryptedValue: "encrypted",
+        keyVersion: 1,
+        status: "revoked",
+        supersededAt: null,
+      },
+    }]);
 
     const sources = await resolveInfrastructureSources("account-a", "included", "a".repeat(64), "https://cloud.example");
 
     expect(sources).toEqual([]);
-    expect(query.mock.calls[0][0]).toContain("c.status = 'valid' AND c.superseded_at IS NULL");
   });
 });

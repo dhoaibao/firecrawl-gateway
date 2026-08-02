@@ -17,7 +17,7 @@ import { createApiKeysRouter } from "./api-keys/routes";
 import { createCredentialsRouter } from "./credentials/routes";
 import { createSettingsRouter } from "./settings/routes";
 import { createQuotaRouter } from "./quota/routes";
-import { rootLogger } from "./logger";
+import { errorHandler, notFoundHandler } from "./infrastructure/http/error-handler";
 import { healthSchema } from "@firecrawl/contracts";
 import { createBrevoWebhookRouter } from "./auth/email";
 
@@ -166,27 +166,8 @@ export function createApp(dependencies: AppDependencies) {
     }
   });
 
-  app.use((_req, res) => {
-    const handledPaths = config.authEnabled
-      ? "/e/:endpointId/v1/*, /e/:endpointId/v2/*, /v1/*, /v2/*, /health, /ready, and /admin"
-      : "/e/:endpointId/v1/*, /e/:endpointId/v2/*, /v1/*, /v2/*, /health, and /ready";
-    res.status(404).json({
-      success: false,
-      error: `Only ${handledPaths} are handled.`,
-    });
-  });
-
-  app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    rootLogger.error({ err }, "Gateway error");
-    if (res.headersSent) return;
-    const isDev = process.env.NODE_ENV !== "production";
-    const statusCode = (err as Error & { statusCode?: number }).statusCode || 500;
-    res.status(statusCode).json({
-      success: false,
-      error: err.message || "Gateway error",
-      ...(isDev ? { stack: err.stack } : {}),
-    });
-  });
+  app.use(notFoundHandler(config));
+  app.use(errorHandler);
 
   return app;
 }
