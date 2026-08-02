@@ -110,6 +110,7 @@ model AuditLog {
   path           String   @db.Text
   routeMode      String   @map("route_mode") @db.Text
   backendUsed    String   @map("backend_used") @db.Text
+  fundingType    String   @default("unknown") @map("funding_type") @db.Text
   fallbackUsed   Boolean  @default(false) @map("fallback_used")
   fallbackReason String   @default("") @map("fallback_reason") @db.Text
   statusCode     Int      @map("status_code")

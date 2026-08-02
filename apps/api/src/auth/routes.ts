@@ -7,7 +7,7 @@ import type { AuthenticatedRequest } from "./middleware";
 import { serializeUser } from "../users/serialization";
 import { authenticatedUserSchema } from "@firecrawl/contracts";
 import * as userService from "../users/service";
-import { getMfaState, beginMfaSetup, verifyMfaCode, disableMfa, createRecoveryCodes, consumeRecoveryCode, createSessionRecord, markSessionMfaVerified, revokeSession, revokeSessionById, revokeAllSessions, listSessions } from "./security";
+import { getMfaState, beginMfaSetup, verifyMfaCode, disableMfa, createRecoveryCodes, consumeRecoveryCode, createSessionRecord, markSessionMfaVerified, revokeSession, revokeSessionById, revokeAllSessions, listSessions, recordSecurityEvent } from "./security";
 import { GENERIC_AUTH_MESSAGE, registerUser, requestEmailVerification, consumeEmailVerification, requestPasswordReset, resetPassword, requestEmailChange } from "./service";
 import { hashPassword, validatePassword } from "./password";
 
@@ -221,6 +221,9 @@ export function createAuthRouter(config?: GatewayConfig) {
         return;
       }
       await requestEmailChange({ userId: user.id, email, encryptionKey, baseUrl: clientBaseUrl(config) });
+      if (user.auth_version !== undefined) {
+        await recordSecurityEvent({ userId: user.id, type: "email_change_requested", ip: req.ip, userAgent: req.get("user-agent") });
+      }
       res.status(202).json({ success: true, message: GENERIC_AUTH_MESSAGE });
     } catch (error) { next(error); }
   });
@@ -245,6 +248,9 @@ export function createAuthRouter(config?: GatewayConfig) {
       }
       await userService.updateUser(user.id, { password_hash: await hashPassword(new_password) });
       if (user.auth_version !== undefined) await revokeAllSessions(user.id);
+      if (user.auth_version !== undefined) {
+        await recordSecurityEvent({ userId: user.id, type: "password_changed", ip: req.ip, userAgent: req.get("user-agent") });
+      }
       res.json({ success: true });
     } catch (error) { next(error); }
   });
@@ -258,12 +264,12 @@ export function createAuthRouter(config?: GatewayConfig) {
   router.post("/mfa/setup", requireAuth, async (req: AuthenticatedRequest, res, next) => {
     try {
       const user = req.user as User;
+      if (!(await bcrypt.compare(String(req.body.current_password || ""), user.password_hash))) {
+        res.status(401).json({ success: false, error: "Current password is incorrect" });
+        return;
+      }
       const existing = await getMfaState(user.id);
       if (existing.enabled) {
-        if (!(await bcrypt.compare(String(req.body.current_password || ""), user.password_hash))) {
-          res.status(401).json({ success: false, error: "Current password is incorrect" });
-          return;
-        }
         const verified = req.body.recovery_code
           ? await consumeRecoveryCode(user.id, String(req.body.recovery_code))
           : await verifyMfaCode(user.id, String(req.body.mfa_code || ""), encryptionKey);
@@ -273,6 +279,9 @@ export function createAuthRouter(config?: GatewayConfig) {
         }
       }
       const result = await beginMfaSetup(user.id, user.email, encryptionKey);
+      if (user.auth_version !== undefined) {
+        await recordSecurityEvent({ userId: user.id, type: "mfa_setup_started", ip: req.ip, userAgent: req.get("user-agent") });
+      }
       res.json({ data: result });
     } catch (error) { next(error); }
   });
@@ -285,11 +294,34 @@ export function createAuthRouter(config?: GatewayConfig) {
         return;
       }
       const codes = await createRecoveryCodes(user.id);
+      await recordSecurityEvent({ userId: user.id, type: "mfa_enabled", ip: req.ip, userAgent: req.get("user-agent") });
       if (req.sessionID && user.auth_version !== undefined) {
         await markSessionMfaVerified(req.sessionID, user.id, user.auth_version);
       }
       res.json({ success: true, recovery_codes: codes });
     } catch (error) { next(error); }
+  });
+
+  router.post("/mfa/recovery-codes", requireAuth, async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const user = req.user as User;
+      if (!(await bcrypt.compare(String(req.body.current_password || ""), user.password_hash))) {
+        res.status(401).json({ success: false, error: "Current password is incorrect" });
+        return;
+      }
+      const verified = req.body.recovery_code
+        ? await consumeRecoveryCode(user.id, String(req.body.recovery_code))
+        : await verifyMfaCode(user.id, String(req.body.mfa_code || ""), encryptionKey);
+      if (!verified) {
+        res.status(401).json({ success: false, error: "MFA is required" });
+        return;
+      }
+      const codes = await createRecoveryCodes(user.id);
+      await recordSecurityEvent({ userId: user.id, type: "mfa_recovery_codes_regenerated", ip: req.ip, userAgent: req.get("user-agent") });
+      res.json({ recovery_codes: codes });
+    } catch (error) {
+      next(error);
+    }
   });
 
   router.post("/mfa/disable", requireAuth, async (req: AuthenticatedRequest, res, next) => {
@@ -319,7 +351,20 @@ export function createAuthRouter(config?: GatewayConfig) {
   router.delete("/sessions/:id", requireAuth, async (req: AuthenticatedRequest, res, next) => {
     try {
       // Inventory IDs are opaque database identifiers, never raw session IDs.
-      await revokeSessionById(String(req.params.id), (req.user as User).id);
+      const user = req.user as User;
+      await revokeSessionById(String(req.params.id), user.id);
+      if (user.auth_version !== undefined) {
+        await recordSecurityEvent({ userId: user.id, type: "session_revoked", ip: req.ip, userAgent: req.get("user-agent") });
+      }
+      res.json({ success: true });
+    } catch (error) { next(error); }
+  });
+
+  router.post("/sessions/revoke-all", requireAuth, async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const user = req.user as User;
+      await revokeAllSessions(user.id);
+      await recordSecurityEvent({ userId: user.id, type: "sessions_revoked_all", ip: req.ip, userAgent: req.get("user-agent") });
       res.json({ success: true });
     } catch (error) { next(error); }
   });

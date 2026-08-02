@@ -13,13 +13,14 @@ import { passport } from "./auth/passport";
 import { createAuthRouter } from "./auth/routes";
 import { requireAuth, requireAdmin, requireOperatorMfa, csrfMiddleware } from "./auth/middleware";
 import { createUsersRouter } from "./users/routes";
-import { createApiKeysRouter } from "./api-keys/routes";
+import { createApiKeysRouter, createUserApiKeysRouter } from "./api-keys/routes";
 import { createCredentialsRouter } from "./credentials/routes";
 import { createSettingsRouter } from "./settings/routes";
 import { createQuotaRouter } from "./quota/routes";
 import { errorHandler, notFoundHandler } from "./infrastructure/http/error-handler";
 import { healthSchema } from "@firecrawl/contracts";
 import { createBrevoWebhookRouter } from "./auth/email";
+import { createUserPortalRouter } from "./app-api";
 
 export type ProxyHandler = (req: Request, res: Response) => Promise<void>;
 
@@ -42,12 +43,13 @@ export function createApp(dependencies: AppDependencies) {
     sessionMiddleware,
   } = dependencies;
   const handleProxy = dependencies.handleProxy ?? createProxyHandler({ config, auditStore });
-  const handlePlaygroundProxy = dependencies.handlePlaygroundProxy ?? createProxyHandler({
-    config,
-    auditStore,
-    getTrustedUserId: (req) => (req.user as Express.User | undefined)?.id,
-    getTrustedAccountId: (req) => (req.user as Express.User | undefined)?.account_id,
-  });
+  // The browser session protects the playground page, but the proxy still
+  // requires a gateway Bearer token so token ownership and scopes are enforced.
+  const handlePlaygroundProxy = dependencies.handlePlaygroundProxy ?? createProxyHandler({ config, auditStore });
+  const userTokenPolicy = {
+    maxLifetimeSeconds: (config.gatewayTokenMaxLifetimeDays ?? 365) * 24 * 60 * 60,
+    authEncryptionKey: config.authEncryptionKey,
+  };
   const adminRouter = createAdminRouter(auditStore);
   const app = express();
 
@@ -95,14 +97,34 @@ export function createApp(dependencies: AppDependencies) {
   app.use(rateLimiter(config.trustProxy));
 
   if (config.authEnabled) {
-    app.use("/admin/api/auth", express.json({ limit: "32kb" }), createAuthRouter(config));
+    const authRouter = createAuthRouter(config);
+    app.use("/api/v1/auth", express.json({ limit: "32kb" }), authRouter);
+    app.use("/admin/api/auth", express.json({ limit: "32kb" }), authRouter);
     app.use("/admin/api", requireAuth, adminRouter);
     app.use("/admin/api/users", express.json({ limit: "32kb" }), requireAdmin, requireOperatorMfa, createUsersRouter(config));
-    app.use("/admin/api/api-keys", express.json(), requireAuth, createApiKeysRouter());
+    app.use("/admin/api/api-keys", express.json(), requireAuth, createApiKeysRouter({
+      requireReauthentication: true,
+      authEncryptionKey: config.authEncryptionKey,
+      maxLifetimeSeconds: userTokenPolicy.maxLifetimeSeconds,
+    }));
     app.use("/admin/api/credentials", express.json({ limit: "32kb" }), requireAuth, createCredentialsRouter(config));
     app.use("/admin/api/settings", express.json({ limit: "32kb" }), requireAdmin, requireOperatorMfa, createSettingsRouter(config));
     app.use("/admin/api/quota", express.json({ limit: "32kb" }), requireAdmin, requireOperatorMfa, createQuotaRouter());
 
+    app.use("/api/v1/app/tokens", express.json({ limit: "32kb" }), requireAuth, createUserApiKeysRouter(userTokenPolicy));
+    app.use("/api/v1/app/credentials", express.json({ limit: "32kb" }), requireAuth, createCredentialsRouter(config));
+    app.use("/api/v1/app/playground", requireAuth, async (req, res, next) => {
+      if (!/^\/v[12]\//.test(req.url)) {
+        res.status(404).json({ success: false, error: "Only /v1/* and /v2/* are supported" });
+        return;
+      }
+      req.originalUrl = req.originalUrl.replace(/^\/api\/v1\/app\/playground/, "") || "/";
+      try {
+        await handlePlaygroundProxy(req, res);
+      } catch (error) {
+        next(error);
+      }
+    });
     app.use("/admin/api/playground", requireAuth, async (req, res, next) => {
       if (!/^\/v[12]\//.test(req.url)) {
         res.status(404).json({ success: false, error: "Only /v1/* and /v2/* are supported" });
@@ -115,19 +137,33 @@ export function createApp(dependencies: AppDependencies) {
         next(error);
       }
     });
+    app.use("/api/v1/app", requireAuth, createUserPortalRouter(config));
   }
 
-  const adminUiPath = path.resolve(__dirname, "../../web/dist");
+  const webUiPath = path.resolve(__dirname, "../../web/dist");
   if (config.authEnabled) {
-    app.use("/admin", express.static(adminUiPath));
-    app.get("/admin", (_req, res) => {
-      res.sendFile(path.join(adminUiPath, "index.html"));
-    });
-    app.get("/admin/*", (req, res, next) => {
-      if (req.path.startsWith("/admin/api/") || req.path === "/admin/api") {
+    app.use(express.static(webUiPath));
+    const serveWebUi = (_req: express.Request, res: express.Response) => {
+      res.sendFile(path.join(webUiPath, "index.html"));
+    };
+    // Only application route trees receive the SPA document. API, tenant,
+    // health, and readiness paths continue to reach their real handlers/404s.
+    app.get([
+      "/",
+      "/login",
+      "/register",
+      "/verify-email",
+      "/forgot-password",
+      "/reset-password",
+      "/app",
+      "/app/*",
+      "/admin",
+      "/admin/*",
+    ], (req, res, next) => {
+      if (req.path.startsWith("/admin/api/") || req.path === "/admin/api" || req.path.startsWith("/api/")) {
         return next();
       }
-      res.sendFile(path.join(adminUiPath, "index.html"));
+      return serveWebUi(req, res);
     });
   } else {
     const respondAdminUiDisabled = (_req: express.Request, res: express.Response) => {

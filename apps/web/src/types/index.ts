@@ -8,6 +8,7 @@ export interface AuditEntry {
   path: string
   route_mode: string
   backend_used: string
+  funding_type?: "byok" | "included" | "unknown"
   fallback_used: boolean
   fallback_reason: string
   status_code: number
@@ -35,10 +36,13 @@ export interface ApiKeyData {
   name: string
   key_prefix: string
   revoked: boolean
+  status?: "active" | "expired" | "inactive" | "revoked"
+  expires_at?: string | null
+  inactivity_timeout_seconds?: number | null
   created_at: string
   updated_at: string
   last_used_at: string | null
-  key?: string // available for re-copying when retained by the gateway
+  key?: string // creation response only; never returned from list
 }
 
 /** Backend filter option */

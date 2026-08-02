@@ -28,10 +28,15 @@ export default function ApiKeys() {
   const { confirm: confirmRevoke, dialog: confirmDialog } = useConfirmDialog();
 
   const [newKeyName, setNewKeyName] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [mfaCode, setMfaCode] = useState("");
+  const [revokingId, setRevokingId] = useState<string | null>(null);
+  const [revocationPassword, setRevocationPassword] = useState("");
+  const [revocationMfa, setRevocationMfa] = useState("");
   const [creating, setCreating] = useState(false);
+  const [revoking, setRevoking] = useState(false);
   const [createdKey, setCreatedKey] = useState<ApiKeyData | null>(null);
   const [copied, setCopied] = useState(false);
-  const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
   const [gatewayCopied, setGatewayCopied] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -52,7 +57,7 @@ export default function ApiKeys() {
       k.key_prefix.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesStatus =
       statusFilter === "all" ||
-      (statusFilter === "active" ? !k.revoked : k.revoked);
+      (statusFilter === "active" ? (k.status ? k.status === "active" : !k.revoked) : k.status ? k.status === "revoked" : k.revoked);
     return matchesSearch && matchesStatus;
   });
 
@@ -82,9 +87,13 @@ export default function ApiKeys() {
     try {
       const json = await api.post<{ data: ApiKeyData }>("/admin/api/api-keys", {
         name: newKeyName,
+        current_password: currentPassword,
+        ...(mfaCode.length === 6 ? { mfa_code: mfaCode } : mfaCode ? { recovery_code: mfaCode } : {}),
       });
       setCreatedKey(json.data);
       setNewKeyName("");
+      setCurrentPassword("");
+      setMfaCode("");
       setShowForm(false);
       await fetchKeys();
     } catch (err) {
@@ -94,13 +103,24 @@ export default function ApiKeys() {
     }
   }
 
-  async function doRevoke(id: string) {
+  async function doRevoke(event: React.SubmitEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!revokingId) return;
+    setRevoking(true);
     try {
-      await api.delete(`/admin/api/api-keys/${id}`);
+      await api.delete(`/admin/api/api-keys/${revokingId}`, {
+        current_password: revocationPassword,
+        ...(revocationMfa.length === 6 ? { mfa_code: revocationMfa } : { recovery_code: revocationMfa }),
+      });
+      setRevokingId(null);
+      setRevocationPassword("");
+      setRevocationMfa("");
       addToast("API key revoked", "success");
       await fetchKeys();
     } catch (err) {
       addToast(err instanceof Error ? err.message : "Failed to revoke API key", "error");
+    } finally {
+      setRevoking(false);
     }
   }
 
@@ -110,7 +130,7 @@ export default function ApiKeys() {
       message: "Are you sure you want to revoke this API key? This action cannot be undone.",
       confirmLabel: "Revoke",
       variant: "warning",
-      onConfirm: () => doRevoke(id),
+      onConfirm: () => { setRevocationPassword(""); setRevocationMfa(""); setRevokingId(id); },
     });
   }
 
@@ -119,16 +139,6 @@ export default function ApiKeys() {
       await navigator.clipboard.writeText(key);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch {
-      addToast("Failed to copy API key", "error");
-    }
-  }
-
-  async function copyExistingKey(id: string, key: string) {
-    try {
-      await navigator.clipboard.writeText(key);
-      setCopiedKeyId(id);
-      setTimeout(() => setCopiedKeyId(null), 2000);
     } catch {
       addToast("Failed to copy API key", "error");
     }
@@ -215,9 +225,9 @@ export default function ApiKeys() {
 
       <div className="mb-5 grid gap-3 sm:grid-cols-3">
         {[
-          { label: "Active keys", value: keys.filter((k) => !k.revoked).length, tone: "text-success-fg" },
-          { label: "Revoked keys", value: keys.filter((k) => k.revoked).length, tone: "text-danger-fg" },
-          { label: "Never used", value: keys.filter((k) => !k.last_used_at && !k.revoked).length, tone: "text-warning-fg" },
+          { label: "Active keys", value: keys.filter((k) => k.status ? k.status === "active" : !k.revoked).length, tone: "text-success-fg" },
+          { label: "Revoked keys", value: keys.filter((k) => k.status ? k.status === "revoked" : k.revoked).length, tone: "text-danger-fg" },
+          { label: "Never used", value: keys.filter((k) => !k.last_used_at && (k.status ? k.status === "active" : !k.revoked)).length, tone: "text-warning-fg" },
         ].map((item) => (
           <div key={item.label} className="rounded-lg border border-white/[0.06] bg-surface-2 px-4 py-3">
             <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{item.label}</p>
@@ -261,7 +271,7 @@ export default function ApiKeys() {
 
       {createdKey && (
         <div className="mb-6 rounded-lg border border-success-muted bg-success-muted/30 p-4 space-y-2">
-          <p className="text-sm font-medium text-success-fg">API key created. You can copy it again from the key list.</p>
+          <p className="text-sm font-medium text-success-fg">Gateway token created. Copy it now; it will not be shown again after this message is dismissed.</p>
           <div className="flex items-center gap-2">
             <code className="flex-1 rounded-lg bg-surface-2 px-3 py-2 text-sm font-mono text-foreground">
               {createdKey.key}
@@ -287,13 +297,13 @@ export default function ApiKeys() {
         open={showForm}
         title="Create API key"
         description="Name this key so you can identify its environment or application later."
-        onClose={() => setShowForm(false)}
+        onClose={() => { setShowForm(false); setCurrentPassword(""); setMfaCode(""); }}
         footer={
           <>
             <Button type="button" variant="outline" size="sm" onClick={() => setShowForm(false)}>
               Cancel
             </Button>
-            <Button type="submit" form="create-api-key-form" size="sm" disabled={creating}>
+            <Button type="submit" form="create-api-key-form" size="sm" disabled={creating || !currentPassword}>
               {creating ? "Creating..." : "Create key"}
             </Button>
           </>
@@ -312,6 +322,19 @@ export default function ApiKeys() {
             autoComplete="off"
           />
           <p className="text-xs text-muted-foreground">Use a name that describes where this key is used.</p>
+          <label htmlFor="api-key-current-password" className="mt-3 block text-sm font-medium text-foreground">Current password</label>
+          <Input id="api-key-current-password" type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} autoComplete="current-password" required />
+          <label htmlFor="api-key-mfa" className="mt-3 block text-sm font-medium text-foreground">Authenticator or recovery code</label>
+          <Input id="api-key-mfa" value={mfaCode} onChange={(e) => setMfaCode(e.target.value)} autoComplete="one-time-code" />
+        </form>
+      </Dialog>
+
+      <Dialog open={Boolean(revokingId)} title="Revoke API key" description="Confirm your current credentials to revoke this key." onClose={() => { if (!revoking) setRevokingId(null) }} footer={<><Button variant="outline" size="sm" onClick={() => setRevokingId(null)} disabled={revoking}>Cancel</Button><Button variant="destructive" type="submit" form="revoke-api-key-form" size="sm" disabled={revoking || !revocationPassword}>{revoking ? "Revoking..." : "Revoke key"}</Button></>}>
+        <form id="revoke-api-key-form" onSubmit={doRevoke} className="space-y-2">
+          <label htmlFor="revoke-api-key-password" className="block text-sm font-medium text-foreground">Current password</label>
+          <Input id="revoke-api-key-password" type="password" value={revocationPassword} onChange={(e) => setRevocationPassword(e.target.value)} autoComplete="current-password" required />
+          <label htmlFor="revoke-api-key-mfa" className="mt-3 block text-sm font-medium text-foreground">Authenticator or recovery code</label>
+          <Input id="revoke-api-key-mfa" value={revocationMfa} onChange={(e) => setRevocationMfa(e.target.value)} autoComplete="one-time-code" />
         </form>
       </Dialog>
 
@@ -323,39 +346,18 @@ export default function ApiKeys() {
               key: "prefix",
               header: "Prefix",
               className: "font-mono text-muted-foreground",
-              render: (k) => (
-                <div className="flex items-center gap-1.5">
-                  <span>{k.key_prefix}...</span>
-                  {!k.revoked && (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="size-7 text-muted-foreground hover:text-foreground"
-                      onClick={() => k.key && void copyExistingKey(k.id, k.key)}
-                      disabled={!k.key}
-                      aria-label={
-                        !k.key
-                          ? "Copy unavailable for this API key"
-                          : copiedKeyId === k.id
-                            ? "API key copied"
-                            : "Copy API key"
-                      }
-                      title={!k.key ? "Copy unavailable" : copiedKeyId === k.id ? "Copied" : "Copy API key"}
-                    >
-                      {copiedKeyId === k.id ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
-                    </Button>
-                  )}
-                </div>
-              ),
+              render: (k) => <span>{k.key_prefix}...</span>,
             },
             {
               key: "status",
               header: "Status",
               render: (k) =>
-                k.revoked ? (
+                (k.status ?? (k.revoked ? "revoked" : "active")) === "revoked" ? (
                   <span className="rounded-md bg-danger-muted px-2 py-0.5 text-xs text-danger-fg">Revoked</span>
-                ) : (
+                ) : (k.status ?? "active") === "active" ? (
                   <span className="rounded-md bg-success-muted px-2 py-0.5 text-xs text-success-fg">Active</span>
+                ) : (
+                  <span className="rounded-md bg-warning-muted px-2 py-0.5 text-xs text-warning-fg">{k.status}</span>
                 ),
             },
             { key: "created", header: "Created", className: "text-muted-foreground", render: (k) => formatDate(k.created_at) },
@@ -372,7 +374,7 @@ export default function ApiKeys() {
               align: "right",
               render: (k) => (
                 <div className="flex justify-end gap-2">
-                  {!k.revoked && (
+                  {(k.status ? k.status === "active" : !k.revoked) && (
                     <Button
                       variant="outline"
                       size="sm"

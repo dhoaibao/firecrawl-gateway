@@ -20,6 +20,7 @@ export interface CreatedApiKey {
   scopes: string[];
   expires_at: string | null;
   inactivity_timeout_seconds: number | null;
+  status: "active";
   revoked: boolean;
   created_at: string;
   updated_at: string;
@@ -64,6 +65,7 @@ export async function createApiKey(
       scopes: token.scopes ?? ["*"],
       expires_at: token.expires_at ?? null,
       inactivity_timeout_seconds: token.inactivity_timeout_seconds ?? null,
+      status: "active",
       key,
     };
   });

@@ -180,4 +180,32 @@ describe("/admin/api/playground", () => {
     expect(res.body.success).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it("does not treat an authenticated browser session as a gateway token", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const auditStore = createAuditStore(logFile);
+    const handler = createProxyHandler({ config: baseConfig, auditStore });
+    const app = express();
+    app.use((req, _res, next) => {
+      req.user = makeUser();
+      next();
+    });
+    app.use("/playground", async (req, res, next) => {
+      req.originalUrl = req.originalUrl.replace(/^\/playground/, "") || "/";
+      try {
+        await handler(req, res);
+      } catch (error) {
+        next(error);
+      }
+    });
+
+    await request(app)
+      .post("/playground/v2/scrape")
+      .set("content-type", "application/json")
+      .send({ url: "https://example.com" })
+      .expect(401);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });

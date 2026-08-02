@@ -25,6 +25,7 @@ import {
   shuffleArray,
 } from "./utils";
 import * as apiKeyService from "./api-keys/service";
+import * as credentialRepository from "./credentials/repository";
 import * as userService from "./users/service";
 import * as settingsService from "./settings/service";
 import * as accountRepository from "./db/accounts";
@@ -283,8 +284,10 @@ async function proxyToBackend({
   const timeout = setTimeout(() => controller.abort(), source?.requestTimeoutMs ?? config.requestTimeoutMs);
   const started = Date.now();
   let streamingResponse = false;
+  let upstreamDispatchStarted = false;
 
   try {
+    upstreamDispatchStarted = true;
     const response = await fetch(targetUrl, {
       method: req.method,
       headers: sanitizeHeaders(req.headers, backend, apiKey, config.authEnabled),
@@ -370,6 +373,13 @@ async function proxyToBackend({
       dispatched: true,
     };
   } finally {
+    if (upstreamDispatchStarted && source?.fundingType === "byok" && source.credentialId) {
+      try {
+        await credentialRepository.touchCredential(source.credentialId);
+      } catch {
+        // Last-use metadata is best effort and must not change the upstream result.
+      }
+    }
     // Streamed responses keep the timeout alive and source reservation held until their body completes.
     if (!streamingResponse) {
       clearTimeout(timeout);
@@ -452,24 +462,26 @@ async function sendProxyResponse(
 const RETRYABLE_CLOUD_STATUS = new Set([401, 403, 429]);
 const ASYNC_STATUS_BUFFER_MAX_BYTES = 64 * 1024;
 
-function gatewayErrorResult(backend: string, error: string): ProxyResult {
+function gatewayErrorResult(backend: string, error: string, fundingType?: "byok" | "included"): ProxyResult {
   return {
     kind: "network-error",
     backend,
     error: new Error(error),
     body: Buffer.from(JSON.stringify({ success: false, error })),
+    fundingType,
     durationMs: 0,
   };
 }
 
 /** Stable machine-readable quota rejection delivered through the normal proxy path. */
-function quotaErrorResult(rejection: QuotaRejection): ProxyResult {
+function quotaErrorResult(rejection: QuotaRejection, fundingType?: "byok" | "included"): ProxyResult {
   return {
     kind: "network-error",
     backend: "none",
     error: new Error(rejection.message),
     body: Buffer.from(JSON.stringify({ success: false, error: rejection.message, code: rejection.code })),
     statusCode: rejection.statusCode,
+    fundingType,
     durationMs: 0,
   };
 }
@@ -562,6 +574,7 @@ export function createProxyHandler({
     let routeMode: string = config.defaultRouteMode;
     const appendAuditEntry = async ({
       backendUsed,
+      fundingType,
       statusCode,
       fallbackUsed = false,
       fallbackReason = "",
@@ -570,6 +583,7 @@ export function createProxyHandler({
       statusCode: number;
       fallbackUsed?: boolean;
       fallbackReason?: string;
+      fundingType?: "byok" | "included" | "unknown";
     }): Promise<void> => {
       const auditEntry: AuditEntry = {
         id: cryptoRandomId(),
@@ -578,6 +592,7 @@ export function createProxyHandler({
         path: parsedUrl.pathname,
         route_mode: routeMode,
         backend_used: backendUsed,
+        funding_type: fundingType,
         fallback_used: fallbackUsed,
         fallback_reason: fallbackReason,
         status_code: statusCode,
@@ -754,7 +769,7 @@ export function createProxyHandler({
       if (!accountId) return null;
       if (!quotaReservation) {
         const outcome = await quotaService.reserveIncluded(accountId, quotaRequestId);
-        if ("code" in outcome) return quotaErrorResult(outcome);
+        if ("code" in outcome) return quotaErrorResult(outcome, "included");
         quotaReservation = outcome;
       }
       includedDispatched = true;
@@ -1079,13 +1094,13 @@ export function createProxyHandler({
 
     if (isManagedAsyncCreation && result.kind === "response" && result.response && result.response.status < 400) {
       if (!isSuccessfulResponse(result) || !result.body) {
-        result = gatewayErrorResult(result.backend, "Gateway could not safely virtualize the async job response");
+        result = gatewayErrorResult(result.backend, "Gateway could not safely virtualize the async job response", result.fundingType);
       } else {
         const publicJobId = cryptoRandomId();
         const publicUrl = `/e/${encodeURIComponent(tenantEndpointId)}${asyncRoute!.family}/${encodeURIComponent(publicJobId)}`;
         const virtualized = virtualizeCreationResponse(result.body, publicJobId, publicUrl);
         if (!virtualized) {
-          result = gatewayErrorResult(result.backend, "Gateway could not safely virtualize the async job response");
+          result = gatewayErrorResult(result.backend, "Gateway could not safely virtualize the async job response", result.fundingType);
         } else {
           try {
             await createGatewayJob(accountId!, {
@@ -1102,7 +1117,7 @@ export function createProxyHandler({
             result = { ...result, body: virtualized.body };
           } catch (error) {
             log.error({ err: error }, "Unable to persist virtual async job mapping");
-            result = gatewayErrorResult(result.backend, "Gateway could not persist the async job response");
+            result = gatewayErrorResult(result.backend, "Gateway could not persist the async job response", result.fundingType);
           }
         }
       }
@@ -1149,6 +1164,7 @@ export function createProxyHandler({
       result.kind === "network-error" ? result.statusCode || 502 : result.response?.status || 502;
     await appendAuditEntry({
       backendUsed: result.backend,
+      fundingType: result.fundingType ?? "unknown",
       statusCode,
       fallbackUsed,
       fallbackReason: fallbackReason || needsCloud.reason || "",

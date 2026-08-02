@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc -b",
+    "test": "vitest run",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",

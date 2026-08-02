@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { withOperatorTransaction } from "../db";
+import { withAccountTransaction, withOperatorTransaction } from "../db";
 import { rootLogger } from "../logger";
 import { currentPeriodRange } from "./periods";
 import * as repo from "./repository";
@@ -642,6 +642,33 @@ export async function processWaitlist(batch = WAITLIST_BATCH, now = new Date()):
     const currentPolicy = await repo.lockPolicy(client);
     await detectCommitmentAndWaitlist(client, currentPolicy ?? policy);
     return { admitted, claimed: candidates.length, stoppedReason, remaining: await repo.countWaitlist(client) };
+  });
+}
+
+/** Tenant-safe summary; it intentionally omits global capacity and commitment data. */
+export async function getAccountQuota(accountId: string, now = new Date()) {
+  return withAccountTransaction(accountId, async (client) => {
+    const range = currentPeriodRange(now);
+    const enrollment = await repo.getEnrollment(client, accountId);
+    const policyResult = await client.query<{ included_traffic_enabled: boolean }>(
+      "SELECT included_traffic_enabled FROM free_tier_policy WHERE id = 'default'",
+    );
+    const period = await repo.getPeriod(client, range.id);
+    const entitlement = period ? await repo.getEntitlement(client, accountId, period.id) : null;
+    const allocated = entitlement?.allocated ?? 0;
+    const consumed = entitlement?.consumed ?? 0;
+    const reserved = entitlement?.reserved ?? 0;
+    return {
+      period_id: range.id,
+      reset_at: range.end.toISOString(),
+      enrollment_status: enrollment?.status ?? "pending",
+      entitlement_status: entitlement?.status ?? null,
+      allocated,
+      consumed,
+      reserved,
+      remaining: Math.max(allocated - consumed - reserved, 0),
+      included_traffic_available: policyResult.rows[0]?.included_traffic_enabled === true && period?.status === "open" && entitlement?.status === "active" && allocated - consumed - reserved > 0,
+    };
   });
 }
 

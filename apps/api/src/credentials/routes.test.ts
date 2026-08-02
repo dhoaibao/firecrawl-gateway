@@ -1,3 +1,4 @@
+import bcrypt from "bcrypt";
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
@@ -55,9 +56,9 @@ describe("credentials routes", () => {
     const createAccountCredential = vi.fn().mockResolvedValue({ ...credential, status: "pending" });
     const validateAccountCredential = vi.fn().mockResolvedValue(credential);
     const response = await request(appFor(
-      { id: "user-a", account_id: "account-a", email_verified_at: "2026-01-01" },
+      { id: "user-a", account_id: "account-a", email_verified_at: "2026-01-01", password_hash: bcrypt.hashSync("current-password", 4) },
       { createAccountCredential, listAccountCredentialMetadata: vi.fn(), validateAccountCredential },
-    )).post("/credentials").send({ value: "fc_provider_secret" });
+    )).post("/credentials").send({ value: "fc_provider_secret", current_password: "current-password" });
 
     expect(response.status).toBe(201);
     expect(response.body.data).toEqual(credential);
@@ -68,9 +69,9 @@ describe("credentials routes", () => {
   it("allows a credential to be explicitly revalidated", async () => {
     const validateAccountCredential = vi.fn().mockResolvedValue(credential);
     const response = await request(appFor(
-      { id: "user-a", account_id: "account-a" },
+      { id: "user-a", account_id: "account-a", password_hash: bcrypt.hashSync("current-password", 4) },
       { createAccountCredential: vi.fn(), listAccountCredentialMetadata: vi.fn(), validateAccountCredential },
-    )).post("/credentials/credential-a/validate");
+    )).post("/credentials/credential-a/validate").send({ current_password: "current-password" });
 
     expect(response.status).toBe(200);
     expect(response.body.data).toEqual(credential);

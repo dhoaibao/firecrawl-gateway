@@ -115,7 +115,7 @@ export async function registerUser(input: {
       idempotencyKey: `email-verification:${userId}:${token.hash}`,
       payload: {
         subject: "Verify your Firecrawl Gateway email",
-        html: `<p>Verify your email by visiting <a href="${input.baseUrl}/admin/verify-email?token=${encodeURIComponent(token.token)}">this link</a>.</p>`,
+        html: `<p>Verify your email by visiting <a href="${input.baseUrl}/verify-email?token=${encodeURIComponent(token.token)}">this link</a>.</p>`,
       },
       encryptionKey: input.encryptionKey,
     });
@@ -147,7 +147,7 @@ export async function requestEmailVerification(input: { email: string; encryptio
       idempotencyKey: `email-verification:${user.id}:${token.hash}`,
       payload: {
         subject: "Verify your Firecrawl Gateway email",
-        html: `<p>Verify your email by visiting <a href="${input.baseUrl}/admin/verify-email?token=${encodeURIComponent(token.token)}">this link</a>.</p>`,
+        html: `<p>Verify your email by visiting <a href="${input.baseUrl}/verify-email?token=${encodeURIComponent(token.token)}">this link</a>.</p>`,
       },
       encryptionKey: input.encryptionKey,
     });
@@ -181,7 +181,7 @@ export async function requestEmailChange(input: { userId: string; email: string;
       idempotencyKey: `email-change:${input.userId}:${token.hash}`,
       payload: {
         subject: "Confirm your Firecrawl Gateway email change",
-        html: `<p>Confirm this email address by visiting <a href="${input.baseUrl}/admin/verify-email?token=${encodeURIComponent(token.token)}">this link</a>.</p>`,
+        html: `<p>Confirm this email address by visiting <a href="${input.baseUrl}/verify-email?token=${encodeURIComponent(token.token)}">this link</a>.</p>`,
       },
       encryptionKey: input.encryptionKey,
     });
@@ -236,7 +236,7 @@ export async function requestPasswordReset(input: { email: string; encryptionKey
       idempotencyKey: `password-reset:${user.id}:${token.hash}`,
       payload: {
         subject: "Reset your Firecrawl Gateway password",
-        html: `<p>Reset your password by visiting <a href="${input.baseUrl}/admin/reset-password?token=${encodeURIComponent(token.token)}">this link</a>.</p>`,
+        html: `<p>Reset your password by visiting <a href="${input.baseUrl}/reset-password?token=${encodeURIComponent(token.token)}">this link</a>.</p>`,
       },
       encryptionKey: input.encryptionKey,
     });

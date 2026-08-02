@@ -12,6 +12,7 @@ function mapEntry(row: {
   path: string;
   routeMode: string;
   backendUsed: string;
+  fundingType: string;
   fallbackUsed: boolean;
   fallbackReason: string;
   statusCode: number;
@@ -28,6 +29,7 @@ function mapEntry(row: {
     path: row.path,
     route_mode: row.routeMode,
     backend_used: row.backendUsed,
+    funding_type: row.fundingType as AuditEntry["funding_type"],
     fallback_used: row.fallbackUsed,
     fallback_reason: row.fallbackReason,
     status_code: row.statusCode,
@@ -46,6 +48,7 @@ const auditSelect = {
   path: true,
   routeMode: true,
   backendUsed: true,
+  fundingType: true,
   fallbackUsed: true,
   fallbackReason: true,
   statusCode: true,
@@ -64,6 +67,7 @@ function createData(entry: AuditEntry) {
     path: entry.path,
     routeMode: entry.route_mode,
     backendUsed: entry.backend_used,
+    fundingType: entry.funding_type ?? "unknown",
     fallbackUsed: entry.fallback_used,
     fallbackReason: entry.fallback_reason,
     statusCode: entry.status_code,

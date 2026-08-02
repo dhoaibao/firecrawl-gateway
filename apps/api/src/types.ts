@@ -7,6 +7,7 @@ export interface AuditEntry {
   path: string;
   route_mode: string;
   backend_used: string;
+  funding_type?: "byok" | "included" | "unknown";
   fallback_used: boolean;
   fallback_reason: string;
   status_code: number;
@@ -64,6 +65,8 @@ export interface GatewayConfig {
   adminEmail: string;
   adminPassword: string;
   trustProxy: boolean | string;
+  /** Maximum operator-configured lifetime for user-created gateway tokens. */
+  gatewayTokenMaxLifetimeDays?: number;
 }
 
 export interface PrivacyCheck {
@@ -128,6 +131,7 @@ export interface GatewayToken {
   scopes?: string[];
   expires_at?: string | null;
   inactivity_timeout_seconds?: number | null;
+  status?: "active" | "expired" | "inactive" | "revoked";
   revoked: boolean;
   created_at: string;
   updated_at: string;

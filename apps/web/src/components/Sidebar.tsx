@@ -1,15 +1,21 @@
-import { useEffect, useState } from "react"
+import { useEffect, useState, type ComponentType } from "react"
 import { useLocation, Link } from "react-router-dom"
 import {
-  LayoutDashboard,
+  Activity,
+  BookOpen,
+  Clock3,
+  Cloud,
+  Gauge,
   Key,
-  Users,
+  LayoutDashboard,
   LogOut,
   Menu,
-  X,
-  Shield,
+  Play,
   Settings,
-  KeyRound,
+  Shield,
+  UserRound,
+  Users,
+  X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/contexts/AuthContext"
@@ -18,22 +24,40 @@ import { Button } from "@/components/ui/button"
 interface NavItem {
   label: string
   href: string
-  icon: React.ComponentType<{ className?: string }>
+  icon: ComponentType<{ className?: string }>
   adminOnly?: boolean
 }
 
-const navItems: NavItem[] = [
-  { label: "Dashboard", href: "/", icon: LayoutDashboard },
-  { label: "API Keys", href: "/api-keys", icon: Key },
-  { label: "Users", href: "/users", icon: Users, adminOnly: true },
-  { label: "Configure", href: "/configure", icon: Settings, adminOnly: true },
-  { label: "Account", href: "/account", icon: KeyRound },
+const userNavItems: NavItem[] = [
+  { label: "Dashboard", href: "/app", icon: LayoutDashboard },
+  { label: "Endpoint", href: "/app/endpoint", icon: Activity },
+  { label: "Tokens", href: "/app/tokens", icon: Key },
+  { label: "BYOK Credentials", href: "/app/credentials", icon: Cloud },
+  { label: "Usage", href: "/app/usage", icon: Gauge },
+  { label: "Request History", href: "/app/request-history", icon: Clock3 },
+  { label: "Playground", href: "/app/playground", icon: Play },
+  { label: "Security", href: "/app/security", icon: Shield },
+  { label: "Account", href: "/app/account", icon: UserRound },
 ]
 
-export default function Sidebar() {
+const adminNavItems: NavItem[] = [
+  { label: "Dashboard", href: "/admin", icon: LayoutDashboard },
+  { label: "Gateway Tokens", href: "/admin/api-keys", icon: Key },
+  { label: "Users", href: "/admin/users", icon: Users, adminOnly: true },
+  { label: "Configure", href: "/admin/configure", icon: Settings, adminOnly: true },
+  { label: "Account", href: "/admin/account", icon: UserRound },
+]
+
+interface SidebarProps {
+  mode?: "user" | "admin"
+}
+
+export default function Sidebar({ mode = "admin" }: SidebarProps) {
   const { user, logout } = useAuth()
   const location = useLocation()
   const [mobileOpen, setMobileOpen] = useState(false)
+  const navItems = mode === "user" ? userNavItems : adminNavItems
+  const root = mode === "user" ? "/app" : "/admin"
 
   useEffect(() => {
     if (!mobileOpen) return
@@ -45,26 +69,22 @@ export default function Sidebar() {
   }, [mobileOpen])
 
   const isActive = (href: string) => {
-    if (href === "/") {
-      return location.pathname === "/"
-    }
-    return location.pathname === href
+    if (href === root) return location.pathname === href || location.pathname === `${href}/`
+    return location.pathname === href || location.pathname.startsWith(`${href}/`)
   }
 
   const sidebarContent = (
     <>
-      {/* Logo */}
       <div className="flex h-14 items-center gap-2.5 border-b border-white/[0.06] px-4">
         <div className="flex size-8 items-center justify-center rounded-lg border border-white/[0.08] bg-surface-3 text-muted-foreground">
           <Shield className="size-4" />
         </div>
         <span className="text-sm font-semibold text-foreground">
-          Firecrawl Gateway
+          {mode === "user" ? "Firecrawl Gateway" : "Gateway Operations"}
         </span>
       </div>
 
-      {/* Navigation */}
-      <nav className="flex-1 overflow-y-auto px-3 py-3" aria-label="Main">
+      <nav className="flex-1 overflow-y-auto px-3 py-3" aria-label={mode === "user" ? "Workspace" : "Operator navigation"}>
         <ul className="space-y-1">
           {navItems
             .filter((item) => !item.adminOnly || user?.is_admin)
@@ -90,25 +110,27 @@ export default function Sidebar() {
               )
             })}
         </ul>
+        {mode === "user" && (
+          <p className="mt-5 px-3 text-[10px] leading-relaxed text-muted-foreground/70">
+            <BookOpen className="mr-1 inline size-3" /> Your endpoint and integration secrets stay scoped to this workspace.
+          </p>
+        )}
       </nav>
 
-      {/* User + Logout */}
       <div className="border-t border-white/[0.06] px-3 py-3">
         <div className="mb-2 flex items-center gap-3 px-3">
           <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-surface-4 text-xs font-semibold text-foreground">
             {(user?.name || user?.email || "U").slice(0, 1).toUpperCase()}
           </div>
           <div className="min-w-0">
-            <div className="truncate text-sm font-medium text-foreground">
-              {user?.name || "User"}
-            </div>
+            <div className="truncate text-sm font-medium text-foreground">{user?.name || "User"}</div>
             <div className="truncate text-xs text-muted-foreground">{user?.email}</div>
           </div>
         </div>
         <Button
           variant="ghost"
           className="h-9 w-full justify-start gap-2.5 px-3 text-sm font-normal text-muted-foreground hover:bg-white/[0.04] hover:text-foreground"
-          onClick={() => logout()}
+          onClick={() => void logout()}
         >
           <LogOut className="size-4" />
           Logout
@@ -119,47 +141,21 @@ export default function Sidebar() {
 
   return (
     <>
-      {/* Mobile top bar */}
       <div className="fixed left-0 right-0 top-0 z-30 flex h-14 items-center justify-between border-b border-white/[0.06] bg-surface-2/90 px-4 backdrop-blur lg:hidden">
         <div className="flex items-center gap-2.5">
-          <div className="flex size-8 items-center justify-center rounded-lg border border-white/[0.08] bg-surface-3 text-muted-foreground">
-            <Shield className="size-4" />
-          </div>
-          <span className="text-sm font-semibold text-foreground">
-            Firecrawl
-          </span>
+          <div className="flex size-8 items-center justify-center rounded-lg border border-white/[0.08] bg-surface-3 text-muted-foreground"><Shield className="size-4" /></div>
+          <span className="text-sm font-semibold text-foreground">Firecrawl</span>
         </div>
-        <Button
-          variant="outline"
-          size="icon"
-          className="size-8 border-white/[0.08] bg-surface-3 text-foreground"
-          onClick={() => setMobileOpen((v) => !v)}
-          aria-label={mobileOpen ? "Close menu" : "Open menu"}
-          aria-expanded={mobileOpen}
-        >
+        <Button variant="outline" size="icon" className="size-8 border-white/[0.08] bg-surface-3 text-foreground" onClick={() => setMobileOpen((value) => !value)} aria-label={mobileOpen ? "Close menu" : "Open menu"} aria-expanded={mobileOpen}>
           {mobileOpen ? <X className="size-4" /> : <Menu className="size-4" />}
         </Button>
       </div>
 
-      {/* Mobile overlay */}
-      {mobileOpen && (
-        <div
-          className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm lg:hidden"
-          onClick={() => setMobileOpen(false)}
-        />
-      )}
+      {mobileOpen && <div className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm lg:hidden" onClick={() => setMobileOpen(false)} />}
 
-      {/* Sidebar — mobile drawer / desktop fixed */}
-      <aside
-        className={cn(
-          "fixed bottom-0 left-0 top-0 z-50 flex w-60 flex-col border-r border-white/[0.06] bg-surface-1 transition-transform duration-200 lg:translate-x-0",
-          mobileOpen ? "translate-x-0" : "-translate-x-full",
-        )}
-      >
+      <aside className={cn("fixed bottom-0 left-0 top-0 z-50 flex w-60 flex-col border-r border-white/[0.06] bg-surface-1 transition-transform duration-200 lg:translate-x-0", mobileOpen ? "translate-x-0" : "-translate-x-full")}>
         {sidebarContent}
       </aside>
-
-      {/* Spacer for desktop sidebar */}
       <div className="hidden lg:block lg:w-60" />
     </>
   )

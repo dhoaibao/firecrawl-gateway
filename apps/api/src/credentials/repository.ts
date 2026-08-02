@@ -199,6 +199,16 @@ export async function replaceAccountCredential(
   });
 }
 
+export async function deleteAccountCredential(accountId: string, credentialId: string): Promise<boolean> {
+  return withAccountTransaction(accountId, async (tx) => {
+    const result = await tx.providerCredential.updateMany({
+      where: { id: credentialId, accountId, ownerType: "account", supersededAt: null, status: { not: "revoked" } },
+      data: { status: "revoked", supersededAt: new Date(), updatedAt: new Date() },
+    });
+    return result.count === 1;
+  });
+}
+
 export async function listAccountCredentialMetadata(accountId: string): Promise<CredentialMetadata[]> {
   return withAccountTransaction(accountId, async (tx) => {
     const rows = await tx.providerCredential.findMany({

@@ -7,7 +7,7 @@
   "scripts": {
     "typecheck": "npm run typecheck --workspace @firecrawl/contracts && npm run build --workspace @firecrawl/contracts && npm run typecheck --workspace @firecrawl/api && npm run typecheck --workspace @firecrawl/web",
     "lint": "npm run build --workspace @firecrawl/contracts && npm run lint --workspace @firecrawl/contracts && npm run lint --workspace @firecrawl/api && npm run lint --workspace @firecrawl/web",
-    "test": "npm run build --workspace @firecrawl/contracts && npm run test --workspace @firecrawl/contracts && npm run test --workspace @firecrawl/api",
+    "test": "npm run build --workspace @firecrawl/contracts && npm run test --workspace @firecrawl/contracts && npm run test --workspace @firecrawl/api && npm run test --workspace @firecrawl/web",
     "build": "npm run build --workspace @firecrawl/contracts && npm run build --workspace @firecrawl/api && npm run build --workspace @firecrawl/web",
     "api:typecheck": "npm run build --workspace @firecrawl/contracts && npm run typecheck --workspace @firecrawl/api",
     "api:test": "npm run build --workspace @firecrawl/contracts && npm run test --workspace @firecrawl/api",

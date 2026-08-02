@@ -5,7 +5,7 @@ import type { GatewayConfig } from "../../types";
 export function notFoundHandler(config: GatewayConfig): RequestHandler {
   return (_req, res) => {
     const handledPaths = config.authEnabled
-      ? "/e/:endpointId/v1/*, /e/:endpointId/v2/*, /v1/*, /v2/*, /health, /ready, and /admin"
+      ? "/e/:endpointId/v1/*, /e/:endpointId/v2/*, /v1/*, /v2/*, /api/v1/*, /health, /ready, and the public/app/admin web routes"
       : "/e/:endpointId/v1/*, /e/:endpointId/v2/*, /v1/*, /v2/*, /health, and /ready";
     res.status(404).json({ success: false, error: `Only ${handledPaths} are handled.` });
   };

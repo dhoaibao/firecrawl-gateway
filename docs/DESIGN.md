@@ -1,5 +1,5 @@
 ---
-name: Firecrawl Gateway Admin UI
+name: Firecrawl Gateway Web UI
 colors:
   background: hsl(230 14% 6%)
   foreground: hsl(210 30% 96%)
@@ -37,18 +37,18 @@ rounded:
   2xl: 1rem
 ---
 
-# Frontend Design Standard — Firecrawl Gateway Admin UI
+# Frontend Design Standard — Firecrawl Gateway Web UI
 
 ## Product Character
 
-A dark-themed, data-dense administrative dashboard for operating a hybrid Firecrawl API gateway. The UI emphasizes clarity for high-volume audit logs, quick status scanning, and low-friction configuration. The aesthetic is technical and elevated: deep slate surfaces, subtle borders, muted semantic color accents, and restrained motion.
+A dark-themed Firecrawl Gateway web application with three distinct shells: a calm public authentication experience, a simpler tenant workspace, and a dense operator console. The UI emphasizes safe actions, clear service state, and low-friction integration without making secrets or global capacity visible. The aesthetic is technical and elevated: deep slate surfaces, subtle borders, muted semantic color accents, and restrained motion.
 
 ## Audience And Workflows
 
-- **Operators and admins** monitor live gateway traffic, success rates, fallback behavior, and latency.
-- **Admins** manage users (create, suspend, block, activate, delete) and API keys (create, revoke).
-- **Admins** configure routing policy, inactivity policies, and Firecrawl Cloud API key priority.
-- All authenticated pages share a persistent sidebar; the dashboard auto-refreshes every 5 seconds when "Live" is enabled.
+- **Public visitors** register, verify an email, sign in, and recover access without account enumeration.
+- **Users** manage one tenant endpoint, gateway tokens, BYOK credentials, quota, usage, playground requests, security, and account data.
+- **Operators and admins** monitor live gateway traffic, success rates, fallback behavior, latency, users, sources, and platform policy.
+- Public and user shells share visual primitives but keep the operator console denser and its navigation separate.
 
 ## Visual Principles
 
@@ -60,8 +60,10 @@ A dark-themed, data-dense administrative dashboard for operating a hybrid Firecr
 
 ## Layout System
 
-- **App shell:** fixed 240 px left sidebar (`w-60`) on desktop; mobile uses a top bar and drawer overlay.
-- **Router basename:** Admin UI is served under `/admin` (`BrowserRouter basename="/admin"`).
+- **Public shell:** centered, focused auth panels with no operator navigation.
+- **User shell:** fixed 240 px left sidebar (`w-60`) on desktop; mobile uses a top bar and drawer overlay. It contains only Dashboard, Endpoint, Tokens, BYOK Credentials, Usage, Playground, Security, and Account.
+- **Operator shell:** uses the same 240 px geometry and primitives, but keeps its denser admin navigation and platform controls isolated.
+- **Route base:** public routes are rooted at `/`, user routes at `/app/*`, and operator routes at `/admin/*`; the SPA must not use a global `/admin` basename.
 - **Content max-width:** `max-w-[1680px]` centered with `mx-auto`.
 - **Content padding:** `px-4 py-4 lg:px-6`.
 - **Main content offset:** `pt-14 lg:pt-0` to clear the mobile top bar.
@@ -160,6 +162,14 @@ Respect `prefers-reduced-motion: reduce` in `index.css`; do not add unbounded an
 - Form input height: `h-10` to `h-11` (login inputs use `h-11`).
 - Border radius: `--radius: 0.5rem`. Cards and containers use `rounded-lg`; small elements use `rounded-md`; icon containers use `rounded-xl` or `rounded-2xl`.
 
+## Route and shell boundaries
+
+- Route objects live outside render and use React Router Data Mode lazy modules with scoped route error boundaries.
+- Frontend guards improve navigation only; API authorization and account scoping remain server-side.
+- Never place Users, infrastructure sources, global quota/retention, or platform settings in the user sidebar.
+- Endpoint identifiers may be displayed and copied. Gateway tokens and provider credentials are secrets: reveal a newly created token once, never render or persist existing plaintext.
+- Destructive and sensitive actions require an explicit confirmation or reauthentication step and use generic, non-enumerating copy.
+
 ## Components
 
 ### Primitive source
@@ -238,13 +248,13 @@ Use the components in `apps/web/src/components/ui/`. Do not introduce new third-
 7. **Loading states:** use `PageSkeleton` for full-page loads, `Skeleton` for partial content, and inline spinner icons for button actions.
 8. **Toast feedback:** use `useToast()` for all async success/error feedback instead of inline alerts, except for persistent form-level errors.
 9. **Icons:** import from `lucide-react`; do not add new icon sets.
-10. **Routes:** pages are lazy-loaded in `App.tsx`; add new pages inside the authenticated layout unless they are public. Remember the `/admin` basename.
+10. **Routes:** route modules are lazy-loaded in `App.tsx`; put tenant pages under `/app/*`, public auth pages at the root, and operator pages under `/admin/*`. Do not add a global basename.
 11. **Sortable lists:** reuse the existing `@dnd-kit` packages already used in Configure; do not add new drag-and-drop libraries.
 12. **EmptyState actions** currently use a custom button styled like `Button default`; prefer migrating to the `Button` primitive for consistency.
 
 ## Verification Checklist
 
-Before considering Admin UI work complete:
+Before considering web UI work complete:
 
 - [ ] New page uses `PageLayout` and matches existing title/icon/count/action pattern.
 - [ ] New components use `cn()` and Tailwind tokens from `index.css`.
@@ -261,10 +271,10 @@ Before considering Admin UI work complete:
 ## Source Evidence
 
 - Color/theme/animation/shadow definitions: `apps/web/src/index.css`.
-- App shell, basename, and routing: `apps/web/src/App.tsx`.
+- App shells and routing: `apps/web/src/App.tsx` and `apps/web/src/components/Sidebar.tsx`.
 - UI primitives: `apps/web/src/components/ui/{button,card,table,badge,select,skeleton}.tsx`.
 - Layout components: `apps/web/src/components/Sidebar.tsx`, `apps/web/src/components/PageLayout.tsx`.
-- Page implementations: `apps/web/src/pages/{Dashboard,ApiKeys,Users,Configure,Login}.tsx`.
+- Existing operator page implementations: `apps/web/src/pages/{Dashboard,ApiKeys,Users,Configure,Login}.tsx`; tenant features live under `apps/web/src/features/`.
 - Shared helpers: `apps/web/src/lib/utils.ts`, `apps/web/src/lib/routing.ts`.
 - Feedback components: `apps/web/src/components/ToastStack.tsx`, `apps/web/src/components/ConfirmDialog.tsx`.
 - Data display: `apps/web/src/components/DataTable.tsx`, `apps/web/src/components/MetricCard.tsx`, `apps/web/src/components/MetricsGrid.tsx`.

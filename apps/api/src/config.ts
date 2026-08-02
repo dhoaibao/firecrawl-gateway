@@ -52,6 +52,7 @@ const GatewayConfigSchema = z.object({
     },
     z.boolean().or(z.string()).default(false),
   ),
+  gatewayTokenMaxLifetimeDays: z.coerce.number().int().positive().max(3650).default(365),
 });
 
 /** Parse an injected environment without terminating the importing process. */
@@ -81,6 +82,7 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig
     adminEmail: env.ADMIN_EMAIL,
     adminPassword: env.ADMIN_PASSWORD,
     trustProxy: env.TRUST_PROXY,
+    gatewayTokenMaxLifetimeDays: env.GATEWAY_TOKEN_MAX_LIFETIME_DAYS,
   });
 
   if (env.NODE_ENV === "production" && parsed.authEnabled) {
@@ -92,6 +94,9 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig
     }
     if (!parsed.publicAppUrl) {
       throw new Error("PUBLIC_APP_URL is required when authentication is enabled in production");
+    }
+    if (!parsed.adminEmail) {
+      throw new Error("ADMIN_EMAIL is required when authentication is enabled in production");
     }
   }
 

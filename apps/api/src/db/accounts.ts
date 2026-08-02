@@ -72,6 +72,14 @@ export async function getAccountById(accountId: string): Promise<AccountRecord |
   });
 }
 
+/** Account-scoped read for user portal APIs; forced RLS remains in the path. */
+export async function getAccountByIdForTenant(accountId: string): Promise<AccountRecord | null> {
+  return withAccountTransaction(accountId, async (tx) => {
+    const account = await tx.account.findUnique({ where: { id: accountId }, select: accountSelect });
+    return account ? accountRecord(account) : null;
+  });
+}
+
 export async function getAccountByPublicId(publicId: string): Promise<AccountRecord | null> {
   return withOperatorTransaction(async (tx) => {
     const account = await tx.account.findUnique({ where: { publicId }, select: accountSelect });
