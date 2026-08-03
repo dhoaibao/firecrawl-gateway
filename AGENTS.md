@@ -3,7 +3,7 @@
 
 ## Repository Purpose
 
-This repository ships an Express.js + TypeScript gateway and React admin/operator dashboards in front of externally hosted Firecrawl services. PostgreSQL and Firecrawl runtime services are deployment prerequisites; this repository does not host them.
+This repository ships an Express.js + TypeScript Firecrawl gateway, React user/operator dashboards, and async workers. PostgreSQL and externally hosted Firecrawl services are deployment prerequisites; this repository does not host them.
 
 ## Working Rules
 
@@ -53,19 +53,20 @@ npm run migrate:preflight --workspace @firecrawl/api
 - `apps/api/src/infrastructure/database/` — separate runtime/operator Prisma clients, transaction context, readiness checks, and the Prisma-backed session store.
 - `apps/api/src/infrastructure/http/` — async route and centralized error-handler helpers.
 - `apps/api/src/auth/`, `users/`, `api-keys/`, `credentials/`, and `settings/` — authentication/security and dashboard administration domains, including routes, controllers, services, and persistence adapters.
-- `apps/api/src/quota/`, `sources/`, and `jobs/` — quota accounting, infrastructure-source resolution, and gateway async-job lifecycle.
-- `apps/api/src/db/`, `audit-repository.ts`, and `audit-store.ts` — compatibility database adapter/bootstrap, audit persistence, and JSONL/database audit handling.
+- `apps/api/src/quota/`, `sources/`, and `jobs/` — quota accounting, infrastructure-source resolution, async workers, and bounded audit retention.
+- `apps/api/src/rate-limit-store.ts`, `middleware.ts`, `audit-repository.ts`, and `audit-store.ts` — PostgreSQL-backed request limiting, HTTP controls, and canonical audit persistence; JSONL is local compatibility only.
+- `apps/api/src/db/` — compatibility database adapter/bootstrap.
 - `apps/api/prisma/` — Prisma schema, checked-in migrations, and PostgreSQL security SQL for roles, grants, RLS, triggers, and partial indexes.
 - `apps/api/migrations/` — historical node-pg-migrate files retained for reference; they are not the active deployment pipeline.
 - `apps/web/src/` — Vite/React user portal and `/admin` dashboard; `apps/web/src/features/operator/` contains operator-console views and controls.
 - `packages/contracts/` — shared Zod contracts and control-plane types.
-- `deploy/Dockerfile` and `docker-compose*.yaml` — source/prebuilt container deployment.
-- `docs/` — authentication/security, UI design, architecture, compatibility, and database-operation guidance.
+- `deploy/Dockerfile`, `deploy/docker-entrypoint.sh`, and `docker-compose*.yaml` — source/prebuilt API, worker, preflight, and migration container deployment.
+- `docs/` — authentication/security, UI design, architecture, compatibility, database-operation, threat-model, and rollout guidance.
 
 ## Safety / Do-Not-Assume
 
-- Compose runs the gateway on container port `8080`; `GATEWAY_PORT` controls the host mapping.
-- `DATABASE_URL` uses the runtime credential, `OPERATOR_DATABASE_URL` uses a distinct operator credential, and `MIGRATION_DATABASE_URL` is deployment-only. Never use the migration credential for the API process.
+- Compose runs the gateway on container port `8080`; `GATEWAY_PORT` controls the host mapping. Prebuilt deployment requires an immutable `GATEWAY_IMAGE` digest.
+- `DATABASE_URL` uses the runtime credential, `OPERATOR_DATABASE_URL` uses a distinct operator credential, and `MIGRATION_DATABASE_URL` is deployment-only. Only one-shot `preflight`/`migrate` containers receive the migration credential; never use it for API or worker processes.
 - API startup never applies DDL. Fresh databases use `db:deploy` followed by `db:security`; `db:push` is for disposable local databases only.
 - Existing databases require a verified backup and reviewed `migrate:preflight` output before the explicit Prisma baseline procedure. Do not run `db:baseline` on an empty or schema-drifting database.
 - Runtime and operator transactions have different tenant/RLS boundaries. Preserve separate credentials, forced RLS, operator role assumption, and readiness checks when changing persistence.
@@ -80,16 +81,16 @@ npm run migrate:preflight --workspace @firecrawl/api
 - For fresh deployment, run `db:deploy` and then `db:security` with `MIGRATION_DATABASE_URL` supplied as `DATABASE_URL`, then start/recreate the gateway and verify `/ready`.
 - For an existing database, back it up, run and review `migrate:preflight`, baseline only after an exact Prisma-owned schema match, install the security layer, and check migration status. Follow `docs/operations/database-bootstrap.md` and `docs/operations/database-migrations.md`.
 - Operator-console schema/security changes require both the checked-in Prisma migration and matching `security.sql` policy/grant updates; missing prerequisites must keep the operator boundary read-only.
-- Rebuild/recreate source Compose deployments after source or environment wiring changes. Configuration examples belong in `.env.example`; runtime credentials remain local.
+- Rebuild/recreate source Compose deployments after source or environment wiring changes. Production rollout restore-tests a backup, runs preflight before forward-only migration, then verifies API health/readiness and worker heartbeat. Configuration examples belong in `.env.example`; runtime credentials remain local.
 
 ## Source-of-Truth Files
 
 - `AGENTS.md` — canonical agent instructions; `CLAUDE.md` — redirect shim only.
 - `package.json`, workspace `package.json` files, and `package-lock.json` — scripts and dependency graph.
-- `.env.example` and `docker-compose*.yaml` — deployment configuration inputs.
+- `.env.example`, `docker-compose*.yaml`, `deploy/docker-entrypoint.sh`, and `.github/workflows/deploy.yml` — deployment configuration, image-command, and release sources.
 - `apps/api/prisma/schema.prisma`, `apps/api/prisma/migrations/`, and `apps/api/prisma/security.sql` — active database schema and security sources.
 - `apps/api/src/config.ts`, `apps/api/src/policy.ts`, `apps/api/src/infrastructure/database/client.ts`, and `apps/api/src/operator-api.ts` — configuration, routing policy, database-boundary behavior, and operator authorization/readiness behavior.
 - `apps/web/src/App.tsx`, `apps/web/src/components/Sidebar.tsx`, and `apps/web/src/features/operator/OperatorPage.tsx` — dashboard routing, navigation, and operator-console UI behavior.
-- `docs/AUTH_SECURITY.md`, `docs/DESIGN.md`, `docs/architecture/ADR-006-prisma-layered-backend.md`, and `docs/operations/` — security, UI, architecture, and database-operation guidance.
+- `docs/AUTH_SECURITY.md`, `docs/DESIGN.md`, `docs/security/threat-model.md`, `docs/architecture/ADR-006-prisma-layered-backend.md`, and `docs/operations/` — security, UI, architecture, database-operation, and production-rollout guidance.
 - `README.md`, `QUICKSTART.md`, `SELF_HOST.md`, and `apps/api/README.md` — user-facing setup, deployment, and route/development guidance.
 <!-- b-init-managed:end -->
