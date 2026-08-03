@@ -56,7 +56,6 @@ npm run migrate:preflight --workspace @firecrawl/api
 - `apps/api/src/quota/`, `sources/`, `credentials/`, `settings/`, `users/`, and `types.ts` — retained domain/persistence helpers still used by native services.
 - `apps/api/src/rate-limit-store.ts`, `audit-repository.ts`, `logger.ts`, and `db/index.ts` — retained PostgreSQL-backed quota/rate-limit/audit/database compatibility helpers used by native services.
 - `apps/api/prisma/` — Prisma schema, checked-in migrations, and PostgreSQL security SQL for roles, grants, RLS, triggers, and partial indexes.
-- `apps/api/migrations/` — historical node-pg-migrate files retained for reference; they are not the active deployment pipeline.
 - `apps/web/src/` — Vite/React user portal and `/admin` dashboard; `apps/web/src/features/operator/` contains operator-console views and controls.
 - `packages/contracts/` — shared Zod contracts and control-plane types.
 - `deploy/Dockerfile`, `deploy/docker-entrypoint.sh`, and `docker-compose*.yaml` — source/prebuilt API, worker, preflight, and migration container deployment.
