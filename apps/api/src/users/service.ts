@@ -292,6 +292,30 @@ export async function deleteUserSafely(id: string): Promise<DeleteUserResult> {
   });
 }
 
+export interface UserSearchOptions {
+  query?: string;
+  status?: string;
+  verified?: boolean;
+  limit?: number;
+}
+
+export async function searchUsers(options: UserSearchOptions = {}): Promise<{ users: User[]; total: number }> {
+  const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
+  const query = options.query?.trim();
+  return withOperatorTransaction(async (tx) => {
+    const where: Prisma.UserWhereInput = {
+      ...(query ? { OR: [{ email: { contains: query, mode: "insensitive" } }, { name: { contains: query, mode: "insensitive" } }] } : {}),
+      ...(options.status ? { status: options.status } : {}),
+      ...(options.verified === undefined ? {} : { emailVerifiedAt: options.verified ? { not: null } : null }),
+    };
+    const [rows, total] = await Promise.all([
+      tx.user.findMany({ where, orderBy: { createdAt: "desc" }, take: limit, select: userSelect }),
+      tx.user.count({ where }),
+    ]);
+    return { users: rows.map((row) => mapUser(row)), total };
+  });
+}
+
 export async function countUsers(): Promise<number> {
   return withOperatorTransaction((tx) => tx.user.count());
 }

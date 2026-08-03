@@ -2,9 +2,11 @@ import { useEffect, useState, type ComponentType } from "react"
 import { useLocation, Link } from "react-router-dom"
 import {
   Activity,
+  Bell,
   BookOpen,
   Clock3,
   Cloud,
+  Database,
   Gauge,
   Key,
   LayoutDashboard,
@@ -41,11 +43,16 @@ const userNavItems: NavItem[] = [
 ]
 
 const adminNavItems: NavItem[] = [
-  { label: "Dashboard", href: "/admin", icon: LayoutDashboard },
-  { label: "Gateway Tokens", href: "/admin/api-keys", icon: Key },
-  { label: "Users", href: "/admin/users", icon: Users, adminOnly: true },
-  { label: "Configure", href: "/admin/configure", icon: Settings, adminOnly: true },
-  { label: "Account", href: "/admin/account", icon: UserRound },
+  { label: "Overview", href: "/admin", icon: LayoutDashboard },
+  { label: "Capacity", href: "/admin/capacity", icon: Gauge },
+  { label: "Accounts", href: "/admin/accounts", icon: Users },
+  { label: "Waitlist", href: "/admin/waitlist", icon: Users },
+  { label: "Infrastructure", href: "/admin/infrastructure", icon: Database },
+  { label: "Usage", href: "/admin/usage", icon: Gauge },
+  { label: "Requests", href: "/admin/requests", icon: Activity },
+  { label: "Notifications", href: "/admin/notifications", icon: Bell },
+  { label: "Security", href: "/admin/security", icon: Shield },
+  { label: "Configuration", href: "/admin/configuration", icon: Settings },
 ]
 
 interface SidebarProps {

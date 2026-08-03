@@ -47,6 +47,17 @@ export type AuthenticatedUser = z.infer<typeof authenticatedUserSchema>;
 export type Pagination = z.infer<typeof paginationSchema>;
 export type Health = z.infer<typeof healthSchema>;
 
+export const operatorReasonSchema = z.object({ reason: z.string().trim().min(1).max(500) });
+export const operatorNotificationStateSchema = z.enum(["active", "acknowledged", "resolved"]);
+export const operatorNotificationSchema = z.object({
+  id: z.string(), type: z.string(), severity: z.enum(["info", "warning", "critical"]),
+  dedup_key: z.string(), state: operatorNotificationStateSchema,
+  first_occurred_at: z.string(), last_occurred_at: z.string(),
+  acknowledged_at: z.string().nullable(), resolved_at: z.string().nullable(),
+  payload: z.record(z.unknown()), email_status: z.string(),
+});
+export type OperatorNotification = z.infer<typeof operatorNotificationSchema>;
+
 export const fundingPreferenceSchema = z.enum(["byok", "included", "auto"]);
 export type FundingPreference = z.infer<typeof fundingPreferenceSchema>;
 

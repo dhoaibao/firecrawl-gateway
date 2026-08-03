@@ -239,6 +239,8 @@ ALTER TABLE free_tier_policy ENABLE ROW LEVEL SECURITY;
 ALTER TABLE free_tier_policy FORCE ROW LEVEL SECURITY;
 ALTER TABLE quota_periods ENABLE ROW LEVEL SECURITY;
 ALTER TABLE quota_periods FORCE ROW LEVEL SECURITY;
+ALTER TABLE operator_notifications ENABLE ROW LEVEL SECURITY;
+ALTER TABLE operator_notifications FORCE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS accounts_tenant_isolation ON accounts;
 CREATE POLICY accounts_tenant_isolation ON accounts
@@ -304,6 +306,10 @@ DROP POLICY IF EXISTS quota_periods_operator_access ON quota_periods;
 CREATE POLICY quota_periods_operator_access ON quota_periods
   USING (current_user = 'firecrawl_gateway_operator')
   WITH CHECK (current_user = 'firecrawl_gateway_operator');
+DROP POLICY IF EXISTS operator_notifications_operator_access ON operator_notifications;
+CREATE POLICY operator_notifications_operator_access ON operator_notifications
+  USING (current_user = 'firecrawl_gateway_operator')
+  WITH CHECK (current_user = 'firecrawl_gateway_operator');
 
 GRANT USAGE ON SCHEMA public TO firecrawl_gateway_runtime, firecrawl_gateway_operator;
 GRANT SELECT, INSERT, UPDATE, DELETE ON users, settings, sessions TO firecrawl_gateway_runtime;
@@ -317,7 +323,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON users, settings, sessions, accounts, acc
   api_keys, audit_logs, provider_credentials, infrastructure_sources, gateway_jobs
   TO firecrawl_gateway_operator;
 GRANT SELECT, INSERT, UPDATE ON free_tier_policy, free_tier_enrollments, quota_periods,
-  account_entitlements, usage_reservations, quota_events TO firecrawl_gateway_operator;
+  account_entitlements, usage_reservations, quota_events, operator_notifications TO firecrawl_gateway_operator;
 GRANT SELECT, INSERT ON usage_events TO firecrawl_gateway_operator;
 GRANT SELECT, INSERT, UPDATE, DELETE ON auth_tokens, mfa_factors, mfa_recovery_codes,
   auth_sessions, security_events, email_outbox, email_delivery_events

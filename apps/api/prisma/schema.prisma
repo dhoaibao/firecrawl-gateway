@@ -243,8 +243,9 @@ model EmailOutbox {
   createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   sentAt           DateTime? @map("sent_at") @db.Timestamptz(6)
 
-  user           User?                @relation(fields: [userId], references: [id], onDelete: SetNull)
-  deliveryEvents EmailDeliveryEvent[]
+  user                User?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
+  deliveryEvents      EmailDeliveryEvent[]
+  operatorNotification OperatorNotification?
 
   @@index([status, availableAt], map: "email_outbox_claim_idx")
   @@map("email_outbox")
@@ -460,4 +461,34 @@ model QuotaEvent {
 
   @@index([accountId, createdAt], map: "idx_quota_events_account")
   @@map("quota_events")
+}
+
+model OperatorNotification {
+  id                String    @id @db.Text
+  type              String    @db.Text
+  severity          String    @db.Text
+  dedupKey          String    @unique @map("dedup_key") @db.Text
+  state             String    @default("active") @db.Text
+  firstOccurredAt   DateTime  @map("first_occurred_at") @db.Timestamptz(6)
+  lastOccurredAt    DateTime  @map("last_occurred_at") @db.Timestamptz(6)
+  acknowledgedAt   DateTime? @map("acknowledged_at") @db.Timestamptz(6)
+  acknowledgedBy   String?   @map("acknowledged_by") @db.Text
+  resolvedAt       DateTime? @map("resolved_at") @db.Timestamptz(6)
+  resolvedBy       String?   @map("resolved_by") @db.Text
+  periodId         String?   @map("period_id") @db.Text
+  sourceId         String?   @map("source_id") @db.Text
+  accountId        String?   @map("account_id") @db.Text
+  payload          Json      @default("{}") @db.JsonB
+  emailStatus      String    @default("not_queued") @map("email_status") @db.Text
+  emailAttempts    Int       @default(0) @map("email_attempts")
+  lastEmailError   String?   @map("last_email_error") @db.Text
+  emailOutboxId    String?   @unique @map("email_outbox_id") @db.Text
+  emailOutbox      EmailOutbox? @relation(fields: [emailOutboxId], references: [id], onDelete: SetNull)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@index([state, severity, lastOccurredAt], map: "operator_notifications_state_idx")
+  @@index([sourceId, lastOccurredAt], map: "operator_notifications_source_idx")
+  @@index([accountId, lastOccurredAt], map: "operator_notifications_account_idx")
+  @@map("operator_notifications")
 }

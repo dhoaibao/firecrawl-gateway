@@ -27,10 +27,11 @@ export async function queueEmail(input: {
   idempotencyKey: string;
   payload: EmailPayload;
   encryptionKey: string;
-}): Promise<void> {
+}): Promise<string> {
+  const id = crypto.randomUUID();
   await input.client.emailOutbox.createMany({
     data: {
-      id: crypto.randomUUID(),
+      id,
       idempotencyKey: input.idempotencyKey,
       userId: input.userId ?? null,
       kind: input.kind,
@@ -39,6 +40,9 @@ export async function queueEmail(input: {
     },
     skipDuplicates: true,
   });
+  const row = await input.client.emailOutbox.findUnique({ where: { idempotencyKey: input.idempotencyKey }, select: { id: true } });
+  if (!row) throw new Error("Unable to create email outbox entry");
+  return row.id;
 }
 
 export async function claimEmail(config: GatewayConfig): Promise<boolean> {
@@ -92,6 +96,7 @@ export async function claimEmail(config: GatewayConfig): Promise<boolean> {
       where: { id: row.id },
       data: { status: "sent", sentAt: new Date(), brevoMessageId: body.messageId ?? null, lockedAt: null },
     }).then(() => undefined));
+    await syncOperatorNotificationEmail(row.id, "sent", row.attempts);
   } catch (error) {
     await retryEmail(row.id, Math.min(60 * 60 * 1000, 2 ** Math.min(row.attempts, 10) * 1000 + Math.random() * 1000), String(error));
   }
@@ -99,6 +104,7 @@ export async function claimEmail(config: GatewayConfig): Promise<boolean> {
 }
 
 async function retryEmail(id: string, delay: number, error: string): Promise<void> {
+  let attempts = 0;
   await withOperatorTransaction((tx) => tx.emailOutbox.update({
     where: { id },
     data: {
@@ -109,16 +115,31 @@ async function retryEmail(id: string, delay: number, error: string): Promise<voi
     },
   }).then(async () => {
     const row = await tx.emailOutbox.findUnique({ where: { id }, select: { attempts: true } });
+    attempts = row?.attempts ?? 0;
     if (row && row.attempts >= 8) {
       await tx.emailOutbox.update({ where: { id }, data: { status: "dead" } });
     }
   }));
+  await syncOperatorNotificationEmail(id, attempts >= 8 ? "dead" : "queued", attempts, error);
 }
 
 async function markEmailDead(id: string, error: string): Promise<void> {
-  await withOperatorTransaction((tx) => tx.emailOutbox.update({
-    where: { id },
-    data: { status: "dead", lockedAt: null, lastError: error.slice(0, 500) },
+  let attempts = 0;
+  await withOperatorTransaction(async (tx) => {
+    const row = await tx.emailOutbox.update({
+      where: { id },
+      data: { status: "dead", lockedAt: null, lastError: error.slice(0, 500) },
+      select: { attempts: true },
+    });
+    attempts = row.attempts;
+  });
+  await syncOperatorNotificationEmail(id, "dead", attempts, error);
+}
+
+async function syncOperatorNotificationEmail(id: string, status: "queued" | "sent" | "dead", attempts: number, error?: string): Promise<void> {
+  await withOperatorTransaction((tx) => tx.operatorNotification.updateMany({
+    where: { emailOutboxId: id },
+    data: { emailStatus: status, emailAttempts: attempts, lastEmailError: error?.slice(0, 500) ?? null, updatedAt: new Date() },
   }).then(() => undefined));
 }
 
@@ -148,9 +169,14 @@ export function createBrevoWebhookRouter(config: GatewayConfig) {
           skipDuplicates: true,
         });
         if (inserted.count === 1 && ["hard_bounce", "soft_bounce", "blocked", "spam"].includes(eventType)) {
+          const failed = `Brevo delivery event: ${eventType}`;
           await tx.emailOutbox.updateMany({
             where: { brevoMessageId: eventId, status: "sent" },
-            data: { status: "dead", lastError: `Brevo delivery event: ${eventType}` },
+            data: { status: "dead", lastError: failed },
+          });
+          await tx.operatorNotification.updateMany({
+            where: { emailOutbox: { brevoMessageId: eventId } },
+            data: { emailStatus: "dead", lastEmailError: failed, updatedAt: new Date() },
           });
         }
       });

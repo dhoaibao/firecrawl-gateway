@@ -143,6 +143,8 @@ export async function createOperatorCredential(
     keyVersion: input.keyVersion,
   });
   return withOperatorTransaction(async (tx) => {
+    const source = await tx.infrastructureSource.findUnique({ where: { id: input.sourceId }, select: { id: true, kind: true } });
+    if (!source) throw new Error("Infrastructure source not found");
     const created = await tx.providerCredential.create({
       data: {
         id,
@@ -156,7 +158,46 @@ export async function createOperatorCredential(
       },
       select: credentialSelect,
     });
+    await tx.infrastructureSource.update({ where: { id: source.id }, data: { credentialId: created.id, updatedAt: new Date() } });
     return metadata(record(created));
+  });
+}
+
+export async function replaceOperatorCredential(
+  previousId: string,
+  input: CreateCredentialInput,
+  encryptionKey: string,
+): Promise<CredentialMetadata | null> {
+  if (!input.sourceId?.trim()) throw new Error("Operator credentials require an infrastructure source ID");
+  return withOperatorTransaction(async (tx) => {
+    const previous = await tx.providerCredential.findFirst({ where: { id: previousId, ownerType: "operator", supersededAt: null }, select: { id: true } });
+    if (!previous) return null;
+    const attachedSources = await tx.infrastructureSource.findMany({ where: { credentialId: previousId }, select: { id: true } });
+    if (!attachedSources.some((source) => source.id === input.sourceId)) {
+      throw new Error("Replacement source must be attached to the credential being rotated");
+    }
+    const masked = maskCredential(input.value);
+    let firstCreated: CredentialRow | null = null;
+    for (const source of attachedSources) {
+      const id = crypto.randomUUID();
+      const encryptedValue = encryptProviderCredential(input.value, encryptionKey, { purpose: input.purpose, ownerId: "operator", sourceId: source.id, keyVersion: input.keyVersion });
+      const created = await tx.providerCredential.create({
+        data: { id, ownerType: "operator", purpose: input.purpose, encryptedValue, keyVersion: input.keyVersion, maskedPrefix: masked.prefix, maskedSuffix: masked.suffix, providerMetadata: jsonValue(input.providerMetadata ?? {}) },
+        select: credentialSelect,
+      });
+      if (!firstCreated) firstCreated = created;
+      await tx.infrastructureSource.update({ where: { id: source.id }, data: { credentialId: id, updatedAt: new Date() } });
+    }
+    await tx.providerCredential.update({ where: { id: previousId }, data: { status: "revoked", supersededAt: new Date(), updatedAt: new Date() } });
+    return firstCreated ? metadata(record(firstCreated)) : null;
+  });
+}
+
+export async function revokeOperatorCredential(credentialId: string): Promise<boolean> {
+  return withOperatorTransaction(async (tx) => {
+    const result = await tx.providerCredential.updateMany({ where: { id: credentialId, ownerType: "operator", supersededAt: null }, data: { status: "revoked", supersededAt: new Date(), updatedAt: new Date() } });
+    if (result.count) await tx.infrastructureSource.updateMany({ where: { credentialId }, data: { credentialId: null, updatedAt: new Date() } });
+    return result.count === 1;
   });
 }
 

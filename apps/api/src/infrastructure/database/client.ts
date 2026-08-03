@@ -40,6 +40,7 @@ const REQUIRED_TABLES = [
   "usage_reservations",
   "usage_events",
   "quota_events",
+  "operator_notifications",
 ] as const;
 
 const RLS_TABLES = [
@@ -56,6 +57,7 @@ const RLS_TABLES = [
   "quota_events",
   "free_tier_policy",
   "quota_periods",
+  "operator_notifications",
 ] as const;
 
 const REQUIRED_POLICIES = [
@@ -74,6 +76,7 @@ const REQUIRED_POLICIES = [
   ["free_tier_policy", "free_tier_policy_operator_access"],
   ["quota_periods", "quota_periods_runtime_read"],
   ["quota_periods", "quota_periods_operator_access"],
+  ["operator_notifications", "operator_notifications_operator_access"],
 ] as const;
 
 const REQUIRED_PARTIAL_INDEXES = [
@@ -101,6 +104,7 @@ const OPERATOR_PRIVILEGES = [
   ["usage_events", "INSERT"],
   ...["auth_tokens", "mfa_factors", "mfa_recovery_codes", "auth_sessions", "security_events", "email_outbox", "email_delivery_events"]
     .flatMap((table) => ["SELECT", "INSERT", "UPDATE", "DELETE"].map((privilege) => [table, privilege] as const)),
+  ...["operator_notifications"].flatMap((table) => ["SELECT", "INSERT", "UPDATE"].map((privilege) => [table, privilege] as const)),
 ] as const;
 
 function createClient(databaseUrl: string, name: string): PrismaClient {

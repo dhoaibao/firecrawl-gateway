@@ -6,6 +6,12 @@ import { hasPrivateTargetUrl } from "../utils";
 
 export type SourceKind = "cloud" | "self_hosted";
 export type FundingType = "byok" | "included";
+export const SOURCE_STATUSES = ["active", "draining", "paused", "unhealthy"] as const;
+export type SourceStatus = typeof SOURCE_STATUSES[number];
+
+export function isSourceStatus(value: unknown): value is SourceStatus {
+  return typeof value === "string" && (SOURCE_STATUSES as readonly string[]).includes(value);
+}
 
 export interface InfrastructureSourceRecord {
   id: string;
@@ -134,6 +140,38 @@ export async function createInfrastructureSource(input: CreateInfrastructureSour
       },
       select: sourceSelect,
     });
+    return mapSource(row);
+  });
+}
+
+export async function listInfrastructureSources(): Promise<InfrastructureSourceRecord[]> {
+  return withOperatorTransaction(async (tx) => {
+    const rows = await tx.infrastructureSource.findMany({ orderBy: [{ priority: "asc" }, { createdAt: "asc" }], select: sourceSelect });
+    return rows.map(mapSource);
+  });
+}
+
+export async function updateInfrastructureSource(
+  id: string,
+  updates: Partial<Pick<CreateInfrastructureSourceInput, "name" | "priority" | "hardConcurrency" | "requestTimeoutMs" | "responseBufferMaxBytes" | "capabilities" | "baseUrl" | "allowPrivateNetwork"> & { status?: InfrastructureSourceRecord["status"]; credentialId?: string | null }>,
+): Promise<InfrastructureSourceRecord | null> {
+  return withOperatorTransaction(async (tx) => {
+    const existing = await tx.infrastructureSource.findUnique({ where: { id }, select: { kind: true } });
+    if (!existing) return null;
+    if (updates.status !== undefined && !isSourceStatus(updates.status)) {
+      throw new Error("Unsupported infrastructure source status");
+    }
+    const data: Prisma.InfrastructureSourceUpdateInput = { updatedAt: new Date() };
+    if (updates.name !== undefined) data.name = updates.name;
+    if (updates.priority !== undefined) data.priority = updates.priority;
+    if (updates.hardConcurrency !== undefined) data.hardConcurrency = updates.hardConcurrency;
+    if (updates.requestTimeoutMs !== undefined) data.requestTimeoutMs = updates.requestTimeoutMs;
+    if (updates.responseBufferMaxBytes !== undefined) data.responseBufferMaxBytes = updates.responseBufferMaxBytes;
+    if (updates.capabilities !== undefined) data.capabilities = updates.capabilities as Prisma.InputJsonValue;
+    if (updates.status !== undefined) data.status = updates.status;
+    if (updates.credentialId !== undefined) data.credential = updates.credentialId ? { connect: { id: updates.credentialId } } : { disconnect: true };
+    if (updates.baseUrl !== undefined) data.baseUrl = normalizeSourceUrl(existing.kind as SourceKind, updates.baseUrl, updates.allowPrivateNetwork ?? false);
+    const row = await tx.infrastructureSource.update({ where: { id }, data, select: sourceSelect });
     return mapSource(row);
   });
 }

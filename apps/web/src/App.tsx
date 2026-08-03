@@ -1,9 +1,10 @@
-import { useEffect, type ComponentType } from "react"
+import { useEffect, useState, type ComponentType } from "react"
 import { Navigate, Outlet, RouterProvider, createBrowserRouter, type RouteObject, useLocation, useNavigate } from "react-router-dom"
 import { useAuth } from "@/contexts/AuthContext"
 import { ToastProvider } from "@/contexts/ToastContext"
 import ErrorBoundary from "@/components/ErrorBoundary"
 import Sidebar from "@/components/Sidebar"
+import { API_BASE } from "@/lib/api"
 
 function LoadingScreen() {
   return <div className="flex min-h-screen items-center justify-center bg-background animate-fade-in"><div className="flex flex-col items-center gap-4"><div className="size-10 animate-pulse rounded-xl border border-white/[0.08] bg-surface-2"><div className="size-full rounded-xl bg-gradient-to-br from-white/[0.06] to-transparent" /></div><div className="h-2 w-24 animate-pulse rounded-full bg-white/[0.06]" /></div></div>
@@ -47,11 +48,22 @@ function UserLayout() {
   return <div className="flex min-h-screen bg-background"><Sidebar mode="user" /><main className="flex-1 pt-14 lg:pt-0"><Outlet /></main></div>
 }
 
-function AdminLayout() {
+function OperatorLayout() {
   const { user, loading } = useAuth()
-  if (loading) return <LoadingScreen />
+  const [mfaReady, setMfaReady] = useState<boolean | null>(null)
+  useEffect(() => {
+    if (!user?.is_admin) return
+    let cancelled = false
+    void fetch(`${API_BASE}/auth/mfa`, { credentials: "include", headers: { Accept: "application/json" } })
+      .then((response) => response.ok ? response.json() as Promise<{ data?: { enabled?: boolean; verified?: boolean } }> : null)
+      .then((result) => { if (!cancelled) setMfaReady(Boolean(result?.data?.enabled && result?.data?.verified)) })
+      .catch(() => { if (!cancelled) setMfaReady(false) })
+    return () => { cancelled = true }
+  }, [user])
+  if (loading || (user?.is_admin && mfaReady === null)) return <LoadingScreen />
   if (!user) return <Navigate to="/login?next=%2Fadmin" replace />
   if (!user.is_admin) return <Navigate to="/app" replace />
+  if (!mfaReady) return <Navigate to="/app/security" replace />
   return <div className="flex min-h-screen bg-background"><Sidebar mode="admin" /><main className="flex-1 pt-14 lg:pt-0"><Outlet /></main></div>
 }
 
@@ -92,14 +104,19 @@ const routes: RouteObject[] = [
       { path: "admin/reset-password", element: <Navigate to="/reset-password" replace /> },
       {
         path: "admin",
-        element: <AdminLayout />,
+        element: <OperatorLayout />,
         errorElement: <RouteErrorBoundary />,
         children: [
-          { index: true, lazy: lazyPage(() => import("@/pages/Dashboard")) },
-          { path: "users", lazy: lazyPage(() => import("@/pages/Users")) },
-          { path: "api-keys", lazy: lazyPage(() => import("@/pages/ApiKeys")) },
-          { path: "configure", lazy: lazyPage(() => import("@/pages/Configure")) },
-          { path: "account", lazy: lazyPage(() => import("@/pages/Account")) },
+          { index: true, lazy: lazyPage(() => import("@/features/operator/OperatorPage")) },
+          { path: "capacity", lazy: lazyPage(() => import("@/features/operator/Capacity")) },
+          { path: "accounts", lazy: lazyPage(() => import("@/features/operator/Accounts")) },
+          { path: "waitlist", lazy: lazyPage(() => import("@/features/operator/Waitlist")) },
+          { path: "infrastructure", lazy: lazyPage(() => import("@/features/operator/Infrastructure")) },
+          { path: "usage", lazy: lazyPage(() => import("@/features/operator/Usage")) },
+          { path: "requests", lazy: lazyPage(() => import("@/features/operator/Requests")) },
+          { path: "notifications", lazy: lazyPage(() => import("@/features/operator/Notifications")) },
+          { path: "security", lazy: lazyPage(() => import("@/features/operator/Security")) },
+          { path: "configuration", lazy: lazyPage(() => import("@/features/operator/Configuration")) },
           { path: "*", element: <Navigate to="/admin" replace /> },
         ],
       },

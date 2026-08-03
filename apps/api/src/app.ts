@@ -8,6 +8,7 @@ import { pingDatabase } from "./db";
 import type { AuditStore } from "./audit-store";
 import { createProxyHandler } from "./proxy";
 import { createAdminRouter } from "./admin-api";
+import { createOperatorRouter } from "./operator-api";
 import { requestLogger, rateLimiter, requestIdMiddleware } from "./middleware";
 import { passport } from "./auth/passport";
 import { createAuthRouter } from "./auth/routes";
@@ -100,6 +101,9 @@ export function createApp(dependencies: AppDependencies) {
     const authRouter = createAuthRouter(config);
     app.use("/api/v1/auth", express.json({ limit: "32kb" }), authRouter);
     app.use("/admin/api/auth", express.json({ limit: "32kb" }), authRouter);
+    // New operator boundary. The legacy /admin/api routes remain only for the
+    // compatibility window and are not used by the operator console.
+    app.use("/api/v1/admin", express.json({ limit: "64kb" }), requireAuth, requireAdmin, createOperatorRouter(config, checkDatabase));
     app.use("/admin/api", requireAuth, adminRouter);
     app.use("/admin/api/users", express.json({ limit: "32kb" }), requireAdmin, requireOperatorMfa, createUsersRouter(config));
     app.use("/admin/api/api-keys", express.json(), requireAuth, createApiKeysRouter({
