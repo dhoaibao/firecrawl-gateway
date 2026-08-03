@@ -87,7 +87,7 @@ npm run migrate:preflight --workspace @firecrawl/api
 
 - `AGENTS.md` — canonical agent instructions; `CLAUDE.md` — redirect shim only.
 - `package.json`, workspace `package.json` files, and `package-lock.json` — scripts and dependency graph.
-- `.env.example`, `docker-compose*.yaml`, `deploy/docker-entrypoint.sh`, and `.github/workflows/deploy.yml` — deployment configuration, image-command, and release sources.
+- `.env.example`, `docker-compose*.yaml`, `deploy/docker-entrypoint.sh`, and `.github/workflows/deploy.yml` — deployment configuration, image-command, and release sources; `SELF_HOST.md` is the user-facing deployment and environment-variable guide.
 - `apps/api/prisma/schema.prisma`, `apps/api/prisma/migrations/`, and `apps/api/prisma/security.sql` — active database schema and security sources.
 - `apps/api/src/config.ts`, `apps/api/src/policy.ts`, `apps/api/src/infrastructure/database/client.ts`, and `apps/api/src/operator-api.ts` — configuration, routing policy, database-boundary behavior, and operator authorization/readiness behavior.
 - `apps/web/src/App.tsx`, `apps/web/src/components/Sidebar.tsx`, and `apps/web/src/features/operator/OperatorPage.tsx` — dashboard routing, navigation, and operator-console UI behavior.
