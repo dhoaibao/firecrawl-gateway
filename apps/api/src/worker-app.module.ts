@@ -1,8 +1,11 @@
 import { Module } from "@nestjs/common";
 import { CoreConfigModule } from "./core/config/config.module";
 import { DatabaseModule } from "./core/database/database.module";
+import { QuotaModule } from "./modules/quota/quota.module";
+import { WebhooksModule } from "./modules/webhooks/webhooks.module";
+import { WorkerModule } from "./modules/worker/worker.module";
 
 @Module({
-  imports: [CoreConfigModule, DatabaseModule],
+  imports: [CoreConfigModule, DatabaseModule, QuotaModule, WebhooksModule, WorkerModule],
 })
 export class WorkerAppModule {}

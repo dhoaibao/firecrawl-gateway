@@ -1,13 +1,13 @@
 {
   "name": "@firecrawl/api",
   "version": "1.0.0",
-  "description": "Hybrid Firecrawl Gateway with Express and TypeScript",
+  "description": "NestJS Firecrawl Gateway with Fastify and TypeScript",
   "private": true,
-  "main": "dist/server.js",
+  "main": "dist/main.js",
   "scripts": {
     "build": "npm run prisma:generate && tsc",
-    "start": "node dist/server.js",
-    "dev": "ts-node src/server.ts",
+    "start": "node dist/main.js",
+    "dev": "ts-node src/main.ts",
     "sources:convert-legacy": "ts-node --transpile-only scripts/convert-legacy-sources.ts",
     "sources:validate": "ts-node --transpile-only scripts/validate-sources.ts",
     "lint": "npm run prisma:generate && tsc --noEmit",

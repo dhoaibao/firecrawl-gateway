@@ -22,11 +22,11 @@ case "${1:-api}" in
     ;;
   api)
     shift
-    run_as_gateway node apps/api/dist/server.js "$@"
+    run_as_gateway node apps/api/dist/main.js "$@"
     ;;
   worker)
     shift
-    run_as_gateway node apps/api/dist/worker.js "$@"
+    run_as_gateway node apps/api/dist/worker-main.js "$@"
     ;;
   *)
     # Preserve direct node commands for local diagnostics and image probes.

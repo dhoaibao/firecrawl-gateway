@@ -10,4 +10,8 @@ export class RateLimitService {
   consume(keys: string[], limit: number, windowMs: number): Promise<RateLimitDecision> {
     return this.transactions.run((transaction) => consumeRateLimitWithClient(transaction, keys, limit, windowMs));
   }
+
+  purgeExpired(now = new Date()): Promise<number> {
+    return this.transactions.run((transaction) => transaction.rateLimitBucket.deleteMany({ where: { resetAt: { lte: now } } }).then((result) => result.count));
+  }
 }

@@ -39,11 +39,13 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     if (status >= HttpStatus.INTERNAL_SERVER_ERROR && !healthPayload) {
       rootLogger.error({ err: exception, request_id: request.requestId }, "Gateway error");
     }
+    const code = typeof exceptionResponse === "object" && exceptionResponse !== null && "code" in exceptionResponse && typeof exceptionResponse.code === "string" ? exceptionResponse.code : undefined;
     const body = healthPayload
       ? exceptionResponse
       : {
           success: false,
           error: exceptionMessage(exceptionResponse),
+          ...(code ? { code } : {}),
           ...(request.requestId ? { requestId: request.requestId } : {}),
         };
 

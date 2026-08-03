@@ -21,6 +21,7 @@ import { z } from "zod";
 import type { User } from "../../../types";
 import { serializeUser } from "../../../users/serialization";
 import { AppConfigService } from "../../../core/config/config.service";
+import { requestMetadata } from "../../../common/http/request-context";
 import { ZodValidationPipe } from "../../../common/pipes/zod-validation.pipe";
 import { AuthAttemptService } from "../application/auth-attempt.service";
 import { AuthService } from "../application/auth.service";
@@ -50,8 +51,8 @@ const MFA_CHALLENGE_TTL_MS = 10 * 60 * 1000;
 type AuthRequest = FastifyRequest & AuthenticatedRequest;
 
 function metadata(request: FastifyRequest): { ip: string; userAgent?: string } {
-  const userAgent = request.headers["user-agent"];
-  return { ip: request.ip, userAgent: Array.isArray(userAgent) ? userAgent[0] : userAgent };
+  const context = requestMetadata(request);
+  return { ip: context.clientIp, userAgent: context.userAgent };
 }
 
 @Controller(["api/v1/auth", "admin/api/auth"])

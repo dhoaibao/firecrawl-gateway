@@ -10,8 +10,28 @@ export class AppConfigService {
     return this.config.get("AUTH_ENABLED", { infer: true });
   }
 
+  get adminEmail(): string {
+    return this.config.get("ADMIN_EMAIL", { infer: true });
+  }
+
   get authEncryptionKey(): string {
     return this.config.get("AUTH_ENCRYPTION_KEY", { infer: true });
+  }
+
+  get providerCredentialsEncryptionKey(): string {
+    return this.config.get("PROVIDER_CREDENTIALS_ENCRYPTION_KEY", { infer: true });
+  }
+
+  get cloudBaseUrl(): string {
+    return this.config.get("CLOUD_BASE_URL", { infer: true }).replace(/\/+$/, "");
+  }
+
+  get brevoWebhookToken(): string {
+    return this.config.get("BREVO_WEBHOOK_TOKEN", { infer: true });
+  }
+
+  get workerHeartbeatFile(): string {
+    return this.config.get("WORKER_HEARTBEAT_FILE", { infer: true });
   }
 
   get bcryptRounds(): number {

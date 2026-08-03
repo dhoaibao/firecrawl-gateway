@@ -7,6 +7,7 @@ export interface AuthSession extends FastifySessionObject {
   pendingMfaUserId?: string;
   pendingMfaAt?: number;
   csrfToken?: string;
+  operatorStepUpAt?: number;
 }
 
 export type SessionRequest = FastifyRequest & {
