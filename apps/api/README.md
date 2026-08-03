@@ -65,6 +65,8 @@ npm run web:lint
 npm run web:build
 ```
 
+Root development scripts are orchestrated by Turborepo. Focused API commands automatically run required workspace dependencies, including the shared contracts build.
+
 ## Docker
 
 ```bash

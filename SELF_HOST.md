@@ -188,6 +188,8 @@ npm run test
 npm run build
 ```
 
+These root scripts use Turborepo to run workspace tasks in dependency order. Task relationships and cache settings are defined in [`turbo.json`](turbo.json); invoke the npm scripts rather than requiring a global Turbo installation.
+
 For routes, tenant request format, routing policy, and focused API development,
 see [the API guide](apps/api/README.md). Authentication and MFA behavior are
 documented in [authentication security](docs/AUTH_SECURITY.md).
