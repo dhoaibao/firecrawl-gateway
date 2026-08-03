@@ -312,6 +312,7 @@ CREATE POLICY operator_notifications_operator_access ON operator_notifications
   WITH CHECK (current_user = 'firecrawl_gateway_operator');
 
 GRANT USAGE ON SCHEMA public TO firecrawl_gateway_runtime, firecrawl_gateway_operator;
+GRANT SELECT, INSERT, UPDATE, DELETE ON rate_limit_buckets TO firecrawl_gateway_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE ON users, settings, sessions TO firecrawl_gateway_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE ON accounts, account_memberships, api_keys, audit_logs,
   provider_credentials, gateway_jobs TO firecrawl_gateway_runtime;

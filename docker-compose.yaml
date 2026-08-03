@@ -1,37 +1,78 @@
 name: firecrawl-gateway
 
+x-gateway-env: &gateway-env
+  PORT: 8080
+  NODE_ENV: ${NODE_ENV:-production}
+  GATEWAY_REQUEST_TIMEOUT_MS: ${GATEWAY_REQUEST_TIMEOUT_MS:-120000}
+  GATEWAY_MAX_BODY_BYTES: ${GATEWAY_MAX_BODY_BYTES:-5242880}
+  AUTH_ENABLED: ${AUTH_ENABLED:-true}
+  SESSION_SECRET: ${SESSION_SECRET}
+  PUBLIC_APP_URL: ${PUBLIC_APP_URL}
+  AUTH_ENCRYPTION_KEY: ${AUTH_ENCRYPTION_KEY}
+  FIRECRAWL_KEYS_ENCRYPTION_KEY: ${FIRECRAWL_KEYS_ENCRYPTION_KEY:?Set FIRECRAWL_KEYS_ENCRYPTION_KEY to a 64-character hex key}
+  PROVIDER_CREDENTIALS_ENCRYPTION_KEY: ${PROVIDER_CREDENTIALS_ENCRYPTION_KEY:?Set PROVIDER_CREDENTIALS_ENCRYPTION_KEY to a 64-character hex key}
+  SESSION_SECURE: ${SESSION_SECURE}
+  CORS_ORIGIN: ${CORS_ORIGIN}
+  BCRYPT_ROUNDS: ${BCRYPT_ROUNDS:-12}
+  REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-false}
+  BREVO_API_KEY: ${BREVO_API_KEY}
+  BREVO_SENDER_EMAIL: ${BREVO_SENDER_EMAIL}
+  BREVO_SENDER_NAME: ${BREVO_SENDER_NAME}
+  BREVO_WEBHOOK_TOKEN: ${BREVO_WEBHOOK_TOKEN}
+  TRUST_PROXY: ${TRUST_PROXY:-false}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-90}
+  ADMIN_EMAIL: ${ADMIN_EMAIL}
+  ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+
+x-hardened-runtime: &hardened-runtime
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+
 services:
-  gateway:
+  migrate:
     build:
       context: .
       dockerfile: deploy/Dockerfile
-    restart: unless-stopped
+    command: ["migrate"]
     environment:
-      PORT: 8080
-      NODE_ENV: ${NODE_ENV:-production}
-      GATEWAY_REQUEST_TIMEOUT_MS: ${GATEWAY_REQUEST_TIMEOUT_MS:-120000}
-      GATEWAY_LOG_FILE: /data/hybrid-firecrawl-requests.jsonl
-      GATEWAY_MAX_BODY_BYTES: ${GATEWAY_MAX_BODY_BYTES:-5242880}
-      AUTH_ENABLED: ${AUTH_ENABLED:-true}
+      <<: *gateway-env
+      MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL:?Set MIGRATION_DATABASE_URL for the deployment job}
+      MIGRATION_BACKUP_CONFIRMED: ${MIGRATION_BACKUP_CONFIRMED:-false}
+    restart: "no"
+    <<: *hardened-runtime
+
+  preflight:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    command: ["preflight"]
+    environment:
+      <<: *gateway-env
+      MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL:?Set MIGRATION_DATABASE_URL for the deployment job}
+      MIGRATION_BACKUP_CONFIRMED: ${MIGRATION_BACKUP_CONFIRMED:-false}
+    restart: "no"
+    <<: *hardened-runtime
+
+  api:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    command: ["api"]
+    environment:
+      <<: *gateway-env
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL to an externally hosted PostgreSQL database}
       OPERATOR_DATABASE_URL: ${OPERATOR_DATABASE_URL:?Set OPERATOR_DATABASE_URL to a separate operator database credential}
-      SESSION_SECRET: ${SESSION_SECRET}
-      PUBLIC_APP_URL: ${PUBLIC_APP_URL}
-      AUTH_ENCRYPTION_KEY: ${AUTH_ENCRYPTION_KEY}
-      FIRECRAWL_KEYS_ENCRYPTION_KEY: ${FIRECRAWL_KEYS_ENCRYPTION_KEY:?Set FIRECRAWL_KEYS_ENCRYPTION_KEY to a 64-character hex key}
-      PROVIDER_CREDENTIALS_ENCRYPTION_KEY: ${PROVIDER_CREDENTIALS_ENCRYPTION_KEY:?Set PROVIDER_CREDENTIALS_ENCRYPTION_KEY to a 64-character hex key}
-      SESSION_SECURE: ${SESSION_SECURE}
-      CORS_ORIGIN: ${CORS_ORIGIN}
-      BCRYPT_ROUNDS: ${BCRYPT_ROUNDS:-12}
-      REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-false}
-      BREVO_API_KEY: ${BREVO_API_KEY}
-      BREVO_SENDER_EMAIL: ${BREVO_SENDER_EMAIL}
-      BREVO_SENDER_NAME: ${BREVO_SENDER_NAME}
-      BREVO_WEBHOOK_TOKEN: ${BREVO_WEBHOOK_TOKEN}
-      TRUST_PROXY: ${TRUST_PROXY:-false}
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-      ADMIN_EMAIL: ${ADMIN_EMAIL}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      WORKER_ENABLED: "false"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
     ports:
       - "${GATEWAY_PORT:-8080}:8080"
     healthcheck:
@@ -40,14 +81,27 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
-    volumes:
-      - gateway-data:/data
-    logging:
-      driver: json-file
-      options:
-        max-size: 10m
-        max-file: "3"
-        compress: "true"
+    <<: *hardened-runtime
 
-volumes:
-  gateway-data:
+  worker:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    command: ["worker"]
+    environment:
+      <<: *gateway-env
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL to an externally hosted PostgreSQL database}
+      OPERATOR_DATABASE_URL: ${OPERATOR_DATABASE_URL:?Set OPERATOR_DATABASE_URL to a separate operator database credential}
+      WORKER_ENABLED: "true"
+      WORKER_HEARTBEAT_FILE: /tmp/firecrawl-worker-heartbeat
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "const fs=require('fs');const p='/tmp/firecrawl-worker-heartbeat';try{if(Date.now()-fs.statSync(p).mtimeMs>30000)process.exit(1)}catch{process.exit(1)}"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    <<: *hardened-runtime

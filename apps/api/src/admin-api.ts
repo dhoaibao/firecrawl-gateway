@@ -9,7 +9,7 @@ export function createAdminRouter(auditStore: AuditStore) {
   const controllers = createAdminControllers(auditStore);
 
   router.get("/logs", requireAdmin, requireOperatorMfa, asyncHandler(controllers.listLogs));
-  router.delete("/logs/:id", requireAdmin, requireOperatorMfa, asyncHandler(controllers.deleteLog));
+  router.delete("/logs/:id", json(), requireAdmin, requireOperatorMfa, asyncHandler(controllers.deleteLog));
   router.delete("/logs", json(), requireAdmin, requireOperatorMfa, asyncHandler(controllers.deleteLogs));
   router.get("/data", requireAdmin, requireOperatorMfa, asyncHandler(controllers.data));
 

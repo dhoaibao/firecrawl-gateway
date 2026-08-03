@@ -53,6 +53,21 @@ describe("createAuditStore", () => {
     expect(repository.appendAuditEntries).toHaveBeenCalledWith([entry]);
   });
 
+  it("can make PostgreSQL canonical without creating a JSONL file", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "audit-store-canonical-"));
+    const logFile = path.join(directory, "audit.jsonl");
+    try {
+      const store = createAuditStore(logFile, { persistToDatabase: true, persistToFile: false });
+      await store.appendAudit(entry);
+      await store.flush?.();
+
+      expect(repository.appendAuditEntries).toHaveBeenCalledWith([entry]);
+      await expect(fs.access(logFile)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("persists queued entries in database batches", async () => {
     vi.spyOn(fs, "mkdir").mockResolvedValue(undefined);
     vi.spyOn(fs, "appendFile").mockResolvedValue(undefined);
@@ -105,9 +120,9 @@ describe("createAuditStore", () => {
     vi.spyOn(fs, "writeFile").mockResolvedValue(undefined);
 
     const store = createAuditStore("/tmp/audit.jsonl", { persistToDatabase: true });
-    await store.deleteAuditEntries("today");
+    await store.deleteAuditEntries("today", "legal");
 
-    expect(repository.deleteAuditEntries).toHaveBeenCalledWith("today");
+    expect(repository.deleteAuditEntries).toHaveBeenCalledWith("today", "legal");
   });
 
   it("deletes selected audit entries by id", async () => {
@@ -115,8 +130,8 @@ describe("createAuditStore", () => {
     vi.spyOn(fs, "access").mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }));
 
     const store = createAuditStore("/tmp/missing-audit.jsonl", { persistToDatabase: true });
-    await expect(store.deleteAuditEntriesByIds(["audit-one", "audit-two", "audit-one"])).resolves.toBe(2);
-    expect(repository.deleteAuditEntriesByIds).toHaveBeenCalledWith(["audit-one", "audit-two"]);
+    await expect(store.deleteAuditEntriesByIds(["audit-one", "audit-two", "audit-one"], "account-deletion")).resolves.toBe(2);
+    expect(repository.deleteAuditEntriesByIds).toHaveBeenCalledWith(["audit-one", "audit-two"], "account-deletion");
   });
 
   it("deletes selected entries from JSONL while preserving other lines", async () => {
@@ -130,7 +145,7 @@ describe("createAuditStore", () => {
       ].join("\n") + "\n");
 
       const store = createAuditStore(logFile);
-      await expect(store.deleteAuditEntriesByIds(["audit-delete"])).resolves.toBe(1);
+      await expect(store.deleteAuditEntriesByIds(["audit-delete"], "account-deletion")).resolves.toBe(1);
       const contents = await fs.readFile(logFile, "utf8");
       expect(contents).not.toContain('"id":"audit-delete"');
       expect(contents).toContain("malformed line");
@@ -146,7 +161,7 @@ describe("createAuditStore", () => {
     try {
       await fs.writeFile(logFile, JSON.stringify({ ...entry, id: "audit-delete" }) + "\n");
       const store = createAuditStore(logFile);
-      const deletion = store.deleteAuditEntriesByIds(["audit-delete"]);
+      const deletion = store.deleteAuditEntriesByIds(["audit-delete"], "account-deletion");
       await store.appendAudit({ ...entry, id: "audit-keep" });
       await expect(deletion).resolves.toBe(1);
       await store.flush?.();
@@ -162,7 +177,7 @@ describe("createAuditStore", () => {
     repository.deleteAuditEntries.mockResolvedValue(["audit-one", "audit-two", "audit-three"]);
     vi.spyOn(fs, "access").mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }));
     const store = createAuditStore("/tmp/missing-audit.jsonl", { persistToDatabase: true });
-    await expect(store.deleteAuditEntries("today")).resolves.toBe(3);
+    await expect(store.deleteAuditEntries("today", "legal")).resolves.toBe(3);
   });
 
   it("counts distinct ids across overlapping database and file deletions", async () => {
@@ -177,7 +192,7 @@ describe("createAuditStore", () => {
       ].join("\n") + "\n");
 
       const store = createAuditStore(logFile, { persistToDatabase: true });
-      await expect(store.deleteAuditEntriesByIds(["audit-overlap", "audit-db-only", "audit-file-only"])).resolves.toBe(3);
+      await expect(store.deleteAuditEntriesByIds(["audit-overlap", "audit-db-only", "audit-file-only"], "legal")).resolves.toBe(3);
     } finally {
       await fs.rm(directory, { recursive: true, force: true });
     }
@@ -196,7 +211,7 @@ describe("createAuditStore", () => {
       ].join("\n") + "\n");
 
       const store = createAuditStore(logFile, { persistToDatabase: true });
-      await expect(store.deleteAuditEntries("all")).resolves.toBe(3);
+      await expect(store.deleteAuditEntries("all", "legal")).rejects.toThrow("Unbounded audit deletion is disabled");
     } finally {
       await fs.rm(directory, { recursive: true, force: true });
     }

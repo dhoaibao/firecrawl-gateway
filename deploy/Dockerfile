@@ -26,7 +26,8 @@ COPY --from=builder --chown=gateway:gateway /app/package*.json ./
 COPY --from=builder --chown=gateway:gateway /app/apps/api/package.json ./apps/api/package.json
 COPY --from=builder --chown=gateway:gateway /app/apps/api/dist/ ./apps/api/dist/
 COPY --from=builder --chown=gateway:gateway /app/apps/api/prisma/ ./apps/api/prisma/
-COPY --from=builder --chown=gateway:gateway /app/apps/api/scripts/ ./apps/api/scripts/
+COPY --from=builder --chown=gateway:gateway /app/apps/api/scripts/migrate.cjs ./apps/api/scripts/migrate.cjs
+COPY --from=builder --chown=gateway:gateway /app/apps/api/scripts/migration-preflight.cjs ./apps/api/scripts/migration-preflight.cjs
 COPY --from=builder --chown=gateway:gateway /app/apps/web/package.json ./apps/web/package.json
 COPY --from=builder --chown=gateway:gateway /app/apps/web/dist/ ./apps/web/dist/
 COPY --from=builder --chown=gateway:gateway /app/packages/contracts/package.json ./packages/contracts/package.json
@@ -37,8 +38,12 @@ RUN chmod 755 /usr/local/bin/docker-entrypoint.sh
 
 ENV NODE_ENV=production
 ENV PORT=8080
+ARG BUILD_VERSION=unknown
+LABEL org.opencontainers.image.revision="$BUILD_VERSION"
+LABEL org.opencontainers.image.title="Firecrawl Gateway"
+LABEL org.opencontainers.image.description="Hardened Firecrawl gateway API and worker image"
 
 EXPOSE 8080
 
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["node", "apps/api/dist/server.js"]
+CMD ["api"]

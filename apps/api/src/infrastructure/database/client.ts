@@ -41,6 +41,7 @@ const REQUIRED_TABLES = [
   "usage_events",
   "quota_events",
   "operator_notifications",
+  "rate_limit_buckets",
 ] as const;
 
 const RLS_TABLES = [
@@ -93,6 +94,7 @@ const RUNTIME_PRIVILEGES = [
     .flatMap((table) => ["SELECT", "INSERT", "UPDATE", "DELETE"].map((privilege) => [table, privilege] as const)),
   ...["free_tier_policy", "free_tier_enrollments", "quota_periods", "account_entitlements", "usage_reservations", "usage_events", "quota_events"]
     .map((table) => [table, "SELECT"] as const),
+  ...["rate_limit_buckets"].flatMap((table) => ["SELECT", "INSERT", "UPDATE", "DELETE"].map((privilege) => [table, privilege] as const)),
 ] as const;
 
 const OPERATOR_PRIVILEGES = [

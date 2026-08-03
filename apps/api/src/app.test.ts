@@ -40,6 +40,24 @@ describe("createApp", () => {
     },
   });
 
+  it("sets hardened headers and emits a bounded request id", async () => {
+    const response = await request(app)
+      .get("/not-found?token=must-not-be-logged")
+      .set("X-Request-ID", "client-id_123");
+
+    expect(response.headers["x-request-id"]).toBe("client-id_123");
+    expect(response.headers["x-powered-by"]).toBeUndefined();
+    expect(response.headers["content-security-policy"]).toContain("default-src 'self'");
+  });
+
+  it("replaces oversized or malformed request ids", async () => {
+    const response = await request(app)
+      .get("/not-found")
+      .set("X-Request-ID", "x".repeat(129));
+
+    expect(response.headers["x-request-id"]).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
   it("keeps health and readiness outside request logging and rate limiting", async () => {
     const health = await request(app).get("/health");
     expect(health.status).toBe(200);

@@ -53,6 +53,12 @@ const GatewayConfigSchema = z.object({
     z.boolean().or(z.string()).default(false),
   ),
   gatewayTokenMaxLifetimeDays: z.coerce.number().int().positive().max(3650).default(365),
+  workerEnabled: z.preprocess(
+    (val) => val === undefined ? true : ["true", "1", "yes", "on"].includes(String(val).toLowerCase()),
+    z.boolean(),
+  ),
+  workerHeartbeatFile: z.string().min(1).default("/tmp/firecrawl-worker-heartbeat"),
+  auditRetentionDays: z.coerce.number().int().min(30).max(3650).default(90),
 });
 
 /** Parse an injected environment without terminating the importing process. */
@@ -83,6 +89,9 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig
     adminPassword: env.ADMIN_PASSWORD,
     trustProxy: env.TRUST_PROXY,
     gatewayTokenMaxLifetimeDays: env.GATEWAY_TOKEN_MAX_LIFETIME_DAYS,
+    workerEnabled: env.WORKER_ENABLED,
+    workerHeartbeatFile: env.WORKER_HEARTBEAT_FILE,
+    auditRetentionDays: env.AUDIT_RETENTION_DAYS,
   });
 
   if (env.NODE_ENV === "production" && parsed.authEnabled) {

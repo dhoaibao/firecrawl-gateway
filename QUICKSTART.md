@@ -13,23 +13,15 @@ Run the gateway with a pre-built image. Firecrawl and PostgreSQL are external se
 ```bash
 cp .env.example .env
 # Set DATABASE_URL, OPERATOR_DATABASE_URL, MIGRATION_DATABASE_URL, and the remaining required credentials in .env
-# Bootstrap the fresh database as a one-off deployment step; use db:baseline for an existing database after review.
-docker compose -f docker-compose.prebuilt.yaml run --rm --no-deps \
-  -e DATABASE_URL="$MIGRATION_DATABASE_URL" gateway npm run db:deploy --workspace @firecrawl/api
-docker compose -f docker-compose.prebuilt.yaml run --rm --no-deps \
-  -e DATABASE_URL="$MIGRATION_DATABASE_URL" gateway npm run db:security --workspace @firecrawl/api
+# Set GATEWAY_IMAGE to an immutable sha256 digest from the release workflow.
+# The one-shot migrate service applies schema and security before api/worker.
 docker compose -f docker-compose.prebuilt.yaml up -d
 ```
 
 For a source build instead:
 
 ```bash
-docker compose build
-docker compose run --rm --no-deps \
-  -e DATABASE_URL="$MIGRATION_DATABASE_URL" gateway npm run db:deploy --workspace @firecrawl/api
-docker compose run --rm --no-deps \
-  -e DATABASE_URL="$MIGRATION_DATABASE_URL" gateway npm run db:security --workspace @firecrawl/api
-docker compose up -d
+docker compose up -d --build
 ```
 
 ## Endpoints
@@ -45,6 +37,7 @@ When authentication is enabled, log in to the Admin UI, configure the external F
 ## Update the image
 
 ```bash
+# Update GATEWAY_IMAGE in .env to the new release digest before pulling.
 docker compose -f docker-compose.prebuilt.yaml pull
 docker compose -f docker-compose.prebuilt.yaml up -d
 ```

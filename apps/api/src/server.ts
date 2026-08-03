@@ -4,6 +4,7 @@ import { parseConfig } from "./config";
 import { closeDatabase, initDatabase } from "./db";
 import { bootstrapAdminUser } from "./db/bootstrap";
 import { createAuditStore } from "./audit-store";
+import { consumeRateLimit } from "./rate-limit-store";
 import { createProxyHandler } from "./proxy";
 import { createApp } from "./app";
 import { createSessionMiddleware } from "./auth/session";
@@ -33,14 +34,28 @@ export async function startServer() {
     await bootstrapAdminUser(config.adminEmail, "Admin", adminHash);
   }
 
-  const auditStore = createAuditStore(config.logFile, { persistToDatabase: true });
+  // PostgreSQL is the canonical audit store in production. JSONL remains an
+  // explicit compatibility option for local diagnostics, never a secret-bearing
+  // production volume.
+  const auditStore = createAuditStore(config.logFile, { persistToDatabase: true, persistToFile: false });
   const handleProxy = createProxyHandler({ config, auditStore });
   const sessionMiddleware = config.authEnabled
     ? createSessionMiddleware(config.sessionSecret)
     : undefined;
-  const app = createApp({ config, auditStore, handleProxy, sessionMiddleware });
-  const stopWorker = startWorker(config);
+  const app = createApp({
+    config,
+    auditStore,
+    handleProxy,
+    sessionMiddleware,
+    rateLimitStore: { consume: consumeRateLimit },
+  });
+  const stopWorker = config.workerEnabled === false ? () => undefined : startWorker(config);
   const server = app.listen(config.port, "0.0.0.0", () => {
+    // Keep the edge and Node ceilings finite so stalled clients do not pin
+    // sockets indefinitely. Upstream aborts use the configured request timeout.
+    server.requestTimeout = config.requestTimeoutMs + 10_000;
+    server.headersTimeout = config.requestTimeoutMs + 15_000;
+    server.keepAliveTimeout = 5_000;
     rootLogger.info(
       {
         port: config.port,

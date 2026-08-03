@@ -87,7 +87,10 @@ export function csrfMiddleware(corsOrigin?: string) {
     }
     const origin = req.get("origin");
     const sameOrigin = `${req.protocol}://${req.get("host") || ""}`;
-    if (origin && origin !== sameOrigin && !allowedOrigins.has(origin)) {
+    // A session-authenticated browser mutation must carry an explicit origin.
+    // Rejecting a missing origin prevents token-only cross-site requests from
+    // bypassing the browser-origin boundary.
+    if (!origin || (origin !== sameOrigin && !allowedOrigins.has(origin))) {
       res.status(403).json({ success: false, error: "CSRF validation failed" });
       return;
     }

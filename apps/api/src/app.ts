@@ -9,7 +9,7 @@ import type { AuditStore } from "./audit-store";
 import { createProxyHandler } from "./proxy";
 import { createAdminRouter } from "./admin-api";
 import { createOperatorRouter } from "./operator-api";
-import { requestLogger, rateLimiter, requestIdMiddleware } from "./middleware";
+import { localRateLimitStore, requestLogger, rateLimiter, requestIdMiddleware, type RateLimitStore } from "./middleware";
 import { passport } from "./auth/passport";
 import { createAuthRouter } from "./auth/routes";
 import { requireAuth, requireAdmin, requireOperatorMfa, csrfMiddleware } from "./auth/middleware";
@@ -33,6 +33,7 @@ export interface AppDependencies {
   checkDatabase?: () => Promise<boolean>;
   corsOrigin?: string;
   sessionMiddleware?: RequestHandler;
+  rateLimitStore?: RateLimitStore;
 }
 
 export function createApp(dependencies: AppDependencies) {
@@ -53,11 +54,27 @@ export function createApp(dependencies: AppDependencies) {
   };
   const adminRouter = createAdminRouter(auditStore);
   const app = express();
+  const corsOrigins = (corsOrigin || "").split(",").map((origin) => origin.trim()).filter(Boolean);
 
+  app.disable("x-powered-by");
   app.set("trust proxy", config.trustProxy);
 
-  app.use(helmet());
-  const corsOrigins = (corsOrigin || "").split(",").map((origin) => origin.trim()).filter(Boolean);
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        baseUri: ["'self'"],
+        connectSrc: ["'self'", ...corsOrigins],
+        fontSrc: ["'self'", "data:"],
+        formAction: ["'self'"],
+        frameAncestors: ["'none'"],
+        imgSrc: ["'self'", "data:", "blob:"],
+        objectSrc: ["'none'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+      },
+    },
+  }));
   app.use(cors({
     origin: corsOrigins.length > 0 ? corsOrigins : false,
     credentials: corsOrigins.length > 0,
@@ -95,7 +112,7 @@ export function createApp(dependencies: AppDependencies) {
   }
 
   app.use(requestLogger);
-  app.use(rateLimiter(config.trustProxy));
+  app.use(rateLimiter(config.trustProxy, dependencies.rateLimitStore ?? localRateLimitStore));
 
   if (config.authEnabled) {
     const authRouter = createAuthRouter(config);

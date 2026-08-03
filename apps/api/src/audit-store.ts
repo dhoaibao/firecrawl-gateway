@@ -6,20 +6,23 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { rootLogger } from "./logger";
 import * as auditRepository from "./audit-repository";
+import type { AuditDeletionException } from "./audit-repository";
 
 export type DeleteFilter = "today" | "week" | "month" | "all";
 
 export interface AuditStore {
   appendAudit(entry: AuditEntry): Promise<void>;
   readAuditEntries(limit?: number): Promise<AuditEntry[]>;
-  deleteAuditEntry(id: string): Promise<boolean>;
-  deleteAuditEntriesByIds(ids: string[]): Promise<number>;
-  deleteAuditEntries(filter: DeleteFilter): Promise<number>;
+  deleteAuditEntry(id: string, exception?: AuditDeletionException): Promise<boolean>;
+  deleteAuditEntriesByIds(ids: string[], exception?: AuditDeletionException): Promise<number>;
+  deleteAuditEntries(filter: DeleteFilter, exception?: AuditDeletionException): Promise<number>;
   flush?: (timeoutMs?: number) => Promise<void>;
 }
 
 interface AuditStoreOptions {
   persistToDatabase?: boolean;
+  /** Compatibility file output is opt-in for production; PostgreSQL is canonical. */
+  persistToFile?: boolean;
 }
 
 /** Read the last N lines from a file efficiently (tail-read).
@@ -65,6 +68,7 @@ const MAX_PENDING_AUDITS = 10_000;
 const DATABASE_AUDIT_BATCH_SIZE = 100;
 
 export function createAuditStore(logFile: string, options: AuditStoreOptions = {}): AuditStore {
+  const persistToFile = options.persistToFile ?? true;
   const pendingFileEntries: AuditEntry[] = [];
   const pendingDatabaseEntries: AuditEntry[] = [];
   let fileFlushPromise: Promise<void> | null = null;
@@ -166,8 +170,10 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
       return;
     }
 
-    pendingFileEntries.push(entry);
-    void flushFileEntries();
+    if (persistToFile) {
+      pendingFileEntries.push(entry);
+      void flushFileEntries();
+    }
 
     if (options.persistToDatabase) {
       enqueueDatabaseWrite(entry);
@@ -209,20 +215,22 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
     }
 
     let fileEntries: AuditEntry[] = [];
-    try {
-      const lines = await readLastLines(logFile, limit);
-      fileEntries = lines
-        .map((line) => {
-          try {
-            return JSON.parse(line) as AuditEntry;
-          } catch {
-            return null;
-          }
-        })
-        .filter((item): item is AuditEntry => item !== null)
-        .reverse();
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if (persistToFile) {
+      try {
+        const lines = await readLastLines(logFile, limit);
+        fileEntries = lines
+          .map((line) => {
+            try {
+              return JSON.parse(line) as AuditEntry;
+            } catch {
+              return null;
+            }
+          })
+          .filter((item): item is AuditEntry => item !== null)
+          .reverse();
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
     }
 
     const entriesById = new Map<string, AuditEntry>();
@@ -234,7 +242,8 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
       .slice(0, limit);
   }
 
-  async function deleteAuditEntriesByIds(ids: string[]): Promise<number> {
+  async function deleteAuditEntriesByIds(ids: string[], exception?: AuditDeletionException): Promise<number> {
+    if (!exception) throw new Error("Audit deletion requires an approved legal or account-deletion exception");
     const uniqueIds = new Set(ids.filter(Boolean));
     if (uniqueIds.size === 0) return 0;
 
@@ -243,11 +252,13 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
 
     if (options.persistToDatabase) {
       try {
-        deletedDatabaseIds = new Set(await auditRepository.deleteAuditEntriesByIds([...uniqueIds]));
+        deletedDatabaseIds = new Set(await auditRepository.deleteAuditEntriesByIds([...uniqueIds], exception));
       } catch (err) {
         rootLogger.warn({ err, count: uniqueIds.size }, "Failed to delete selected audit entries from database");
       }
     }
+
+    if (!persistToFile) return deletedDatabaseIds.size;
 
     return enqueueFileOperation(async () => {
       const exists = await fs.access(logFile).then(() => true).catch(() => false);
@@ -284,17 +295,20 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
     });
   }
 
-  async function deleteAuditEntry(id: string): Promise<boolean> {
+  async function deleteAuditEntry(id: string, exception?: AuditDeletionException): Promise<boolean> {
+    if (!exception) throw new Error("Audit deletion requires an approved legal or account-deletion exception");
     await flush();
     let deletedFromDatabase = false;
 
     if (options.persistToDatabase) {
       try {
-        deletedFromDatabase = await auditRepository.deleteAuditEntry(id);
+        deletedFromDatabase = await auditRepository.deleteAuditEntry(id, exception);
       } catch (err) {
         rootLogger.warn({ err, id }, "Failed to delete audit entry from database");
       }
     }
+
+    if (!persistToFile) return deletedFromDatabase;
 
     return enqueueFileOperation(async () => {
       const exists = await fs.access(logFile).then(() => true).catch(() => false);
@@ -330,38 +344,19 @@ export function createAuditStore(logFile: string, options: AuditStoreOptions = {
     });
   }
 
-  async function deleteAuditEntries(filter: DeleteFilter): Promise<number> {
+  async function deleteAuditEntries(filter: DeleteFilter, exception?: AuditDeletionException): Promise<number> {
+    if (!exception || filter === "all") throw new Error("Unbounded audit deletion is disabled; use the retention worker or an approved exception");
     await flush();
     let deletedDatabaseIds = new Set<string>();
     if (options.persistToDatabase) {
       try {
-        deletedDatabaseIds = new Set(await auditRepository.deleteAuditEntries(filter));
+        deletedDatabaseIds = new Set(await auditRepository.deleteAuditEntries(filter, exception));
       } catch (err) {
         rootLogger.warn({ err, filter }, "Failed to delete audit entries from database");
       }
     }
 
-    if (filter === "all") {
-      return enqueueFileOperation(async () => {
-        const exists = await fs.access(logFile).then(() => true).catch(() => false);
-        if (!exists) return deletedDatabaseIds.size;
-
-        const deletedFileIds = new Set<string>();
-        const stream = createReadStream(logFile, { encoding: "utf8" });
-        const rl = createInterface({ input: stream, crlfDelay: Infinity });
-        for await (const line of rl) {
-          if (!line.trim()) continue;
-          try {
-            const entry = JSON.parse(line) as AuditEntry;
-            if (entry.id) deletedFileIds.add(entry.id);
-          } catch {
-            // The all-history operation removes malformed lines as before.
-          }
-        }
-        await fs.writeFile(logFile, "", "utf8");
-        return new Set([...deletedDatabaseIds, ...deletedFileIds]).size;
-      });
-    }
+    if (!persistToFile) return deletedDatabaseIds.size;
 
     return enqueueFileOperation(async () => {
       const now = new Date();

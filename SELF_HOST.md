@@ -4,7 +4,9 @@ This repository deploys only the Firecrawl Gateway. The Firecrawl API and Postgr
 
 ## Services
 
-- `gateway`: this repository's gateway and admin UI
+- `api`: HTTP gateway and admin UI
+- `worker`: outbox, quota, waitlist, and health jobs
+- `migrate`: one-shot Prisma/security deployment job
 - External Firecrawl instance: configured in the Admin UI under **Configure > Routing**
 - Firecrawl Cloud: uses `https://api.firecrawl.dev`
 - External PostgreSQL: configured with separate runtime and operator credentials in `DATABASE_URL` and `OPERATOR_DATABASE_URL`
@@ -13,6 +15,7 @@ This repository deploys only the Firecrawl Gateway. The Firecrawl API and Postgr
 
 ```bash
 cp .env.example .env
+# For the prebuilt file, replace GATEWAY_IMAGE with the release workflow's sha256 digest.
 ```
 
 Set at least:
@@ -34,21 +37,13 @@ Configure the external self-hosted Firecrawl URL in the Admin UI after startup. 
 Using a source build:
 
 ```bash
-docker compose build
-docker compose run --rm --no-deps \
-  -e DATABASE_URL="$MIGRATION_DATABASE_URL" gateway npm run db:deploy --workspace @firecrawl/api
-docker compose run --rm --no-deps \
-  -e DATABASE_URL="$MIGRATION_DATABASE_URL" gateway npm run db:security --workspace @firecrawl/api
-docker compose up -d
+docker compose up -d --build
+# The one-shot migrate service completes before api and worker start.
 ```
 
 Using the published gateway image:
 
 ```bash
-docker compose -f docker-compose.prebuilt.yaml run --rm --no-deps \
-  -e DATABASE_URL="$MIGRATION_DATABASE_URL" gateway npm run db:deploy --workspace @firecrawl/api
-docker compose -f docker-compose.prebuilt.yaml run --rm --no-deps \
-  -e DATABASE_URL="$MIGRATION_DATABASE_URL" gateway npm run db:security --workspace @firecrawl/api
 docker compose -f docker-compose.prebuilt.yaml up -d
 ```
 
@@ -75,7 +70,7 @@ Check gateway status and logs:
 
 ```bash
 docker compose ps
-docker compose logs gateway
+docker compose logs api worker migrate
 curl http://localhost:8080/ready
 ```
 

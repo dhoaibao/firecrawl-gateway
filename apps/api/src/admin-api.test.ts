@@ -33,11 +33,11 @@ describe("createAdminRouter", () => {
 
     const response = await request(createTestApp(auditStore))
       .delete("/logs")
-      .send({ ids: ["audit-one", "audit-two", "audit-one"] })
+      .send({ ids: ["audit-one", "audit-two", "audit-one"], exception: "account-deletion", reason: "Customer account deletion request" })
       .expect(200);
 
     expect(response.body).toEqual({ success: true, deleted: 2 });
-    expect(auditStore.deleteAuditEntriesByIds).toHaveBeenCalledWith(["audit-one", "audit-two"]);
+    expect(auditStore.deleteAuditEntriesByIds).toHaveBeenCalledWith(["audit-one", "audit-two"], "account-deletion");
   });
 
   it("rejects an empty selected-log list", async () => {

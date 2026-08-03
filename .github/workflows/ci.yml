@@ -22,7 +22,8 @@ jobs:
       - run: npm run lint
       - run: npm run test
       - run: npm run build
-      - run: docker build -f deploy/Dockerfile .
+      - run: npm audit --omit=dev --audit-level=high
+      - run: docker build --build-arg BUILD_VERSION=${{ github.sha }} -f deploy/Dockerfile .
 
   dependency-review:
     if: github.event_name == 'pull_request'

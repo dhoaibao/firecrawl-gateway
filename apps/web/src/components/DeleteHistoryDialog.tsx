@@ -2,17 +2,16 @@ import { Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
-const deleteOptions: Array<{ value: "today" | "week" | "month" | "all"; label: string }> = [
+const deleteOptions: Array<{ value: "today" | "week" | "month"; label: string }> = [
   { value: "today", label: "Today" },
   { value: "week", label: "This Week" },
   { value: "month", label: "This Month" },
-  { value: "all", label: "All History" },
 ]
 
 interface DeleteHistoryDialogProps {
   open: boolean
-  filter: "today" | "week" | "month" | "all"
-  setFilter: (value: "today" | "week" | "month" | "all") => void
+  filter: "today" | "week" | "month"
+  setFilter: (value: "today" | "week" | "month") => void
   onClose: () => void
   onConfirm: () => void
   deleting: boolean

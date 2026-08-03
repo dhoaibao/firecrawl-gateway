@@ -597,7 +597,10 @@ export function createProxyHandler({
         fallback_reason: fallbackReason,
         status_code: statusCode,
         duration_ms: Date.now() - started,
-        target_url: primaryTargetUrl,
+        // Target URLs may contain customer data, signed query strings, or
+        // private-network details. Keep them out of both PostgreSQL and
+        // compatibility log output.
+        target_url: primaryTargetUrl ? "[redacted]" : "",
         user_id: userId,
         account_id: accountId,
         request_id: req.requestId,

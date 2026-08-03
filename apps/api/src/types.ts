@@ -65,6 +65,12 @@ export interface GatewayConfig {
   adminEmail: string;
   adminPassword: string;
   trustProxy: boolean | string;
+  /** API and worker are separate processes in production; keep the default for local compatibility. */
+  workerEnabled?: boolean;
+  /** Worker liveness timestamp written by the dedicated worker process. */
+  workerHeartbeatFile?: string;
+  /** Minimum age in days before request audit rows are eligible for bounded retention. */
+  auditRetentionDays?: number;
   /** Maximum operator-configured lifetime for user-created gateway tokens. */
   gatewayTokenMaxLifetimeDays?: number;
 }

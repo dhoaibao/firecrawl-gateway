@@ -111,7 +111,7 @@ export default function Dashboard() {
   const [pageSize, setPageSize] = useState(25)
   const [currentPage, setCurrentPage] = useState(1)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
-  const [deleteFilter, setDeleteFilter] = useState<"today" | "week" | "month" | "all">("today")
+  const [deleteFilter, setDeleteFilter] = useState<"today" | "week" | "month">("today")
   const [deleting, setDeleting] = useState(false)
   const [creditUsage, setCreditUsage] = useState<CreditUsageItem[]>([])
   const [selectedEntry, setSelectedEntry] = useState<AuditEntry | null>(null)
@@ -124,6 +124,14 @@ export default function Dashboard() {
 
   const { addToast } = useToast()
   const { confirm: confirmDelete, dialog: confirmDialog } = useConfirmDialog()
+
+  const deletionRequest = useCallback(() => {
+    const exception = window.prompt("Exception type: legal or account-deletion")
+    if (exception !== "legal" && exception !== "account-deletion") return null
+    const reason = window.prompt("Reason for the approved audit deletion exception")?.trim()
+    if (!reason) return null
+    return { exception, reason }
+  }, [])
 
   const fetchData = useCallback(async () => {
     if (fetchingRef.current) return
@@ -159,8 +167,10 @@ export default function Dashboard() {
   }, [addToast])
 
   const handleDeleteEntry = useCallback(async (id: string) => {
+    const deletion = deletionRequest()
+    if (!deletion) return
     try {
-      await api.delete(`/admin/api/logs/${encodeURIComponent(id)}`)
+      await api.delete(`/admin/api/logs/${encodeURIComponent(id)}`, deletion)
       addToast("Log deleted", "success")
       setSelectedEntry(null)
       setSelectedIds((current) => {
@@ -174,7 +184,7 @@ export default function Dashboard() {
       const msg = err instanceof Error ? err.message : "Failed to delete log"
       addToast(msg, "error")
     }
-  }, [addToast, fetchData])
+  }, [addToast, deletionRequest, fetchData])
 
   const confirmDeleteEntry = useCallback((entry: AuditEntry) => {
     confirmDelete({
@@ -192,9 +202,14 @@ export default function Dashboard() {
 
     setDeleting(true)
     try {
+      const deletion = deletionRequest()
+      if (!deletion) {
+        setDeleting(false)
+        return
+      }
       const json = await api.delete<{ deleted: number }>(
         "/admin/api/logs",
-        { ids },
+        { ids, ...deletion },
       )
       addToast(`${json.deleted} ${json.deleted === 1 ? "log" : "logs"} deleted`, "success")
       setSelectedIds(new Set())
@@ -206,7 +221,7 @@ export default function Dashboard() {
     } finally {
       setDeleting(false)
     }
-  }, [selectedIds, addToast, fetchData])
+  }, [selectedIds, addToast, deletionRequest, fetchData])
 
   const confirmDeleteSelected = useCallback(() => {
     if (selectedIds.size === 0) return
@@ -222,15 +237,16 @@ export default function Dashboard() {
   const handleDeleteHistory = useCallback(async () => {
     setDeleting(true)
     try {
+      const deletion = deletionRequest()
+      if (!deletion) {
+        setDeleting(false)
+        return
+      }
       const json = await api.delete<{ deleted: number }>(
         `/admin/api/logs?filter=${deleteFilter}`,
+        deletion,
       )
-      addToast(
-        deleteFilter === "all"
-          ? "All history deleted"
-          : `${json.deleted} entries deleted`,
-        "success",
-      )
+      addToast(`${json.deleted} entries deleted`, "success")
       setShowDeleteDialog(false)
       setSelectedIds(new Set())
       void fetchData()
@@ -240,7 +256,7 @@ export default function Dashboard() {
     } finally {
       setDeleting(false)
     }
-  }, [deleteFilter, addToast, fetchData])
+  }, [deleteFilter, addToast, deletionRequest, fetchData])
 
   useEffect(() => {
     const initialLoad = window.setTimeout(() => {

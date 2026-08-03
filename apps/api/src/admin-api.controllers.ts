@@ -1,8 +1,26 @@
 import type { Request, Response } from "express";
 import type { AuditStore, DeleteFilter } from "./audit-store";
 import * as usersService from "./users/service";
+import { recordSecurityEvent } from "./auth/security";
+import type { AuditDeletionException } from "./audit-repository";
 
-export const validDeleteFilters = ["today", "week", "month", "all"] as const;
+export const validDeleteFilters = ["today", "week", "month"] as const;
+
+function deletionRequest(req: Request): { exception: AuditDeletionException; reason: string } | null {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const exception = body.exception;
+  const reason = typeof body.reason === "string" ? body.reason.trim().slice(0, 500) : "";
+  if ((exception !== "legal" && exception !== "account-deletion") || !reason) return null;
+  return { exception, reason };
+}
+
+async function recordDeletionRequest(req: Request, details: { exception: AuditDeletionException; reason: string; count?: number }): Promise<void> {
+  await recordSecurityEvent({
+    userId: req.user?.id,
+    type: "audit_deletion_exception",
+    metadata: { exception: details.exception, reason: details.reason, count: details.count ?? 1 },
+  });
+}
 
 export function createAdminControllers(auditStore: AuditStore) {
   return {
@@ -10,8 +28,14 @@ export function createAdminControllers(auditStore: AuditStore) {
       res.json({ data: await auditStore.readAuditEntries(500) });
     },
     deleteLog: async (req: Request, res: Response): Promise<void> => {
+      const deletion = deletionRequest(req);
+      if (!deletion) {
+        res.status(400).json({ error: "Deletion requires exception (legal or account-deletion) and reason" });
+        return;
+      }
       const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-      const deleted = await auditStore.deleteAuditEntry(id);
+      await recordDeletionRequest(req, deletion);
+      const deleted = await auditStore.deleteAuditEntry(id, deletion.exception);
       if (!deleted) {
         res.status(404).json({ error: "Audit entry not found" });
         return;
@@ -19,6 +43,11 @@ export function createAdminControllers(auditStore: AuditStore) {
       res.json({ success: true });
     },
     deleteLogs: async (req: Request, res: Response): Promise<void> => {
+      const deletion = deletionRequest(req);
+      if (!deletion) {
+        res.status(400).json({ error: "Deletion requires exception (legal or account-deletion) and reason" });
+        return;
+      }
       if (req.body?.ids !== undefined) {
         if (!Array.isArray(req.body.ids)) {
           res.status(400).json({ error: "ids must be an array" });
@@ -34,17 +63,19 @@ export function createAdminControllers(auditStore: AuditStore) {
           res.status(400).json({ error: "At least one log id is required" });
           return;
         }
-        const deleted = await auditStore.deleteAuditEntriesByIds(ids);
+        await recordDeletionRequest(req, { ...deletion, count: ids.length });
+        const deleted = await auditStore.deleteAuditEntriesByIds(ids, deletion.exception);
         res.json({ success: true, deleted });
         return;
       }
 
       const filter = req.query.filter as string;
       if (!validDeleteFilters.includes(filter as typeof validDeleteFilters[number])) {
-        res.status(400).json({ error: "Invalid filter. Use: today, week, month, or all" });
+        res.status(400).json({ error: "Invalid filter. Use: today, week, or month" });
         return;
       }
-      const deleted = await auditStore.deleteAuditEntries(filter as DeleteFilter);
+      await recordDeletionRequest(req, deletion);
+      const deleted = await auditStore.deleteAuditEntries(filter as DeleteFilter, deletion.exception);
       res.json({ success: true, deleted });
     },
     data: async (_req: Request, res: Response): Promise<void> => {
