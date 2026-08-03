@@ -79,7 +79,7 @@ npm run migrate:preflight --workspace @firecrawl/api
 - Node `>=22` is required; backend TypeScript is strict and API tests live beside source as `*.test.ts`.
 - Change relational models in `apps/api/prisma/schema.prisma` and reviewed Prisma migrations. Keep PostgreSQL roles, grants, RLS, triggers, and partial-index definitions in `apps/api/prisma/security.sql`; do not add automatic DDL to API startup.
 - For fresh deployment, run `db:deploy` and then `db:security` with `MIGRATION_DATABASE_URL` supplied as `DATABASE_URL`, then start/recreate the gateway and verify `/ready`.
-- For an existing database, back it up, run and review `migrate:preflight`, baseline only after an exact Prisma-owned schema match, install the security layer, and check migration status. Follow `docs/operations/database-bootstrap.md` and `docs/operations/database-migrations.md`.
+- For an existing database, back it up, run and review `migrate:preflight`, baseline only after an exact Prisma-owned schema match, install the security layer, and check migration status. Follow `docs/operations/database-bootstrap.md`.
 - Operator-console schema/security changes require both the checked-in Prisma migration and matching `security.sql` policy/grant updates; missing prerequisites must keep the operator boundary read-only.
 - Rebuild/recreate source Compose deployments after source or environment wiring changes. Production rollout restore-tests a backup, runs preflight before forward-only migration, then verifies API health/readiness and worker heartbeat. Configuration examples belong in `.env.example`; runtime credentials remain local.
 
@@ -92,5 +92,5 @@ npm run migrate:preflight --workspace @firecrawl/api
 - `apps/api/src/config.ts`, `apps/api/src/policy.ts`, `apps/api/src/infrastructure/database/client.ts`, and `apps/api/src/operator-api.ts` — configuration, routing policy, database-boundary behavior, and operator authorization/readiness behavior.
 - `apps/web/src/App.tsx`, `apps/web/src/components/Sidebar.tsx`, and `apps/web/src/features/operator/OperatorPage.tsx` — dashboard routing, navigation, and operator-console UI behavior.
 - `docs/AUTH_SECURITY.md`, `docs/DESIGN.md`, `docs/security/threat-model.md`, `docs/architecture/ADR-006-prisma-layered-backend.md`, and `docs/operations/` — security, UI, architecture, database-operation, and production-rollout guidance.
-- `README.md`, `QUICKSTART.md`, `SELF_HOST.md`, and `apps/api/README.md` — user-facing setup, deployment, and route/development guidance.
+- `README.md`, `SELF_HOST.md`, and `apps/api/README.md` — user-facing setup, deployment/environment reference, and route/development guidance.
 <!-- b-init-managed:end -->

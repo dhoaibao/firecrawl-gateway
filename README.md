@@ -8,8 +8,8 @@ The gateway can route requests between an externally hosted Firecrawl instance a
 
 ```bash
 cp .env.example .env
-# Set DATABASE_URL, OPERATOR_DATABASE_URL, MIGRATION_DATABASE_URL, and the remaining required credentials.
-# MIGRATION_DATABASE_URL is used only for one-off schema/security deployment steps.
+# Configure the required database credentials and production secrets.
+# See SELF_HOST.md for the complete required/optional environment reference.
 docker compose up -d --build
 # Compose runs the one-shot migrate service before api and worker.
 ```
@@ -51,5 +51,7 @@ The dashboard provides visibility into request routing, success rates, fallback 
 
 ## Documentation
 
-- [`SELF_HOST.md`](SELF_HOST.md) — deployment, configuration, and troubleshooting
+- [`SELF_HOST.md`](SELF_HOST.md) — complete deployment, environment-variable reference, operations, and troubleshooting
 - [`apps/api/README.md`](apps/api/README.md) — gateway routes, policy, and development
+- [`docs/operations/database-bootstrap.md`](docs/operations/database-bootstrap.md) — fresh and existing PostgreSQL database procedures
+- [`docs/AUTH_SECURITY.md`](docs/AUTH_SECURITY.md) — authentication, MFA, session, and email security
