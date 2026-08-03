@@ -7,6 +7,9 @@ vi.mock("./auth/middleware", () => ({
   requireAdmin: (_req: unknown, _res: unknown, next: () => void) => next(),
   requireOperatorMfa: (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
+vi.mock("./auth/security", () => ({
+  recordSecurityEvent: vi.fn().mockResolvedValue(undefined),
+}));
 
 import { createAdminRouter } from "./admin-api";
 

@@ -11,6 +11,31 @@ BEGIN
   END IF;
 END $$;
 
+-- A single application login assumes one of these bounded NOLOGIN roles for
+-- every transaction. NOINHERIT prevents the session from receiving both
+-- privilege sets until TransactionService explicitly selects one with
+-- SET LOCAL ROLE. Role/database creation privileges are bootstrap-only and
+-- are removed before this login is used by the application.
+DO $$
+BEGIN
+  IF NOT pg_has_role(CURRENT_USER, 'firecrawl_gateway_runtime', 'member') THEN
+    EXECUTE format('GRANT firecrawl_gateway_runtime TO %I', CURRENT_USER);
+  END IF;
+  IF NOT pg_has_role(CURRENT_USER, 'firecrawl_gateway_operator', 'member') THEN
+    EXECUTE format('GRANT firecrawl_gateway_operator TO %I', CURRENT_USER);
+  END IF;
+END $$;
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_roles
+    WHERE rolname = CURRENT_USER
+      AND (rolinherit OR rolcreatedb OR rolcreaterole)
+  ) THEN
+    EXECUTE format('ALTER ROLE %I NOINHERIT NOCREATEDB NOCREATEROLE', CURRENT_USER);
+  END IF;
+END $$;
+
 CREATE OR REPLACE FUNCTION prevent_account_public_id_change()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN

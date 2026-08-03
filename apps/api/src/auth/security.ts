@@ -148,6 +148,7 @@ export async function beginMfaSetup(userId: string, email: string, encryptionKey
       id: crypto.randomUUID(),
       userId,
       secretEncrypted: encryptAuthValue(secret, encryptionKey),
+      pendingSecretEncrypted: encryptAuthValue(secret, encryptionKey),
       keyVersion: 1,
     },
     update: { pendingSecretEncrypted: encryptAuthValue(secret, encryptionKey), updatedAt: new Date() },
@@ -175,7 +176,7 @@ export async function verifyMfaCode(userId: string, code: string, encryptionKey:
     const factor = await tx.mfaFactor.findUnique({ where: { userId } });
     if (!factor) return false;
     const stepAllowed = factor.lastUsedStep === null || factor.lastUsedStep < BigInt(result.timeStep);
-    const pendingAllowed = allowPending && (factor.pendingSecretEncrypted !== null || factor.enabledAt === null);
+    const pendingAllowed = allowPending && factor.pendingSecretEncrypted !== null;
     const normalAllowed = !allowPending && factor.enabledAt !== null;
     if ((!pendingAllowed && !normalAllowed) || !stepAllowed) return false;
     await tx.mfaFactor.update({

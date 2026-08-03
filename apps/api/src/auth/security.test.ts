@@ -40,6 +40,7 @@ describe("verifyMfaCode", () => {
 
     expect(state.upsert).toHaveBeenCalledWith(expect.objectContaining({
       where: { userId: "user-1" },
+      create: expect.objectContaining({ pendingSecretEncrypted: "encrypted-secret" }),
       update: expect.objectContaining({ pendingSecretEncrypted: "encrypted-secret" }),
     }));
     expect(state.upsert.mock.calls[0][0].update).not.toHaveProperty("enabledAt", null);
@@ -47,8 +48,8 @@ describe("verifyMfaCode", () => {
 
   it("records the enrollment TOTP step and rejects its replay", async () => {
     state.findUnique
-      .mockResolvedValueOnce({ secretEncrypted: "encrypted", pendingSecretEncrypted: null })
-      .mockResolvedValueOnce({ pendingSecretEncrypted: "encrypted", secretEncrypted: "old", lastUsedStep: null, enabledAt: null })
+      .mockResolvedValueOnce({ secretEncrypted: "encrypted", pendingSecretEncrypted: "encrypted" })
+      .mockResolvedValueOnce({ pendingSecretEncrypted: "encrypted", secretEncrypted: "encrypted", lastUsedStep: null, enabledAt: null })
       .mockResolvedValueOnce({ secretEncrypted: "encrypted", pendingSecretEncrypted: null })
       .mockResolvedValueOnce({ pendingSecretEncrypted: null, secretEncrypted: "encrypted", lastUsedStep: BigInt(12345), enabledAt: new Date() });
     mockVerify.mockResolvedValue({ valid: true, timeStep: 12345 });

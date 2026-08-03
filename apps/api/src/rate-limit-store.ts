@@ -12,7 +12,8 @@ export interface RateLimitDecision {
  * table is intentionally not tenant-scoped: it contains bounded hashes and
  * route buckets only, never credentials or customer payloads.
  */
-export async function consumeRateLimit(
+export async function consumeRateLimitWithClient(
+  client: Pick<Prisma.TransactionClient, "$queryRaw">,
   keys: string[],
   limit: number,
   windowMs: number,
@@ -22,8 +23,7 @@ export async function consumeRateLimit(
   const values = Prisma.join(uniqueKeys.map((key) => Prisma.sql`(${key})`));
   const window = `${Math.max(1, windowMs)} milliseconds`;
 
-  return withRuntimeTransaction(async (tx) => {
-    const rows = await tx.$queryRaw<Array<{ key: string; count: number; reset_at: Date }>>(Prisma.sql`
+  const rows = await client.$queryRaw<Array<{ key: string; count: number; reset_at: Date }>>(Prisma.sql`
       INSERT INTO rate_limit_buckets (key, count, reset_at, updated_at)
       SELECT incoming.key, 1, NOW() + ${window}::interval, NOW()
       FROM (VALUES ${values}) AS incoming(key)
@@ -38,18 +38,25 @@ export async function consumeRateLimit(
           END,
           updated_at = NOW()
       RETURNING key, count, reset_at
-    `);
+  `);
 
-    const highest = rows.reduce<{ count: number; reset_at: Date }>(
-      (current, row) => row.count > current.count ? row : current,
-      { count: 0, reset_at: new Date() },
-    );
-    return {
-      allowed: highest.count <= limit,
-      remaining: Math.max(0, limit - highest.count),
-      resetAt: highest.reset_at,
-    };
-  });
+  const highest = rows.reduce<{ count: number; reset_at: Date }>(
+    (current, row) => row.count > current.count ? row : current,
+    { count: 0, reset_at: new Date() },
+  );
+  return {
+    allowed: highest.count <= limit,
+    remaining: Math.max(0, limit - highest.count),
+    resetAt: highest.reset_at,
+  };
+}
+
+export function consumeRateLimit(
+  keys: string[],
+  limit: number,
+  windowMs: number,
+): Promise<RateLimitDecision> {
+  return withRuntimeTransaction((transaction) => consumeRateLimitWithClient(transaction, keys, limit, windowMs));
 }
 
 /** Delete at most one bounded batch of expired distributed buckets. */
