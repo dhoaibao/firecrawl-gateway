@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { Injectable } from "@nestjs/common";
+import { Injectable, Optional } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import bcrypt from "bcrypt";
 import { generateSecret, generateURI, verify } from "otplib";
@@ -14,6 +14,7 @@ import {
   admitAccountWithClient,
   resumeAccountEntitlementsWithClient,
 } from "../../../quota/service";
+import { EmailService } from "../../email/application/email.service";
 
 const SESSION_IDLE_MS = 8 * 60 * 60 * 1000;
 const SESSION_ABSOLUTE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -80,6 +81,7 @@ export class AuthService {
   constructor(
     private readonly transactions: TransactionService,
     private readonly config: AppConfigService,
+    @Optional() private readonly email?: EmailService,
   ) {}
 
   passwordError(password: unknown): string | null {
@@ -558,6 +560,10 @@ export class AuthService {
     idempotencyKey: string;
     payload: EmailPayload;
   }): Promise<void> {
+    if (this.email) {
+      await this.email.queue(transaction, input);
+      return;
+    }
     await transaction.emailOutbox.createMany({
       data: {
         id: crypto.randomUUID(),

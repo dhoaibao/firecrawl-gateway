@@ -1,10 +1,10 @@
 # Firecrawl Gateway
 
-Express.js + TypeScript gateway with a React admin dashboard. The gateway layer does not host Firecrawl, PostgreSQL, Redis, or any other Firecrawl runtime service.
+NestJS/Fastify + TypeScript gateway with a React admin dashboard. The gateway layer does not host Firecrawl, PostgreSQL, Redis, or any other Firecrawl runtime service.
 
 ## Stack
 
-- **Backend**: Express.js + TypeScript
+- **Backend**: NestJS 11 + Fastify + TypeScript
 - **Admin UI**: React + Vite + Tailwind CSS
 - **Build**: Multi-stage Docker (Node 22 Alpine)
 
@@ -16,7 +16,7 @@ Express.js + TypeScript gateway with a React admin dashboard. The gateway layer 
 - `GET /admin/api/logs` — request history JSON
 - `GET /admin/api/data` — request history with totals
 - `/e/:endpointId/v1/*` and `/e/:endpointId/v2/*` — tenant data-plane routes; require `Authorization: Bearer <gateway-token>` and never forward the endpoint prefix
-- `/v1/*` and `/v2/*` — legacy proxied routes, retained temporarily with a `Deprecation: true` response header
+- `/v1/*` and `/v2/*` — gateway data-plane routes with bearer-token, scope, quota, fallback, and filtered-header enforcement
 
 ## Tenant data plane
 
@@ -27,7 +27,7 @@ https://gateway.example/e/<endpointId>/v2/scrape
 Authorization: Bearer fc_<gateway-token>
 ```
 
-An endpoint ID is a public routing identifier, not a credential. The token must belong to the endpoint account; missing and cross-account endpoints receive the same opaque response. Gateway tokens are stored as hashes, returned only by the creation response, and are never redisplayed. New infrastructure sources take precedence over legacy settings during the conversion window. Run the approved one-time conversion command, `npm run sources:convert-legacy --workspace @firecrawl/api`, then explicitly validate the migrated Cloud credentials with `npm run sources:validate --workspace @firecrawl/api`; both require migration-ready database credentials and validation makes bounded external Cloud requests.
+An endpoint ID is a public routing identifier, not a credential. The token must belong to the endpoint account; missing and cross-account endpoints receive the same opaque response. Gateway tokens are stored as hashes, returned only by the creation response, and are never redisplayed. Infrastructure sources and provider credentials are managed through the native operator boundary; credential validation is an explicit operator action and makes bounded external Cloud requests.
 
 Authenticated account users manage BYOK Cloud credentials at `/admin/api/credentials`. Creating a credential immediately validates it; use `POST /admin/api/credentials/:id/validate` to revalidate it later. Credential values are accepted only on creation and are never returned.
 

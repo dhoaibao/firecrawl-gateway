@@ -8,8 +8,12 @@ function createService() {
     $executeRaw: vi.fn().mockResolvedValue(1),
     $executeRawUnsafe: vi.fn().mockResolvedValue(1),
   } as unknown as Prisma.TransactionClient;
-  const prisma = {
+  const transactionClient = {
     $transaction: vi.fn(async (operation: (client: Prisma.TransactionClient) => Promise<unknown>) => operation(transaction)),
+  };
+  const prisma = {
+    runtime: transactionClient,
+    operator: transactionClient,
   } as unknown as PrismaService;
   return { service: new TransactionService(prisma), transaction, prisma };
 }

@@ -71,7 +71,8 @@ export class DatabaseReadinessService {
   ) {}
 
   async assertReady(): Promise<void> {
-    await this.assertLoginAndRolePosture();
+    await this.assertRuntimeLoginAndRolePosture();
+    await this.assertOperatorLoginAndRolePosture();
     await this.assertSecurityObjects();
     await this.transactions.run((transaction) => this.assertRolePrivileges(
       transaction,
@@ -85,8 +86,8 @@ export class DatabaseReadinessService {
     ));
   }
 
-  private async assertLoginAndRolePosture(): Promise<void> {
-    const rows = await this.prisma.$queryRaw<Array<{
+  private async assertRuntimeLoginAndRolePosture(): Promise<void> {
+    const rows = await this.prisma.runtime.$queryRaw<Array<{
       login_superuser: boolean;
       login_bypass_rls: boolean;
       login_inherits: boolean;
@@ -131,7 +132,7 @@ export class DatabaseReadinessService {
       role.login_create_database ||
       role.login_replication ||
       !role.has_runtime ||
-      !role.has_operator ||
+      role.has_operator ||
       role.runtime_superuser ||
       role.runtime_bypass_rls ||
       role.runtime_login ||
@@ -139,14 +140,47 @@ export class DatabaseReadinessService {
       role.operator_bypass_rls ||
       role.operator_login
     ) {
-      throw new Error("Database login and bounded roles do not satisfy the single-URL security requirements");
+      throw new Error("Database runtime login and bounded role do not satisfy the separate-credential security requirements");
+    }
+  }
+
+  private async assertOperatorLoginAndRolePosture(): Promise<void> {
+    const rows = await this.prisma.operator.$queryRaw<Array<{
+      login_superuser: boolean;
+      login_bypass_rls: boolean;
+      login_inherits: boolean;
+      login_create_role: boolean;
+      login_create_database: boolean;
+      login_replication: boolean;
+      has_operator: boolean;
+      operator_superuser: boolean;
+      operator_bypassrls: boolean;
+      operator_login: boolean;
+    }>>(Prisma.sql`
+      SELECT login.rolsuper AS login_superuser,
+             login.rolbypassrls AS login_bypass_rls,
+             login.rolinherit AS login_inherits,
+             login.rolcreaterole AS login_create_role,
+             login.rolcreatedb AS login_create_database,
+             login.rolreplication AS login_replication,
+             pg_has_role(login.rolname, 'firecrawl_gateway_operator', 'member') AS has_operator,
+             operator.rolsuper AS operator_superuser,
+             operator.rolbypassrls AS operator_bypassrls,
+             operator.rolcanlogin AS operator_login
+      FROM pg_roles login
+      INNER JOIN pg_roles operator ON operator.rolname = 'firecrawl_gateway_operator'
+      WHERE login.rolname = session_user
+    `);
+    const role = rows[0];
+    if (!role || role.login_superuser || role.login_bypass_rls || role.login_inherits || role.login_create_role || role.login_create_database || role.login_replication || !role.has_operator || role.operator_superuser || role.operator_bypassrls || role.operator_login) {
+      throw new Error("Database operator login and bounded role do not satisfy the separate-credential security requirements");
     }
   }
 
   private async assertSecurityObjects(): Promise<void> {
     const rlsTables = Prisma.join(RLS_TABLES.map((table) => Prisma.sql`${table}`));
     const policies = Prisma.join(REQUIRED_POLICIES.map(([table, policy]) => Prisma.sql`(${table}, ${policy})`));
-    const rows = await this.prisma.$queryRaw<Array<{ rls_ready: boolean; policies_ready: boolean }>>(Prisma.sql`
+    const rows = await this.prisma.operator.$queryRaw<Array<{ rls_ready: boolean; policies_ready: boolean }>>(Prisma.sql`
       SELECT (
         SELECT COUNT(*) = ${RLS_TABLES.length}
         FROM pg_class c

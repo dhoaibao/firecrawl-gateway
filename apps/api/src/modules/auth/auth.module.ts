@@ -1,4 +1,5 @@
 import { Module } from "@nestjs/common";
+import { EmailModule } from "../email/email.module";
 import { APP_GUARD } from "@nestjs/core";
 import { AuthAttemptService } from "./application/auth-attempt.service";
 import { AuthService } from "./application/auth.service";
@@ -9,6 +10,7 @@ import { AuthGuard } from "./presentation/auth.guard";
 import { CsrfGuard } from "./presentation/csrf.guard";
 
 @Module({
+  imports: [EmailModule],
   controllers: [AuthController],
   providers: [
     AuthService,

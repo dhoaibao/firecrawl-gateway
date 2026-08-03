@@ -5,6 +5,7 @@ import { rootLogger } from "../../logger";
 import type { RequestWithId } from "../interceptors/request-id.interceptor";
 
 const AUTH_BODY_LIMIT_BYTES = 32 * 1024;
+const WEBHOOK_BODY_LIMIT_BYTES = 64 * 1024;
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 
 function contentSecurityPolicy(corsOrigins: readonly string[]): string {
@@ -37,6 +38,8 @@ export function configureFastifyHttp(
   server.addHook("onRoute", (route) => {
     if (route.url.startsWith("/api/v1/auth") || route.url.startsWith("/admin/api/auth")) {
       route.bodyLimit = AUTH_BODY_LIMIT_BYTES;
+    } else if (route.url === "/api/v1/webhooks/brevo") {
+      route.bodyLimit = WEBHOOK_BODY_LIMIT_BYTES;
     }
   });
   server.addHook("onRequest", async (request, reply) => {

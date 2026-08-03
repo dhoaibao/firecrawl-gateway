@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.hoisted(() => {
   process.env.DATABASE_URL = "postgresql://localhost/firecrawl_test";
+  process.env.OPERATOR_DATABASE_URL = "postgresql://localhost/firecrawl_operator_test";
   process.env.NODE_ENV = "test";
 });
 

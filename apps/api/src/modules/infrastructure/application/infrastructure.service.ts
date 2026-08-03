@@ -75,6 +75,13 @@ export class InfrastructureService {
     });
   }
 
+  async touchCredential(accountId: string, credentialId: string): Promise<void> {
+    await this.transactions.runForAccount(accountId, (tx) => tx.providerCredential.updateMany({
+      where: { id: credentialId, accountId, ownerType: "account", status: "valid", supersededAt: null },
+      data: { lastUsedAt: new Date(), updatedAt: new Date() },
+    }).then(() => undefined));
+  }
+
   async list() { const rows = await this.transactions.runAsOperator((tx) => tx.infrastructureSource.findMany({ orderBy: [{ priority: "asc" }, { createdAt: "asc" }], select: sourceSelect })); return rows.map(toView); }
 
   async create(input: { id: string; name: string; kind: SourceKind; baseUrl?: string; credentialId?: string; priority?: number; hardConcurrency?: number; requestTimeoutMs?: number; responseBufferMaxBytes?: number; capabilities?: string[]; allowPrivateNetwork?: boolean }) {

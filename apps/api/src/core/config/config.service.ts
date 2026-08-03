@@ -26,8 +26,24 @@ export class AppConfigService {
     return this.config.get("CLOUD_BASE_URL", { infer: true }).replace(/\/+$/, "");
   }
 
+  get brevoApiKey(): string {
+    return this.config.get("BREVO_API_KEY", { infer: true });
+  }
+
+  get brevoSenderEmail(): string {
+    return this.config.get("BREVO_SENDER_EMAIL", { infer: true });
+  }
+
+  get brevoSenderName(): string {
+    return this.config.get("BREVO_SENDER_NAME", { infer: true });
+  }
+
   get brevoWebhookToken(): string {
     return this.config.get("BREVO_WEBHOOK_TOKEN", { infer: true });
+  }
+
+  get auditRetentionDays(): number {
+    return this.config.get("AUDIT_RETENTION_DAYS", { infer: true });
   }
 
   get workerHeartbeatFile(): string {
@@ -47,6 +63,10 @@ export class AppConfigService {
 
   get databaseUrl(): string {
     return this.config.get("DATABASE_URL", { infer: true });
+  }
+
+  get operatorDatabaseUrl(): string {
+    return this.config.get("OPERATOR_DATABASE_URL", { infer: true });
   }
 
   get host(): string {

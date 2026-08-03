@@ -1,3 +1,0 @@
--- Deprecated compatibility marker.
--- The database schema is defined by apps/api/prisma/schema.prisma and its checked-in Prisma baseline migration.
--- PostgreSQL-specific security objects are in apps/api/prisma/security.sql.

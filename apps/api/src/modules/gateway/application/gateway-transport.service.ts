@@ -18,7 +18,7 @@ export class GatewayTransportService {
       const successful = response.ok || response.status < 400;
       const contentLength = Number(response.headers.get("content-length"));
       const boundedSuccess = input.successBufferMaxBytes !== undefined && Number.isSafeInteger(contentLength) && contentLength >= 0 && contentLength <= input.successBufferMaxBytes;
-      if (successful && response.body && !input.bufferSuccess && !boundedSuccess) { streamed = true; return { kind: "response", backend: input.backend, response, stream: response.body, durationMs: Date.now() - started, cleanup: () => this.cleanup(timeout, input.requestSignal, abortRequest) }; }
+      if (successful && response.body && !input.bufferSuccess && !boundedSuccess) { streamed = true; return { kind: "response", backend: input.backend, response, stream: response.body, durationMs: Date.now() - started, cleanup: () => this.cleanup(controller, timeout, input.requestSignal, abortRequest) }; }
       const limit = boundedSuccess ? Math.min(input.successBufferMaxBytes!, input.responseBufferMaxBytes) : input.responseBufferMaxBytes;
       const body = await readBoundedResponseBody(response, limit);
       if (body === null) return this.networkError(input.backend, "Upstream response exceeds the gateway buffer limit", Date.now() - started, true);
@@ -27,11 +27,11 @@ export class GatewayTransportService {
       const reason = (error as Error).name === "AbortError" ? "Gateway upstream timeout" : (error as Error).message;
       return this.networkError(input.backend, reason, Date.now() - started, true);
     } finally {
-      if (!streamed) this.cleanup(timeout, input.requestSignal, abortRequest);
+      if (!streamed) this.cleanup(controller, timeout, input.requestSignal, abortRequest);
     }
   }
 
-  private cleanup(timeout: NodeJS.Timeout, requestSignal: AbortSignal | undefined, listener: () => void) { clearTimeout(timeout); requestSignal?.removeEventListener("abort", listener); }
+  private cleanup(controller: AbortController, timeout: NodeJS.Timeout, requestSignal: AbortSignal | undefined, listener: () => void) { controller.abort(); clearTimeout(timeout); requestSignal?.removeEventListener("abort", listener); }
   private networkError(backend: string, message: string, durationMs: number, dispatched: boolean): GatewayTransportResult { return { kind: "network-error", backend, error: new Error(message), body: Buffer.from(JSON.stringify({ success: false, error: message })), statusCode: 502, durationMs, ...(dispatched ? {} : {}) }; }
 }
 

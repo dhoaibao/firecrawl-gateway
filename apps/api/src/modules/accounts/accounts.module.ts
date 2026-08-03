@@ -7,7 +7,7 @@ import { AccountsService } from "./application/accounts.service";
 import { AccountsController } from "./presentation/accounts.controller";
 
 @Module({
-  imports: [DatabaseModule, AuthModule, forwardRef(() => OperatorModule), QuotaModule],
+  imports: [DatabaseModule, AuthModule, forwardRef(() => OperatorModule), forwardRef(() => QuotaModule)],
   controllers: [AccountsController],
   providers: [AccountsService],
   exports: [AccountsService],

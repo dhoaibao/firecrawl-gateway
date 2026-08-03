@@ -34,6 +34,9 @@ export class GatewayController {
   @All(["v1/*", "v2/*", "e/:endpointId/v1/*", "e/:endpointId/v2/*"])
   async proxy(@Req() request: FastifyRequest, @Res() reply: FastifyReply): Promise<void> {
     const started = Date.now();
+    const requestAbort = new AbortController();
+    request.raw.once("aborted", () => requestAbort.abort());
+    request.raw.once("close", () => { if (!request.raw.complete) requestAbort.abort(); });
     const parsed = new URL(request.raw.url ?? request.url, "http://gateway.local");
     const tenantMatch = parsed.pathname.match(/^\/e\/([^/]+)(\/v[12]\/.*)$/);
     const tenantEndpointId = tenantMatch ? decodeURIComponent(tenantMatch[1]) : null;
@@ -75,20 +78,21 @@ export class GatewayController {
 
     const requestId = crypto.randomUUID();
     let selectedSource = primary;
-    let dispatch = await this.dispatch(request, primary, upstreamPath, body, asyncRoute, accountId, requestId);
+    let dispatch = await this.dispatch(request, primary, upstreamPath, body, asyncRoute, accountId, requestId, requestAbort.signal);
     let result = dispatch.result;
     let fallbackUsed = false;
     let fallbackReason = "";
-    if (!dispatch.quotaRejected && (result.kind === "network-error" || (result.response && result.response.status >= 500))) {
+    if (!requestAbort.signal.aborted && !dispatch.quotaRejected && (result.kind === "network-error" || (result.response && result.response.status >= 500))) {
       const privacy = { hasSensitiveHeaders: Object.keys(request.headers).some((key) => ["authorization", "cookie"].includes(key.toLowerCase())), hasPrivateTargetUrl: hasPrivateTargetUrl(body) };
       if (isFallbackAllowed(routeMode, privacy) && initialBackend === "self-hosted" && !needsCloud.required) {
         const cloud = this.pickSource(sources, "cloud", "");
         if (cloud) {
+          if (dispatch.quota) await this.quota.releaseReservation(dispatch.quota.reservationId).catch(() => undefined);
           fallbackUsed = true;
           fallbackReason = "self-hosted source failed";
-          const fallback = await this.dispatch(request, cloud, upstreamPath, body, asyncRoute, accountId, requestId);
+          const fallback = await this.dispatch(request, cloud, upstreamPath, body, asyncRoute, accountId, requestId, requestAbort.signal);
           selectedSource = cloud;
-          dispatch = { ...fallback, quota: dispatch.quota ?? fallback.quota, includedDispatched: dispatch.includedDispatched || fallback.includedDispatched };
+          dispatch = fallback;
           result = fallback.result;
         }
       }
@@ -112,7 +116,7 @@ export class GatewayController {
       await this.jobs.complete(accountId, asyncRoute!.publicId!).catch(() => undefined);
     }
     if (dispatch.quota) {
-      const finalize = dispatch.includedDispatched ? this.quota.finalizeReservation(dispatch.quota.reservationId) : this.quota.releaseReservation(dispatch.quota.reservationId);
+      const finalize = dispatch.includedDispatched && !requestAbort.signal.aborted ? this.quota.finalizeReservation(dispatch.quota.reservationId) : this.quota.releaseReservation(dispatch.quota.reservationId);
       await finalize.catch(() => undefined);
     }
     const statusCode = result.kind === "network-error" ? result.statusCode ?? 502 : result.response?.status ?? 502;
@@ -120,7 +124,7 @@ export class GatewayController {
     await this.responses.send(reply, result, { fallbackUsed, fallbackReason, fundingType: dispatch.includedDispatched ? "included" : selectedSource.fundingType, quota: dispatch.quota });
   }
 
-  private async dispatch(request: FastifyRequest, source: ResolvedInfrastructureSource, path: string, body: unknown, asyncRoute: ReturnType<typeof classifyAsyncRoute>, accountId?: string, requestId?: string): Promise<DispatchOutcome> {
+  private async dispatch(request: FastifyRequest, source: ResolvedInfrastructureSource, path: string, body: unknown, asyncRoute: ReturnType<typeof classifyAsyncRoute>, accountId?: string, requestId?: string, requestSignal?: AbortSignal): Promise<DispatchOutcome> {
     const release = this.infrastructure.tryAcquire(source);
     if (!release) return { result: { kind: "network-error", backend: source.kind === "cloud" ? "cloud" : "self-hosted", body: Buffer.from(JSON.stringify({ success: false, error: "Selected source is at its concurrency limit" })), error: new Error("Selected source is at its concurrency limit"), statusCode: 503, durationMs: 0 }, quota: null, includedDispatched: false, quotaRejected: false };
     let quota: QuotaReservation | null = null;
@@ -134,7 +138,8 @@ export class GatewayController {
       quota = reservation;
     }
     const buffer = body === undefined || body === null ? Buffer.alloc(0) : typeof body === "string" ? Buffer.from(body) : Buffer.from(JSON.stringify(body));
-    const result = await this.transport.execute({ backend: source.kind === "cloud" ? "cloud" : "self-hosted", targetUrl: `${source.baseUrl}${path}`, method: request.method, headers: request.headers, body: buffer, apiKey: source.credential, authEnabled: this.config.authEnabled, timeoutMs: source.requestTimeoutMs, responseBufferMaxBytes: source.responseBufferMaxBytes, bufferSuccess: asyncRoute?.kind === "create", successBufferMaxBytes: asyncRoute?.kind === "lifecycle" && request.method === "GET" ? 64 * 1024 : undefined, requestSignal: undefined });
+    const result = await this.transport.execute({ backend: source.kind === "cloud" ? "cloud" : "self-hosted", targetUrl: `${source.baseUrl}${path}`, method: request.method, headers: request.headers, body: buffer, apiKey: source.credential, authEnabled: this.config.authEnabled, timeoutMs: source.requestTimeoutMs, responseBufferMaxBytes: source.responseBufferMaxBytes, bufferSuccess: asyncRoute?.kind === "create", successBufferMaxBytes: asyncRoute?.kind === "lifecycle" && request.method === "GET" ? 64 * 1024 : undefined, requestSignal });
+    if (source.fundingType === "byok" && accountId && source.credentialId) await this.infrastructure.touchCredential(accountId, source.credentialId).catch(() => undefined);
     if (result.stream) { const cleanup = result.cleanup; result.cleanup = () => { cleanup?.(); release(); }; } else release();
     return { result, quota, includedDispatched, quotaRejected: false };
   }

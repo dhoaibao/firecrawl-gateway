@@ -172,9 +172,11 @@ async function configureTransaction(
 ): Promise<void> {
   await tx.$executeRaw`SELECT set_config('statement_timeout', ${`${STATEMENT_TIMEOUT_MS}ms`}, true)`;
   await tx.$executeRaw`SELECT set_config('lock_timeout', ${`${LOCK_TIMEOUT_MS}ms`}, true)`;
-  if (options.operator) {
-    await tx.$executeRawUnsafe("SET LOCAL ROLE firecrawl_gateway_operator");
-  }
+  await tx.$executeRawUnsafe(
+    options.operator
+      ? "SET LOCAL ROLE firecrawl_gateway_operator"
+      : "SET LOCAL ROLE firecrawl_gateway_runtime",
+  );
   await tx.$executeRaw`SELECT set_config('app.account_id', ${options.accountId ?? ""}, true)`;
 }
 
@@ -241,10 +243,14 @@ function sqlPairValues(values: readonly (readonly [string, string])[]): Prisma.S
   return Prisma.join(values.map(([first, second]) => Prisma.sql`(${first}, ${second})`));
 }
 
+function sqlValueRows(values: readonly string[]): Prisma.Sql {
+  return Prisma.join(values.map((value) => Prisma.sql`(${value})`));
+}
+
 async function assertRequiredTables(client: PrismaExecutor, label: string): Promise<void> {
   const rows = await client.$queryRaw<Array<{ table_name: string; relation_name: string | null }>>(Prisma.sql`
     SELECT required.table_name,
-           to_regclass('public.' || required.table_name) AS relation_name
+           to_regclass('public.' || required.table_name)::text AS relation_name
     FROM unnest(ARRAY[${sqlTextValues(REQUIRED_TABLES)}]::text[]) AS required(table_name)
   `);
   const missing = rows.filter((row) => !row.relation_name).map((row) => row.table_name);
@@ -305,7 +311,7 @@ async function assertSecurityObjects(client: PrismaExecutor): Promise<void> {
   const indexRows = await client.$queryRaw<Array<{ index_name: string; index_definition: string | null }>>(Prisma.sql`
     SELECT required.index_name,
            i.indexdef AS index_definition
-    FROM (VALUES ${sqlTextValues(REQUIRED_PARTIAL_INDEXES)}) AS required(index_name)
+    FROM (VALUES ${sqlValueRows(REQUIRED_PARTIAL_INDEXES)}) AS required(index_name)
     LEFT JOIN pg_indexes i
       ON i.schemaname = 'public'
      AND i.indexname = required.index_name
@@ -383,7 +389,14 @@ export async function assertRuntimeRoleReady(): Promise<void> {
       "Database runtime role must be a non-superuser member of firecrawl_gateway_runtime and not firecrawl_gateway_operator without BYPASSRLS.",
     );
   }
-  await assertTablePrivileges(current, RUNTIME_PRIVILEGES, "runtime");
+  await current.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe("SET LOCAL ROLE firecrawl_gateway_runtime");
+    await assertTablePrivileges(tx, RUNTIME_PRIVILEGES, "runtime");
+    const assumed = await tx.$queryRaw<Array<{ current_user: string }>>(Prisma.sql`SELECT current_user`);
+    if (assumed[0]?.current_user !== "firecrawl_gateway_runtime") {
+      throw new Error("Database runtime credential cannot assume firecrawl_gateway_runtime with required privileges.");
+    }
+  });
 }
 
 export async function assertOperatorRoleReady(): Promise<void> {
@@ -416,10 +429,9 @@ export async function assertOperatorRoleReady(): Promise<void> {
       "Database operator role must be a non-superuser member of firecrawl_gateway_operator without BYPASSRLS.",
     );
   }
-  await assertTablePrivileges(current, OPERATOR_PRIVILEGES, "operator");
-
   await current.$transaction(async (tx) => {
     await tx.$executeRawUnsafe("SET LOCAL ROLE firecrawl_gateway_operator");
+    await assertTablePrivileges(tx, OPERATOR_PRIVILEGES, "operator");
     const assumed = await tx.$queryRaw<Array<{ current_user: string; can_select_users: boolean }>>(Prisma.sql`
       SELECT current_user,
              has_table_privilege(current_user, 'public.users', 'SELECT') AS can_select_users

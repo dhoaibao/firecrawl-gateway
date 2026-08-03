@@ -70,3 +70,23 @@ any data/schema differences with a reviewed migration before proceeding.
 - Operator transactions assume `firecrawl_gateway_operator` explicitly.
 - RLS remains enabled and forced on tenant-owned tables.
 - The API does not infer or create roles during normal startup.
+
+## Native validation evidence
+
+A disposable PostgreSQL 16 instance was validated with the documented sequence:
+
+```bash
+DATABASE_URL="$MIGRATION_DATABASE_URL" npm run db:deploy --workspace @firecrawl/api
+DATABASE_URL="$MIGRATION_DATABASE_URL" npm run db:security --workspace @firecrawl/api
+```
+
+The verification created separate non-superuser, `NOINHERIT` runtime and operator
+logins, granted only their corresponding NOLOGIN roles, and confirmed:
+
+- Prisma migrations and `security.sql` apply successfully to a fresh database.
+- Required tables, forced RLS tables, policies, partial indexes, and role grants pass the native readiness assertions.
+- Runtime transactions assume `firecrawl_gateway_runtime` and set `app.account_id` locally.
+- Operator transactions assume `firecrawl_gateway_operator`.
+- An account-scoped runtime query sees its own account and cannot see a second account; an operator query sees both.
+
+The disposable database and generated credentials were removed after validation.

@@ -32,7 +32,7 @@ export class TransactionService {
     context: { accountId?: string; operator?: boolean },
     operation: TransactionOperation<T>,
   ): Promise<T> {
-    return this.prisma.$transaction(async (transaction) => {
+    return (context.operator ? this.prisma.operator : this.prisma.runtime).$transaction(async (transaction) => {
       await transaction.$executeRawUnsafe(
         context.operator
           ? "SET LOCAL ROLE firecrawl_gateway_operator"

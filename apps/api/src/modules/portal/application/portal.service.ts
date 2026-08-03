@@ -4,7 +4,7 @@ import { Prisma } from "@prisma/client";
 import type { User } from "../../../types";
 import { AppConfigService } from "../../../core/config/config.service";
 import { TransactionService } from "../../../core/database/transaction.service";
-import { encryptAuthValue } from "../../../auth/crypto";
+import { EmailService } from "../../email/application/email.service";
 import { privacyLabel } from "../../../auth/security";
 import type { RequestMetadata } from "../../../common/http/request-context";
 import { AuthService } from "../../auth/application/auth.service";
@@ -18,7 +18,7 @@ type SensitiveAction = { current_password: string; mfa_code?: string; recovery_c
 
 @Injectable()
 export class PortalService {
-  constructor(private readonly transactions: TransactionService, private readonly quota: QuotaService, private readonly config: AppConfigService, private readonly auth: AuthService, private readonly tokens: GatewayTokensService, private readonly credentials: ProviderStoreService) {}
+  constructor(private readonly transactions: TransactionService, private readonly quota: QuotaService, private readonly config: AppConfigService, private readonly auth: AuthService, private readonly tokens: GatewayTokensService, private readonly credentials: ProviderStoreService, private readonly email: EmailService) {}
 
   async overview(user: User) { const account = await this.account(user.account_id); const [quota, audit] = await Promise.all([this.quota.getAccountQuota(account.id), this.audit(account.id, {})]); return { user: publicUser(user), account: publicAccount(account), endpoint: endpoint(account), quota, recent: summary(audit.rows), endpoint_base_url: this.config.publicAppUrl ? `${new URL(this.config.publicAppUrl).origin}${endpoint(account).base_path}` : endpoint(account).base_path }; }
   async getAccount(accountId: string) { return publicAccount(await this.account(accountId)); }
@@ -49,7 +49,9 @@ export class PortalService {
       await tx.securityEvent.create({ data: { id: crypto.randomUUID(), userId: user.id, eventType: "account_deletion_requested", ipLabel: privacyLabel(metadata.clientIp), userAgentLabel: privacyLabel(metadata.userAgent), metadata: { workflow_id: workflowId, account_id: accountId } } });
       const messages = [{ recipient: user.email, kind: "account_deletion_confirmation", idempotencyKey: `account-deletion-confirmation:${workflowId}`, subject: "Your Firecrawl Gateway deletion request was received", html: `<p>Hello ${userName},</p><p>Your account deletion request was received and queued for operator review.</p><p>Reference: ${workflowId}</p><p>${retention}</p>` }];
       if (this.config.adminEmail) messages.push({ recipient: this.config.adminEmail, kind: "account_deletion_operator_notification", idempotencyKey: `account-deletion-operator:${workflowId}`, subject: "Account deletion request requires operator review", html: `<p>A deletion request requires operator review.</p><p>User: ${userName} (${userEmail})</p><p>Account: ${escapeHtml(accountId)}</p><p>Reference: ${workflowId}</p>` });
-      await tx.emailOutbox.createMany({ data: messages.map((message) => ({ id: crypto.randomUUID(), idempotencyKey: message.idempotencyKey, userId: user.id, kind: message.kind, recipient: message.recipient, payloadEncrypted: encryptAuthValue(JSON.stringify({ subject: message.subject, html: message.html }), this.config.authEncryptionKey) })), skipDuplicates: true });
+      for (const message of messages) {
+        await this.email.queue(tx, { userId: user.id, recipient: message.recipient, kind: message.kind, idempotencyKey: message.idempotencyKey, payload: { subject: message.subject, html: message.html } });
+      }
     });
     return { status: "queued", workflow_id: workflowId, retention };
   }

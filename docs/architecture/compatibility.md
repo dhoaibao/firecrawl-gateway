@@ -15,4 +15,4 @@ This table records the externally observable gateway surface preserved by the re
 | Persistence | PostgreSQL tables remain `users`, `api_keys`, `audit_logs`, `settings`, and `sessions`, accessed through Prisma. Audit JSONL remains configurable through `GATEWAY_LOG_FILE`. |
 | Container | The source Compose deployment still exposes container port `8080`, runs the gateway as the non-root `gateway` user, and starts `apps/api/dist/main.js`; the worker starts `apps/api/dist/worker-main.js`. |
 
-The route-composition tests in `apps/api/src/app.test.ts` cover the most important app-boundary behaviors; existing route and proxy tests remain characterization coverage for the rest.
+Native Fastify boundary coverage lives in `apps/api/test/e2e/health.e2e.test.ts` and the feature-local controller/service tests. The former Express composition and proxy characterization suite has been retired with the compatibility stack.

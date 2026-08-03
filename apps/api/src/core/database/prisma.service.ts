@@ -1,22 +1,24 @@
 import { Injectable, type OnModuleDestroy, type OnModuleInit } from "@nestjs/common";
 import { PrismaClient } from "@prisma/client";
 import { AppConfigService } from "../config/config.service";
+import { disconnectPrisma, initializePrisma } from "../../infrastructure/database";
 
 @Injectable()
-export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
+export class PrismaService implements OnModuleInit, OnModuleDestroy {
+  readonly runtime: PrismaClient;
+  readonly operator: PrismaClient;
+
   constructor(config: AppConfigService) {
-    super({
-      datasources: {
-        db: { url: config.databaseUrl },
-      },
-    });
+    const clients = initializePrisma(config.databaseUrl, config.operatorDatabaseUrl);
+    this.runtime = clients.runtime;
+    this.operator = clients.operator;
   }
 
   async onModuleInit(): Promise<void> {
-    await this.$connect();
+    await Promise.all([this.runtime.$connect(), this.operator.$connect()]);
   }
 
   async onModuleDestroy(): Promise<void> {
-    await this.$disconnect();
+    await disconnectPrisma();
   }
 }
