@@ -47,18 +47,15 @@ npm run migrate:preflight --workspace @firecrawl/api
 
 ## Codebase Map
 
-- `apps/api/src/main.ts`, `app.module.ts`, and `common/http/fastify-http.ts` — native Fastify/Nest process lifecycle, HTTP controls, health/readiness, and route composition.
-- `apps/api/src/modules/gateway/` — upstream routing, virtual API-key authentication, fallback, async lifecycle pinning, filtered headers, streaming, and quota behavior.
-- `apps/api/src/modules/operator/`, `accounts/`, `gateway-tokens/`, `integrations/`, `infrastructure/`, `settings/`, and `quota/` — native operator, account, token, credential, source, configuration, and quota boundaries.
-- `apps/api/src/modules/auth/`, `portal/`, `webhooks/`, `email/`, `audit/`, and `static-ui/` — native authentication/session, user portal, Brevo delivery, audit retention, and static UI boundaries.
-- `apps/api/src/infrastructure/database/` — separate runtime/operator Prisma clients, transaction context, readiness checks, and the Prisma-backed Fastify session store.
-- `apps/api/src/core/` — configuration, database, health, rate limiting, request context, validation, and shared HTTP infrastructure.
-- `apps/api/src/quota/`, `sources/`, `credentials/`, `settings/`, `users/`, and `types.ts` — retained domain/persistence helpers still used by native services.
-- `apps/api/src/rate-limit-store.ts`, `audit-repository.ts`, `logger.ts`, and `db/index.ts` — retained PostgreSQL-backed quota/rate-limit/audit/database compatibility helpers used by native services.
-- `apps/api/prisma/` — Prisma schema, checked-in migrations, and PostgreSQL security SQL for roles, grants, RLS, triggers, and partial indexes.
-- `apps/web/src/` — Vite/React user portal and `/admin` dashboard; `apps/web/src/features/operator/` contains operator-console views and controls.
+- `apps/api/src/main.ts`, `app.module.ts`, and `worker-main.ts` — native Nest/Fastify API and dedicated worker entrypoints.
+- `apps/api/src/common/`, `core/`, and `infrastructure/` — HTTP controls, configuration, health/readiness, request context, rate limiting, separate runtime/operator Prisma clients, transactions, and session storage.
+- `apps/api/src/modules/` — native auth, portal, gateway, gateway tokens, accounts, integrations, infrastructure, settings, quota, operator, webhooks, static UI, email, audit, and worker boundaries.
+- `apps/api/src/auth/`, `quota/`, `users/`, `db/`, `audit-repository.ts`, `rate-limit-store.ts`, `logger.ts`, and `types.ts` — retained domain and persistence helpers used by native modules.
+- `apps/api/prisma/` — Prisma schema, active checked-in migrations, and PostgreSQL security SQL for roles, grants, RLS, triggers, and partial indexes.
+- `apps/api/scripts/` — migration preflight/status helpers and quota reconciliation tooling.
+- `apps/web/src/` — Vite/React user portal and `/admin` dashboard; `features/operator/` contains operator-console views and controls.
 - `packages/contracts/` — shared Zod contracts and control-plane types.
-- `deploy/Dockerfile`, `deploy/docker-entrypoint.sh`, and `docker-compose*.yaml` — source/prebuilt API, worker, preflight, and migration container deployment.
+- `deploy/Dockerfile`, `deploy/docker-entrypoint.sh`, and `docker-compose*.yaml` — source/prebuilt API, worker, migration, and preflight deployment.
 - `docs/` — authentication/security, UI design, architecture, compatibility, database-operation, threat-model, and rollout guidance.
 
 ## Safety / Do-Not-Assume
