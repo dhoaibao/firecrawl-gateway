@@ -1,57 +1,151 @@
 # Firecrawl Gateway
 
-This repository ships a NestJS/Fastify + TypeScript gateway and React admin dashboard in front of externally hosted Firecrawl services. It does not run or manage a self-hosted Firecrawl stack.
+A production-oriented NestJS/Fastify gateway and React admin dashboard for routing requests between an externally hosted Firecrawl instance and Firecrawl Cloud.
 
-The gateway can route requests between an externally hosted Firecrawl instance and Firecrawl Cloud based on feature availability and the configured policy.
+This repository ships the gateway, dashboard, and worker. It does **not** host Firecrawl, PostgreSQL, Redis, or any other Firecrawl runtime service.
 
-## Quick Start
+## Highlights
 
-```bash
-cp .env.example .env
-# Configure the required database credentials and production secrets.
-# See SELF_HOST.md for the complete required/optional environment reference.
-docker compose up -d --build
-# Compose runs the one-shot migrate service before api and worker.
-```
-
-Default endpoints:
-
-- Gateway API: `http://localhost:8080`
-- Admin UI: `http://localhost:8080/admin` when `AUTH_ENABLED=true`
-
-The external Firecrawl instance and PostgreSQL database are deployment prerequisites and are not created by this repository.
-
-## Admin Dashboard
-
-The dashboard provides visibility into request routing, success rates, fallback behavior, latency, users, and virtual API keys.
-
-![Admin UI Dashboard](assets/admin.png)
-
-## What Is Included
-
-- `docker-compose.yaml` — gateway image build and runtime
-- `docker-compose.prebuilt.yaml` — gateway runtime using the published image
-- `apps/api/` — NestJS/Fastify gateway backend
-- `apps/web/` — React admin UI
-- `packages/contracts/` — shared control-plane contracts
-- `.env.example` — gateway configuration reference
-- `SELF_HOST.md` — external-service deployment guide
+- Routes supported Firecrawl API traffic between self-hosted and Cloud providers.
+- Supports cloud-first, self-hosted-first, provider-specific, and per-request routing policies.
+- Applies bearer-token authentication, scopes, quotas, fallback rules, and filtered-header enforcement.
+- Provides tenant-scoped endpoint URLs and gateway-owned async job lifecycles.
+- Includes an authenticated admin dashboard for routing, users, virtual API keys, credentials, request history, and operational settings.
+- Runs API and worker processes separately, with PostgreSQL-backed persistence and explicit migration/security steps.
 
 ## Architecture
 
 ```text
-             Client
-                |
-                v
-          Firecrawl Gateway
-          |               |
-          v               v
- External Firecrawl   Firecrawl Cloud
+Client
+  |
+  v
+Firecrawl Gateway ──────> External Firecrawl instance
+        |
+        └───────────────> Firecrawl Cloud
+
+        ├── API
+        ├── Worker
+        ├── React admin dashboard
+        └── PostgreSQL (externally managed)
 ```
+
+The gateway owns the public routing, authentication, policy, quota, audit, and admin boundaries. Upstream Firecrawl services and the database remain deployment prerequisites.
+
+## Repository layout
+
+| Path | Purpose |
+| --- | --- |
+| `apps/api/` | NestJS/Fastify gateway API and worker entrypoints |
+| `apps/web/` | React/Vite admin dashboard |
+| `packages/contracts/` | Shared TypeScript and Zod contracts |
+| `apps/api/prisma/` | Database schema, migrations, and PostgreSQL security definitions |
+| `deploy/` | Docker image and container entrypoint |
+| `docs/` | Architecture, security, design, and operations documentation |
+| `SELF_HOST.md` | Deployment and environment-variable reference |
+
+## Requirements
+
+- Node.js `>=22.22.0`
+- npm 11
+- Docker Compose for containerized deployment
+- An externally managed PostgreSQL database with separate runtime, operator, and migration credentials
+- A reachable external Firecrawl API and/or Firecrawl Cloud configuration
+
+## Quick start
+
+Create local configuration and review the required values:
+
+```bash
+cp .env.example .env
+```
+
+Configure the database credentials and required local or production secrets in `.env`. Then start the gateway stack:
+
+```bash
+docker compose up -d --build
+```
+
+Compose runs the one-shot migration service before starting the API and worker.
+
+Default endpoints:
+
+- Gateway API: `http://localhost:8080`
+- Health check: `http://localhost:8080/health`
+- Readiness check: `http://localhost:8080/ready`
+- Admin dashboard: `http://localhost:8080/admin` when `AUTH_ENABLED=true`
+
+For complete setup, database bootstrap, security, and troubleshooting guidance, see [`SELF_HOST.md`](SELF_HOST.md).
+
+## Deployment
+
+Build and run from the current checkout:
+
+```bash
+docker compose up -d --build
+```
+
+To run a prebuilt release image, set `GATEWAY_IMAGE` to an immutable `@sha256:` digest and use:
+
+```bash
+docker compose -f docker-compose.prebuilt.yaml up -d
+```
+
+The API and worker must receive runtime credentials only. Migration and security operations use the deployment-only migration credential. Existing databases require the reviewed preflight and baseline procedure described in [`docs/operations/database-bootstrap.md`](docs/operations/database-bootstrap.md).
+
+## Local development
+
+Install dependencies and run focused checks with:
+
+```bash
+npm ci
+npm run api:typecheck
+npm run api:test
+npm run api:build
+npm run web:typecheck
+npm run web:lint
+npm run web:build
+```
+
+Root scripts are orchestrated by Turborepo:
+
+```bash
+npm run typecheck
+npm run lint
+npm run test
+npm run build
+```
+
+See [`apps/api/README.md`](apps/api/README.md) for gateway routes, routing policy, tenant endpoints, and API development details.
+
+## Routing
+
+The gateway starts in `cloud-first` mode. The saved default can be changed in the admin dashboard under **Configure > Routing**, or overridden for an individual request with:
+
+```text
+X-Firecrawl-Route-Mode: self-hosted-first | self-hosted-only | cloud-first | cloud-only
+```
+
+Tenant data-plane requests use an endpoint ID and gateway token:
+
+```text
+https://gateway.example/e/<endpointId>/v2/scrape
+Authorization: Bearer fc_<gateway-token>
+```
+
+Gateway tokens are stored as hashes and returned only when created. Async job IDs returned by tenant routes are gateway-owned and must be used for subsequent lifecycle requests.
+
+## Security notes
+
+- Keep `.env` and all credential-bearing files out of source control.
+- Use HTTPS and stable, high-entropy production secrets.
+- Keep runtime, operator, and migration database credentials separate.
+- Run migrations and PostgreSQL security setup through the documented deployment workflow; API startup never applies DDL.
+- Review [`docs/AUTH_SECURITY.md`](docs/AUTH_SECURITY.md) and [`docs/security/threat-model.md`](docs/security/threat-model.md) before production deployment.
 
 ## Documentation
 
-- [`SELF_HOST.md`](SELF_HOST.md) — complete deployment, environment-variable reference, operations, and troubleshooting
-- [`apps/api/README.md`](apps/api/README.md) — gateway routes, policy, and development
-- [`docs/operations/database-bootstrap.md`](docs/operations/database-bootstrap.md) — fresh and existing PostgreSQL database procedures
-- [`docs/AUTH_SECURITY.md`](docs/AUTH_SECURITY.md) — authentication, MFA, session, and email security
+- [`SELF_HOST.md`](SELF_HOST.md) — deployment, configuration, operations, and troubleshooting
+- [`apps/api/README.md`](apps/api/README.md) — routes, gateway policy, and API development
+- [`docs/operations/database-bootstrap.md`](docs/operations/database-bootstrap.md) — fresh and existing database procedures
+- [`docs/AUTH_SECURITY.md`](docs/AUTH_SECURITY.md) — authentication, MFA, sessions, and email security
+- [`docs/architecture/ADR-006-prisma-layered-backend.md`](docs/architecture/ADR-006-prisma-layered-backend.md) — persistence architecture
