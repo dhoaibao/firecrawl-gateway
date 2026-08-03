@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react"
-import { useLocation } from "react-router-dom"
+import { useLocation } from "react-router"
 import { Activity, Bell, Database, Gauge, LockKeyhole, Settings, Shield, Users, type LucideIcon } from "lucide-react"
 import PageLayout from "@/components/PageLayout"
 import { Card } from "@/components/ui/card"

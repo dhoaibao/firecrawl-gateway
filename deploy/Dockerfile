@@ -1,5 +1,5 @@
 # Stage 1: install all workspace dependencies and build the monorepo
-FROM node:22-alpine AS builder
+FROM node:22.22.0-alpine AS builder
 
 WORKDIR /app
 COPY package*.json ./
@@ -16,7 +16,7 @@ RUN npm run build
 RUN npm prune --omit=dev
 
 # Stage 2: runtime
-FROM node:22-alpine
+FROM node:22.22.0-alpine
 
 WORKDIR /app
 

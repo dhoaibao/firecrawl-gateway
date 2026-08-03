@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react"
 import { Activity, ArrowRight, CheckCircle2, CircleAlert, Clock3, Copy, Gauge, Globe2, RefreshCw } from "lucide-react"
-import { Link } from "react-router-dom"
+import { Link } from "react-router"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"

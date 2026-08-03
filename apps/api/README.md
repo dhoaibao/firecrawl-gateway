@@ -6,7 +6,7 @@ NestJS/Fastify + TypeScript gateway with a React admin dashboard. The gateway la
 
 - **Backend**: NestJS 11 + Fastify + TypeScript
 - **Admin UI**: React + Vite + Tailwind CSS
-- **Build**: Multi-stage Docker (Node 22 Alpine)
+- **Build**: Multi-stage Docker (Node 22.22.0 Alpine)
 
 ## Routes
 

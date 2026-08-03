@@ -25,7 +25,10 @@
     "contracts:build": "turbo run build --filter=@firecrawl/contracts"
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.22.0"
+  },
+  "overrides": {
+    "find-my-way": "9.7.0"
   },
   "devDependencies": {
     "turbo": "^2.10.8"

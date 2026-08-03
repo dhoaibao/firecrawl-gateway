@@ -1,5 +1,6 @@
 import { useEffect, useState, type ComponentType } from "react"
-import { Navigate, Outlet, RouterProvider, createBrowserRouter, type RouteObject, useLocation, useNavigate } from "react-router-dom"
+import { Navigate, Outlet, createBrowserRouter, type RouteObject, useLocation, useNavigate } from "react-router"
+import { RouterProvider } from "react-router/dom"
 import { useAuth } from "@/contexts/AuthContext"
 import { ToastProvider } from "@/contexts/ToastContext"
 import ErrorBoundary from "@/components/ErrorBoundary"

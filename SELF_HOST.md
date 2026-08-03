@@ -178,7 +178,7 @@ database, and use forward-only migrations. See
 
 ## Development
 
-Node 22 or newer is required. From the repository root:
+Node 22.22.0 or newer is required. From the repository root:
 
 ```bash
 npm ci
