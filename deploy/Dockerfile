@@ -11,6 +11,7 @@ RUN npm ci
 
 COPY apps/ apps/
 COPY packages/ packages/
+COPY turbo.json ./
 RUN npm run build
 RUN npm prune --omit=dev
 

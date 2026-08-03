@@ -3,24 +3,31 @@
   "version": "1.0.0",
   "private": true,
   "description": "Modular Firecrawl gateway and admin dashboard",
-  "workspaces": ["apps/*", "packages/*"],
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "packageManager": "npm@11.12.1",
   "scripts": {
-    "typecheck": "npm run typecheck --workspace @firecrawl/contracts && npm run build --workspace @firecrawl/contracts && npm run typecheck --workspace @firecrawl/api && npm run typecheck --workspace @firecrawl/web",
-    "lint": "npm run build --workspace @firecrawl/contracts && npm run lint --workspace @firecrawl/contracts && npm run lint --workspace @firecrawl/api && npm run lint --workspace @firecrawl/web",
-    "test": "npm run build --workspace @firecrawl/contracts && npm run test --workspace @firecrawl/contracts && npm run test --workspace @firecrawl/api && npm run test --workspace @firecrawl/web",
-    "build": "npm run build --workspace @firecrawl/contracts && npm run build --workspace @firecrawl/api && npm run build --workspace @firecrawl/web",
-    "api:typecheck": "npm run build --workspace @firecrawl/contracts && npm run typecheck --workspace @firecrawl/api",
-    "api:test": "npm run build --workspace @firecrawl/contracts && npm run test --workspace @firecrawl/api",
-    "api:build": "npm run build --workspace @firecrawl/contracts && npm run build --workspace @firecrawl/api",
-    "web:typecheck": "npm run typecheck --workspace @firecrawl/web",
-    "web:lint": "npm run lint --workspace @firecrawl/web",
-    "web:build": "npm run build --workspace @firecrawl/web",
-    "contracts:typecheck": "npm run typecheck --workspace @firecrawl/contracts",
-    "contracts:lint": "npm run lint --workspace @firecrawl/contracts",
-    "contracts:test": "npm run test --workspace @firecrawl/contracts",
-    "contracts:build": "npm run build --workspace @firecrawl/contracts"
+    "typecheck": "turbo run typecheck",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "build": "turbo run build",
+    "api:typecheck": "turbo run typecheck --filter=@firecrawl/api",
+    "api:test": "turbo run test --filter=@firecrawl/api",
+    "api:build": "turbo run build --filter=@firecrawl/api",
+    "web:typecheck": "turbo run typecheck --filter=@firecrawl/web",
+    "web:lint": "turbo run lint --filter=@firecrawl/web",
+    "web:build": "turbo run build --filter=@firecrawl/web",
+    "contracts:typecheck": "turbo run typecheck --filter=@firecrawl/contracts",
+    "contracts:lint": "turbo run lint --filter=@firecrawl/contracts",
+    "contracts:test": "turbo run test --filter=@firecrawl/contracts",
+    "contracts:build": "turbo run build --filter=@firecrawl/contracts"
   },
   "engines": {
     "node": ">=22.0.0"
+  },
+  "devDependencies": {
+    "turbo": "^2.10.8"
   }
 }
