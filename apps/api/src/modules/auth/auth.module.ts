@@ -3,6 +3,7 @@ import { EmailModule } from "../email/email.module";
 import { APP_GUARD } from "@nestjs/core";
 import { AuthAttemptService } from "./application/auth-attempt.service";
 import { AuthService } from "./application/auth.service";
+import { BootstrapAdminService } from "./application/bootstrap-admin.service";
 import { PrismaSessionStore } from "./infrastructure/prisma-session.store";
 import { AuthController } from "./presentation/auth.controller";
 import { AuthEnabledGuard } from "./presentation/auth-enabled.guard";
@@ -14,6 +15,7 @@ import { CsrfGuard } from "./presentation/csrf.guard";
   controllers: [AuthController],
   providers: [
     AuthService,
+    BootstrapAdminService,
     AuthAttemptService,
     AuthEnabledGuard,
     AuthGuard,

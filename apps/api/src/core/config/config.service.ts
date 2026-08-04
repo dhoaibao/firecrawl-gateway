@@ -14,6 +14,10 @@ export class AppConfigService {
     return this.config.get("ADMIN_EMAIL", { infer: true });
   }
 
+  get adminPassword(): string {
+    return this.config.get("ADMIN_PASSWORD", { infer: true });
+  }
+
   get authEncryptionKey(): string {
     return this.config.get("AUTH_ENCRYPTION_KEY", { infer: true });
   }

@@ -18,6 +18,7 @@ describe("validateEnvironment", () => {
       AUTH_ENABLED: true,
       REGISTRATION_ENABLED: true,
       ADMIN_EMAIL: "",
+      ADMIN_PASSWORD: "",
       SESSION_SECRET: "development-only-session-secret-change-me",
       SESSION_SECURE: "auto",
       AUTH_ENCRYPTION_KEY: "0".repeat(64),

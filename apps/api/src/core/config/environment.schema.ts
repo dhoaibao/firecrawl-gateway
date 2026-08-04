@@ -22,6 +22,7 @@ export const environmentSchema = z.object({
   AUTH_ENABLED: booleanValue.default(true),
   REGISTRATION_ENABLED: booleanValue.default(true),
   ADMIN_EMAIL: z.union([z.string().email(), z.literal("")]).default(""),
+  ADMIN_PASSWORD: z.string().default(""),
   SESSION_SECRET: z.string().min(32).default(DEVELOPMENT_SESSION_SECRET),
   SESSION_SECURE: z.union([booleanValue, z.literal("auto")]).default("auto"),
   AUTH_ENCRYPTION_KEY: z.string().regex(/^[0-9a-fA-F]{64}$/, "AUTH_ENCRYPTION_KEY must be 32-byte hex").default(DEVELOPMENT_ENCRYPTION_KEY),
