@@ -2,7 +2,7 @@
 set -eu
 
 run_as_gateway() {
-  exec su -s /bin/sh gateway -c 'exec "$0" "$@"' "$@"
+  exec "$@"
 }
 
 case "${1:-api}" in

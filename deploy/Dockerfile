@@ -37,6 +37,8 @@ COPY --from=builder --chown=gateway:gateway /app/packages/contracts/dist/ ./pack
 COPY --chown=root:root deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod 755 /usr/local/bin/docker-entrypoint.sh
 
+USER gateway
+
 ENV NODE_ENV=production
 ENV PORT=8080
 ARG BUILD_VERSION=unknown
