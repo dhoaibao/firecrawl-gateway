@@ -213,8 +213,6 @@ BEGIN
   END IF;
 END $$;
 
-INSERT INTO free_tier_policy (id) VALUES ('default') ON CONFLICT (id) DO NOTHING;
-
 CREATE UNIQUE INDEX IF NOT EXISTS account_personal_owner_unique
   ON account_memberships(user_id)
   WHERE role = 'owner' AND account_id LIKE 'personal:%';
@@ -354,3 +352,9 @@ GRANT SELECT, INSERT ON usage_events TO firecrawl_gateway_operator;
 GRANT SELECT, INSERT, UPDATE, DELETE ON auth_tokens, mfa_factors, mfa_recovery_codes,
   auth_sessions, security_events, email_outbox, email_delivery_events
   TO firecrawl_gateway_operator;
+
+-- free_tier_policy is FORCE RLS and only the operator role may write it.
+-- Run the idempotent seed after its policy and grant are in place.
+SET ROLE firecrawl_gateway_operator;
+INSERT INTO free_tier_policy (id) VALUES ('default') ON CONFLICT (id) DO NOTHING;
+RESET ROLE;
