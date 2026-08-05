@@ -11,6 +11,7 @@ import { configureFastifyHttp } from "./common/http/fastify-http";
 import { AppConfigService } from "./core/config/config.service";
 import { validateEnvironment } from "./core/config/environment.schema";
 import { PrismaSessionStore } from "./modules/auth/infrastructure/prisma-session.store";
+import { rootLogger } from "./logger";
 
 async function bootstrap(): Promise<void> {
   const environment = validateEnvironment(process.env);
@@ -18,30 +19,40 @@ async function bootstrap(): Promise<void> {
     AppModule,
     new FastifyAdapter({ trustProxy: environment.TRUST_PROXY }),
   );
-  const config = app.get(AppConfigService);
-  configureFastifyHttp(app, config.corsOrigins);
+  try {
+    const config = app.get(AppConfigService);
+    configureFastifyHttp(app, config.corsOrigins);
 
-  if (config.authEnabled) {
-    await app.register(fastifyCookie as unknown as Parameters<typeof app.register>[0]);
-    await app.register(fastifySession as unknown as Parameters<typeof app.register>[0], {
-      secret: config.sessionSecret,
-      cookieName: config.sessionCookieName,
-      cookiePrefix: "s:",
-      store: app.get(PrismaSessionStore),
-      saveUninitialized: false,
-      rolling: false,
-      cookie: {
-        maxAge: 30 * 24 * 60 * 60 * 1000,
-        httpOnly: true,
-        secure: config.sessionSecure,
-        sameSite: "lax",
-        path: "/",
-      },
+    if (config.authEnabled) {
+      await app.register(fastifyCookie as unknown as Parameters<typeof app.register>[0]);
+      await app.register(fastifySession as unknown as Parameters<typeof app.register>[0], {
+        secret: config.sessionSecret,
+        cookieName: config.sessionCookieName,
+        cookiePrefix: "s:",
+        store: app.get(PrismaSessionStore),
+        saveUninitialized: false,
+        rolling: false,
+        cookie: {
+          maxAge: 30 * 24 * 60 * 60 * 1000,
+          httpOnly: true,
+          secure: config.sessionSecure,
+          sameSite: "lax",
+          path: "/",
+        },
+      });
+    }
+
+    app.enableShutdownHooks();
+    await app.listen({ host: config.host, port: config.port });
+  } catch (error) {
+    await app.close().catch((closeError: unknown) => {
+      rootLogger.error({ err: closeError }, "API cleanup after startup failure failed");
     });
+    throw error;
   }
-
-  app.enableShutdownHooks();
-  await app.listen({ host: config.host, port: config.port });
 }
 
-void bootstrap();
+void bootstrap().catch((error: unknown) => {
+  rootLogger.fatal({ err: error }, "API failed to start");
+  process.exit(1);
+});
