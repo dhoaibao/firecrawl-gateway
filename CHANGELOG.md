@@ -11,5 +11,6 @@ All notable repository changes are documented here. This file follows the struct
 
 ### Changed
 
+- Refreshed the canonical agent guidance and Claude redirect.
 - Replaced the retired deployment workflow with typecheck-only CI for pull requests and pushes to `main`.
 - Expanded the README with the gateway's architecture, operator use cases, routing behavior, and deployment boundaries.
