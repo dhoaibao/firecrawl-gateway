@@ -99,6 +99,18 @@ export class ProxyService {
       };
       await this.audit.appendAudit(entry);
     };
+    const sendEarlyResponse = async (
+      backendUsed: string,
+      statusCode: number,
+      fallbackUsed: boolean,
+      fallbackReason: string,
+      payload: unknown,
+    ) => {
+      await appendAuditEntry(backendUsed, statusCode, fallbackUsed, fallbackReason).catch(
+        () => undefined,
+      );
+      reply.code(statusCode).send(payload);
+    };
 
     const [defaultRouteMode, selfHostedSetting] = await Promise.all([
       this.settings.getDefaultRouteMode(this.configDefaultRouteMode()),
@@ -112,15 +124,19 @@ export class ProxyService {
       const authHeader = String(request.headers.authorization || "");
       const match = authHeader.match(/^Bearer\s+(.+)$/i);
       if (!match) {
-        await appendAuditEntry("none", 401, false, "Missing or invalid API key");
-        reply.code(401).send({ success: false, error: "Missing or invalid API key" });
+        await sendEarlyResponse("none", 401, false, "Missing or invalid API key", {
+          success: false,
+          error: "Missing or invalid API key",
+        });
         return;
       }
       apiKey = match[1];
       const authenticated = await this.keys.validateApiKey(apiKey);
       if (!authenticated) {
-        await appendAuditEntry("none", 401, false, "Invalid or revoked API key");
-        reply.code(401).send({ success: false, error: "Invalid or revoked API key" });
+        await sendEarlyResponse("none", 401, false, "Invalid or revoked API key", {
+          success: false,
+          error: "Invalid or revoked API key",
+        });
         return;
       }
       void this.keys.touchApiKey(authenticated.id).catch(() => undefined);
@@ -128,21 +144,22 @@ export class ProxyService {
 
     const bodyBuffer = this.getBodyBuffer(request);
     if (bodyBuffer.length > this.config.maxBodyBytes) {
-      await appendAuditEntry(
+      await sendEarlyResponse(
         "none",
         413,
         false,
         "Request body is too large for gateway inspection",
+        { success: false, error: "Request body is too large for gateway inspection" },
       );
-      reply
-        .code(413)
-        .send({ success: false, error: "Request body is too large for gateway inspection" });
       return;
     }
     const { json, parseError } = inspectBody(request.body, request.headers);
     if (parseError) {
-      await appendAuditEntry("none", 400, false, parseError);
-      reply.code(400).send({ success: false, error: "Invalid JSON body", details: parseError });
+      await sendEarlyResponse("none", 400, false, parseError, {
+        success: false,
+        error: "Invalid JSON body",
+        details: parseError,
+      });
       return;
     }
     const targetUrls = collectTargetUrls(json);
@@ -162,16 +179,14 @@ export class ProxyService {
     )
       cloudApiKeys = await this.getCloudApiKeys();
     if (initialBackend === "cloud" && !cloudApiKeys.length) {
-      await appendAuditEntry("none", 502, false, "No Firecrawl Cloud API key configured");
-      reply.code(502).send({
+      await sendEarlyResponse("none", 502, false, "No Firecrawl Cloud API key configured", {
         success: false,
         error: "No Firecrawl Cloud API key configured. Add one in Settings.",
       });
       return;
     }
     if (initialBackend === "reject") {
-      await appendAuditEntry("none", 409, false, needsCloud.reason);
-      reply.code(409).send({
+      await sendEarlyResponse("none", 409, false, needsCloud.reason, {
         success: false,
         error: "This request requires Firecrawl Cloud, but route mode is self-hosted-only.",
         reason: needsCloud.reason,
@@ -233,8 +248,7 @@ export class ProxyService {
             this.backendUrl("self-hosted", originalUrl, selfHostedBaseUrl),
           );
         } else {
-          await appendAuditEntry("cloud", 429, false, "No available Firecrawl Cloud credit pool");
-          reply.code(429).send({
+          await sendEarlyResponse("cloud", 429, false, "No available Firecrawl Cloud credit pool", {
             success: false,
             error:
               "No available Firecrawl Cloud credit pool. Refresh credit usage or try again later.",

@@ -132,6 +132,82 @@ describe("ProxyService", () => {
     expect(reply.send).toHaveBeenCalledTimes(1);
   });
 
+  it("persists the audit insert before sending an early 409 rejection response", async () => {
+    const events: string[] = [];
+    let resolveAudit!: () => void;
+    const auditDone = new Promise<void>((resolve) => {
+      resolveAudit = resolve;
+    });
+    const audit = {
+      appendAudit: vi.fn(async () => {
+        events.push("audit-started");
+        await auditDone;
+        events.push("audit-settled");
+      }),
+    };
+    const service = makeService(makeSettings(), audit);
+    const reply = makeReply(events);
+    const req = makeRequest({ raw: { url: "/v1/agent" }, url: "/v1/agent" });
+
+    const handled = service.handle(req, reply as never);
+    for (let i = 0; i < 10 && events.length < 1; i++) await Promise.resolve();
+
+    expect(events).toEqual(["audit-started"]);
+    expect(reply.send).not.toHaveBeenCalled();
+
+    resolveAudit();
+    await handled;
+    expect(reply.code).toHaveBeenCalledWith(409);
+    expect(events).toEqual(["audit-started", "audit-settled", "reply-sent"]);
+  });
+
+  it("persists the audit insert before sending an early 401 response", async () => {
+    const events: string[] = [];
+    let resolveAudit!: () => void;
+    const auditDone = new Promise<void>((resolve) => {
+      resolveAudit = resolve;
+    });
+    const audit = {
+      appendAudit: vi.fn(async () => {
+        events.push("audit-started");
+        await auditDone;
+        events.push("audit-settled");
+      }),
+    };
+    const authConfig = { ...config, authEnabled: true };
+    const service = new ProxyService(
+      authConfig as never,
+      makeSettings() as never,
+      { validateApiKey: vi.fn() } as never,
+      audit as never,
+      makeCredits() as never,
+    );
+    const reply = makeReply(events);
+    const req = makeRequest({ headers: {} });
+
+    const handled = service.handle(req, reply as never);
+    for (let i = 0; i < 10 && events.length < 1; i++) await Promise.resolve();
+
+    expect(events).toEqual(["audit-started"]);
+    expect(reply.send).not.toHaveBeenCalled();
+
+    resolveAudit();
+    await handled;
+    expect(reply.code).toHaveBeenCalledWith(401);
+    expect(events).toEqual(["audit-started", "audit-settled", "reply-sent"]);
+  });
+
+  it("does not fail early rejection response when audit insert unexpectedly rejects", async () => {
+    const audit = { appendAudit: vi.fn().mockRejectedValue(new Error("audit database down")) };
+    const service = makeService(makeSettings(), audit);
+    const reply = makeReply();
+    const req = makeRequest({ raw: { url: "/v1/agent" }, url: "/v1/agent" });
+
+    await expect(service.handle(req, reply as never)).resolves.toBeUndefined();
+    expect(reply.code).toHaveBeenCalledWith(409);
+    expect(reply.send).toHaveBeenCalledTimes(1);
+  });
+
   it("loads route mode and self-hosted URL concurrently without changing resolution", async () => {
     let inFlight = 0;
     let peakInFlight = 0;
