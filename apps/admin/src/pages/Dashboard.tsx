@@ -124,6 +124,7 @@ export default function Dashboard() {
   const creditUsageFetchingRef = useRef(false);
   const entriesRef = useRef<AuditEntry[]>([]);
   const lastFullRefreshAtRef = useRef(0);
+  const lastCreditUsageRefreshAtRef = useRef(0);
 
   useEffect(() => {
     document.title = "Dashboard — Firecrawl Gateway";
@@ -139,11 +140,20 @@ export default function Dashboard() {
 
   const mergeEntries = useCallback(
     (incoming: AuditEntry[]) => {
-      const byId = new Map<string, AuditEntry>();
-      for (const entry of entriesRef.current) byId.set(entry.id, entry);
-      for (const entry of incoming) byId.set(entry.id, entry);
-      const merged = [...byId.values()]
-        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      if (incoming.length === 0) return;
+      const current = entriesRef.current;
+      const seenIds = new Set(current.map((entry) => entry.id));
+      const newEntries: AuditEntry[] = [];
+      for (const entry of incoming) {
+        if (!seenIds.has(entry.id)) {
+          seenIds.add(entry.id);
+          newEntries.push(entry);
+        }
+      }
+      if (newEntries.length === 0) return;
+
+      const merged = [...newEntries, ...current]
+        .sort((a, b) => (b.created_at > a.created_at ? 1 : b.created_at < a.created_at ? -1 : 0))
         .slice(0, 500);
       replaceEntries(merged);
     },
@@ -178,6 +188,7 @@ export default function Dashboard() {
   const fetchCreditUsage = useCallback(async () => {
     if (creditUsageFetchingRef.current) return;
     creditUsageFetchingRef.current = true;
+    lastCreditUsageRefreshAtRef.current = Date.now();
     try {
       const json = await api.get<{ data: CreditUsageItem[] }>("/admin/api/settings/credit-usage");
       setCreditUsage(Array.isArray(json.data) ? json.data : []);
@@ -281,12 +292,15 @@ export default function Dashboard() {
     let interval: number | undefined;
     const refreshWhenVisible = () => {
       if (live && !document.hidden) {
+        const now = Date.now();
         // Escalate to a full refresh at most every 60s so server-side
         // deletions and prunes still converge; the timestamp check
         // self-heals after skipped or drifted ticks.
-        const full = Date.now() - lastFullRefreshAtRef.current >= 60_000;
+        const full = now - lastFullRefreshAtRef.current >= 60_000;
         void fetchData(full ? { full: true } : undefined);
-        void fetchCreditUsage();
+        if (now - lastCreditUsageRefreshAtRef.current >= 30_000) {
+          void fetchCreditUsage();
+        }
       }
     };
     if (live) {
@@ -303,6 +317,15 @@ export default function Dashboard() {
 
   const filteredEntries = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
+    const now = new Date();
+    const todayDate = now.getDate();
+    const todayMonth = now.getMonth();
+    const todayYear = now.getFullYear();
+    let weekAgo: Date | undefined;
+    if (dateRange === "week") {
+      weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      weekAgo.setHours(0, 0, 0, 0);
+    }
 
     return entries.filter((entry) => {
       if (
@@ -331,28 +354,25 @@ export default function Dashboard() {
       if (statusFilter === "5xx" && !(entry.status_code >= 500 && entry.status_code < 600))
         return false;
 
-      const entryDate = new Date(entry.created_at);
-      const now = new Date();
       if (dateRange === "today") {
+        const entryDate = new Date(entry.created_at);
         if (
-          entryDate.getDate() !== now.getDate() ||
-          entryDate.getMonth() !== now.getMonth() ||
-          entryDate.getFullYear() !== now.getFullYear()
+          entryDate.getDate() !== todayDate ||
+          entryDate.getMonth() !== todayMonth ||
+          entryDate.getFullYear() !== todayYear
         ) {
           return false;
         }
-      } else if (dateRange === "week") {
-        const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-        weekAgo.setHours(0, 0, 0, 0);
+      } else if (dateRange === "week" && weekAgo) {
+        const entryDate = new Date(entry.created_at);
         if (entryDate < weekAgo) return false;
       } else if (dateRange === "month") {
-        if (
-          entryDate.getMonth() !== now.getMonth() ||
-          entryDate.getFullYear() !== now.getFullYear()
-        ) {
+        const entryDate = new Date(entry.created_at);
+        if (entryDate.getMonth() !== todayMonth || entryDate.getFullYear() !== todayYear) {
           return false;
         }
       } else if (dateRange === "custom") {
+        const entryDate = new Date(entry.created_at);
         if (dayFilter !== "all") {
           const day = String(entryDate.getDate()).padStart(2, "0");
           if (day !== dayFilter) return false;
