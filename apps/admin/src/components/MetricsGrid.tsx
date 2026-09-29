@@ -9,6 +9,10 @@ interface MetricsGridProps {
   metrics: AuditMetrics;
   loading: boolean;
   creditUsage?: CreditUsageItem[];
+  /** True when metrics cover the whole log; false when derived from filtered loaded entries. */
+  allTime?: boolean;
+  /** True when filters narrow the server-side totals. */
+  filtered?: boolean;
 }
 
 function MetricsSkeleton() {
@@ -31,7 +35,13 @@ function MetricsSkeleton() {
   );
 }
 
-export default function MetricsGrid({ metrics, loading, creditUsage }: MetricsGridProps) {
+export default function MetricsGrid({
+  metrics,
+  loading,
+  creditUsage,
+  allTime = false,
+  filtered = false,
+}: MetricsGridProps) {
   if (loading) {
     return <MetricsSkeleton />;
   }
@@ -58,25 +68,25 @@ export default function MetricsGrid({ metrics, loading, creditUsage }: MetricsGr
   const cards = [
     {
       label: "Total Requests",
-      value: metrics.total,
-      detail: `${metrics.total} visible`,
+      value: metrics.total.toLocaleString(),
+      detail: allTime ? (filtered ? "matching filters" : "all time") : `${metrics.total} visible`,
       icon: Activity,
     },
     {
       label: "Success Rate",
       value: formatPercent(metrics.successShare),
-      detail: `${metrics.successCount} successful`,
+      detail: `${metrics.successCount.toLocaleString()} successful`,
       icon: Radio,
     },
     {
       label: "Self-hosted Requests",
-      value: metrics.selfHosted,
+      value: metrics.selfHosted.toLocaleString(),
       detail: "external instance traffic",
       icon: Server,
     },
     {
       label: "Cloud Traffic",
-      value: metrics.cloud,
+      value: metrics.cloud.toLocaleString(),
       detail: `${formatPercent(metrics.cloudShare)} of traffic`,
       icon: Cloud,
     },

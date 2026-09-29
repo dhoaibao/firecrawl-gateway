@@ -10,6 +10,7 @@ function makeAuditMock() {
     deleteAuditEntry: vi.fn().mockResolvedValue(true),
     deleteAuditEntriesByIds: vi.fn().mockResolvedValue(0),
     deleteAuditEntries: vi.fn().mockResolvedValue(0),
+    readAuditStats: vi.fn().mockResolvedValue({}),
   };
 }
 
@@ -119,5 +120,99 @@ describe("AuditController data", () => {
       where: { createdAt: { gte: cursor } },
     });
     expect(entries.map((entry) => entry.id)).toEqual(["newer", "sibling", "older"]);
+  });
+});
+
+describe("AuditService readAuditStats", () => {
+  it("aggregates over the whole table without a row cap", async () => {
+    const queryRaw = vi.fn().mockResolvedValue([
+      {
+        total: 1900,
+        self_hosted: 400,
+        cloud: 1500,
+        fallbacks: 20,
+        success_count: 1700,
+        error_count: 150,
+        avg_duration_ms: 124,
+      },
+    ]);
+    const service = new AuditService({ $queryRaw: queryRaw } as unknown as PrismaService);
+
+    await expect(service.readAuditStats()).resolves.toMatchObject({ total: 1900, cloud: 1500 });
+    const sql = queryRaw.mock.calls[0][0] as { sql: string };
+    expect(sql.sql).not.toMatch(/LIMIT/i);
+    expect(sql.sql).not.toMatch(/^\s*WHERE/m);
+  });
+
+  it("returns zeros for an empty result", async () => {
+    const queryRaw = vi.fn().mockResolvedValue([]);
+    const service = new AuditService({ $queryRaw: queryRaw } as unknown as PrismaService);
+    await expect(service.readAuditStats()).resolves.toMatchObject({ total: 0, avg_duration_ms: 0 });
+  });
+
+  it("applies filters as parameterised conditions", async () => {
+    const queryRaw = vi.fn().mockResolvedValue([]);
+    const service = new AuditService({ $queryRaw: queryRaw } as unknown as PrismaService);
+    await service.readAuditStats({
+      backend: "cloud",
+      status: "4xx",
+      fallbackOnly: true,
+      slowOnly: true,
+      search: "50%_x",
+      range: "custom",
+      day: 3,
+      year: 2026,
+      timeZone: "Asia/Ho_Chi_Minh",
+    });
+    const q = queryRaw.mock.calls[0][0] as { sql: string; values: unknown[] };
+    expect(q.sql).toMatch(/^\s*WHERE/m);
+    expect(q.sql).toContain("backend_used = ?");
+    expect(q.sql).toContain("fallback_used = true");
+    expect(q.sql).toContain("duration_ms >= 1000");
+    expect(q.values).toContain("cloud");
+    expect(q.values).toContain("Asia/Ho_Chi_Minh");
+    expect(q.values).toContain("%50\\%\\_x%");
+    expect(q.values).toContain(3);
+    expect(q.values).toContain(2026);
+  });
+
+  it("subtracts the week as absolute hours to match the dashboard across DST", async () => {
+    const queryRaw = vi.fn().mockResolvedValue([]);
+    const service = new AuditService({ $queryRaw: queryRaw } as unknown as PrismaService);
+    await service.readAuditStats({ range: "week", timeZone: "America/New_York" });
+    const q = queryRaw.mock.calls[0][0] as { sql: string };
+    expect(q.sql).toContain("interval '168 hours'");
+    expect(q.sql).not.toContain("interval '7 days'");
+  });
+
+  it("exposes stats through the controller with parsed filters", async () => {
+    const audit = makeAuditMock();
+    audit.readAuditStats.mockResolvedValue({ total: 1 });
+    const controller = new AuditController(audit as unknown as AuditService);
+    await expect(
+      controller.stats({
+        backend: "cloud",
+        range: "today",
+        tz: "Asia/Ho_Chi_Minh",
+        fallback: "true",
+      }),
+    ).resolves.toEqual({ data: { total: 1 } });
+    expect(audit.readAuditStats).toHaveBeenCalledWith(
+      expect.objectContaining({
+        backend: "cloud",
+        range: "today",
+        timeZone: "Asia/Ho_Chi_Minh",
+        fallbackOnly: true,
+      }),
+    );
+  });
+
+  it("rejects invalid filter params", async () => {
+    const audit = makeAuditMock();
+    const controller = new AuditController(audit as unknown as AuditService);
+    await expect(controller.stats({ backend: "nope" })).rejects.toBeDefined();
+    await expect(controller.stats({ day: "40" })).rejects.toBeDefined();
+    await expect(controller.stats({ tz: "Not/AZone; DROP" })).rejects.toBeDefined();
+    expect(audit.readAuditStats).not.toHaveBeenCalled();
   });
 });

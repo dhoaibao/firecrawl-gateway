@@ -1,9 +1,42 @@
 import { Body, Controller, Delete, Get, Param, Query, UseGuards } from "@nestjs/common";
 import { apiError } from "../common/http";
 import { AuthGuard } from "../auth/guards";
-import { AuditService, type DeleteFilter } from "./audit.service";
+import { AuditService, type AuditStatsFilter, type DeleteFilter } from "./audit.service";
+import { isValidTimeZone, type StatsRange } from "./audit-stats";
 
 const validFilters = ["today", "week", "month", "all"] as const;
+
+function intParam(value: string | undefined, name: string, min: number, max: number) {
+  if (value === undefined || value === "") return undefined;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < min || n > max) apiError(400, `${name} is invalid`);
+  return n;
+}
+
+function oneOf<T extends string>(value: string | undefined, name: string, allowed: readonly T[]) {
+  if (value === undefined || value === "") return undefined;
+  if (!allowed.includes(value as T)) apiError(400, `${name} is invalid`);
+  return value as T;
+}
+
+export function parseStatsFilter(query: Record<string, string | undefined>): AuditStatsFilter {
+  const search = query.search;
+  if (search !== undefined && search.length > 200) apiError(400, "search is too long");
+  const tz = query.tz === undefined || query.tz === "" ? undefined : query.tz;
+  if (tz !== undefined && !isValidTimeZone(tz)) apiError(400, "tz is invalid");
+  return {
+    backend: oneOf(query.backend, "backend", ["self-hosted", "cloud"] as const),
+    status: oneOf(query.status, "status", ["2xx", "4xx", "5xx"] as const),
+    fallbackOnly: query.fallback === "true",
+    slowOnly: query.slow === "true",
+    search,
+    range: oneOf<StatsRange>(query.range, "range", ["all", "today", "week", "month", "custom"]),
+    day: intParam(query.day, "day", 1, 31),
+    month: intParam(query.month, "month", 1, 12),
+    year: intParam(query.year, "year", 1970, 9999),
+    timeZone: tz,
+  };
+}
 
 @Controller("admin/api")
 @UseGuards(AuthGuard)
@@ -34,6 +67,11 @@ export class AuditController {
     if (!validFilters.includes(filter as (typeof validFilters)[number]))
       apiError(400, "Invalid filter. Use: today, week, month, or all");
     return { success: true, deleted: await this.audit.deleteAuditEntries(filter as DeleteFilter) };
+  }
+
+  @Get("stats")
+  async stats(@Query() query: Record<string, string | undefined> = {}) {
+    return { data: await this.audit.readAuditStats(parseStatsFilter(query)) };
   }
 
   @Get("data")

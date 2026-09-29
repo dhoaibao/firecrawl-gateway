@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { AuditEntry } from "@/types";
+import type { AuditEntry, AuditStats } from "@/types";
 
 const bucketCount = 24;
 
@@ -50,6 +50,22 @@ export function buildRequestBuckets(entries: AuditEntry[]): RequestBucket[] {
   });
 
   return buckets;
+}
+
+export function statsToMetrics(stats: AuditStats): AuditMetrics {
+  const { total } = stats;
+  return {
+    total,
+    selfHosted: stats.self_hosted,
+    cloud: stats.cloud,
+    fallbacks: stats.fallbacks,
+    avgDuration: stats.avg_duration_ms,
+    successCount: stats.success_count,
+    errorCount: stats.error_count,
+    successShare: total ? (stats.success_count / total) * 100 : 0,
+    cloudShare: total ? (stats.cloud / total) * 100 : 0,
+    fallbackShare: total ? (stats.fallbacks / total) * 100 : 0,
+  };
 }
 
 export function useAuditMetrics(entries: AuditEntry[]): AuditMetrics {

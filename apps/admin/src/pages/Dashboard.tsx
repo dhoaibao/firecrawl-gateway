@@ -29,7 +29,12 @@ import {
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { useToast } from "@/hooks/useToast";
-import { useAuditMetrics, formatPercent, buildRequestBuckets } from "@/hooks/useAuditMetrics";
+import {
+  useAuditMetrics,
+  statsToMetrics,
+  formatPercent,
+  buildRequestBuckets,
+} from "@/hooks/useAuditMetrics";
 import { RequestVolumeChart } from "@/components/RequestVolumeChart";
 import { StatusCodeChart } from "@/components/StatusCodeChart";
 import { TopEndpointsChart } from "@/components/TopEndpointsChart";
@@ -40,7 +45,14 @@ import MetricsGrid from "@/components/MetricsGrid";
 import FilterBar from "@/components/FilterBar";
 import DeleteHistoryDialog from "@/components/DeleteHistoryDialog";
 import { useConfirmDialog } from "@/components/ConfirmDialog";
-import type { AuditEntry, BackendFilter, StatusFilter, DateRange, CreditUsageItem } from "@/types";
+import type {
+  AuditEntry,
+  BackendFilter,
+  StatusFilter,
+  DateRange,
+  CreditUsageItem,
+  AuditStats,
+} from "@/types";
 
 const datePresets: Array<{ label: string; value: DateRange }> = [
   { label: "All", value: "all" },
@@ -117,10 +129,15 @@ export default function Dashboard() {
   const [deleteFilter, setDeleteFilter] = useState<"today" | "week" | "month" | "all">("today");
   const [deleting, setDeleting] = useState(false);
   const [creditUsage, setCreditUsage] = useState<CreditUsageItem[]>([]);
+  // Stats are tagged with the filter query that produced them so a stale or
+  // failed response is never shown under a different filter label.
+  const [statsState, setStatsState] = useState<{ query: string; data: AuditStats } | null>(null);
   const [selectedEntry, setSelectedEntry] = useState<AuditEntry | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const fetchingRef = useRef(false);
+  const statsQueryRef = useRef("");
+  const statsSeqRef = useRef(0);
   const creditUsageFetchingRef = useRef(false);
   const entriesRef = useRef<AuditEntry[]>([]);
   const lastFullRefreshAtRef = useRef(0);
@@ -140,7 +157,7 @@ export default function Dashboard() {
 
   const mergeEntries = useCallback(
     (incoming: AuditEntry[]) => {
-      if (incoming.length === 0) return;
+      if (incoming.length === 0) return 0;
       const current = entriesRef.current;
       const seenIds = new Set(current.map((entry) => entry.id));
       const newEntries: AuditEntry[] = [];
@@ -150,14 +167,40 @@ export default function Dashboard() {
           newEntries.push(entry);
         }
       }
-      if (newEntries.length === 0) return;
+      if (newEntries.length === 0) return 0;
 
       const merged = [...newEntries, ...current]
         .sort((a, b) => (b.created_at > a.created_at ? 1 : b.created_at < a.created_at ? -1 : 0))
         .slice(0, 500);
       replaceEntries(merged);
+      return newEntries.length;
     },
     [replaceEntries],
+  );
+
+  const loadStats = useCallback(
+    async (options?: { notify?: boolean }) => {
+      const requested = statsQueryRef.current;
+      const seq = ++statsSeqRef.current;
+      try {
+        const json = await api.get<{ data: AuditStats }>(
+          `/admin/api/stats${requested ? `?${requested}` : ""}`,
+        );
+        // Only the latest request may update the cards (guards out-of-order responses).
+        if (seq === statsSeqRef.current && json.data)
+          setStatsState({ query: requested, data: json.data });
+      } catch (err) {
+        if (seq === statsSeqRef.current) {
+          // Never keep old totals under a filter whose latest refresh failed;
+          // the cards fall back to the loaded entries (labelled "visible").
+          setStatsState(null);
+          if (options?.notify) {
+            addToast(err instanceof Error ? err.message : "Failed to load totals", "error");
+          }
+        }
+      }
+    },
+    [addToast],
   );
 
   const fetchData = useCallback(
@@ -170,10 +213,14 @@ export default function Dashboard() {
         const query = since ? `?since=${encodeURIComponent(since)}` : "";
         const json = await api.get<{ data: AuditEntry[] }>(`/admin/api/data${query}`);
         const incoming = Array.isArray(json.data) ? json.data : [];
+        // The incremental cursor is inclusive, so `incoming` is non-empty even
+        // when idle; refresh totals only for genuinely new entries or a full refresh.
+        let changed = full;
         if (full) {
           replaceEntries(incoming);
           lastFullRefreshAtRef.current = Date.now();
-        } else mergeEntries(incoming);
+        } else changed = mergeEntries(incoming) > 0;
+        if (changed) void loadStats();
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Failed to load audit data";
         addToast(msg, "error");
@@ -182,7 +229,7 @@ export default function Dashboard() {
         setLoading(false);
       }
     },
-    [addToast, mergeEntries, replaceEntries],
+    [addToast, loadStats, mergeEntries, replaceEntries],
   );
 
   const fetchCreditUsage = useCallback(async () => {
@@ -315,6 +362,43 @@ export default function Dashboard() {
     };
   }, [fetchData, fetchCreditUsage, live]);
 
+  // Server-side aggregates mirroring the active filters, so the cards are not
+  // limited to the 500 entries loaded for the table.
+  const statsQuery = useMemo(() => {
+    const params = new URLSearchParams();
+    if (backendFilter) params.set("backend", backendFilter);
+    if (statusFilter) params.set("status", statusFilter);
+    if (fallbackOnly) params.set("fallback", "true");
+    if (slowOnly) params.set("slow", "true");
+    if (search.trim()) params.set("search", search.trim());
+    if (dateRange !== "all") {
+      params.set("range", dateRange);
+      params.set("tz", Intl.DateTimeFormat().resolvedOptions().timeZone);
+      if (dateRange === "custom") {
+        if (dayFilter !== "all") params.set("day", String(Number(dayFilter)));
+        if (monthFilter !== "all") params.set("month", String(Number(monthFilter)));
+        if (yearFilter !== "all") params.set("year", String(Number(yearFilter)));
+      }
+    }
+    return params.toString();
+  }, [
+    backendFilter,
+    statusFilter,
+    fallbackOnly,
+    slowOnly,
+    search,
+    dateRange,
+    dayFilter,
+    monthFilter,
+    yearFilter,
+  ]);
+
+  useEffect(() => {
+    statsQueryRef.current = statsQuery;
+    const timer = window.setTimeout(() => void loadStats({ notify: true }), search ? 300 : 0);
+    return () => window.clearTimeout(timer);
+  }, [statsQuery, search, loadStats]);
+
   const filteredEntries = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
     const now = new Date();
@@ -401,7 +485,7 @@ export default function Dashboard() {
     yearFilter,
   ]);
 
-  const metrics = useAuditMetrics(filteredEntries);
+  const filteredMetrics = useAuditMetrics(filteredEntries);
   const pageCount = Math.max(1, Math.ceil(filteredEntries.length / pageSize));
   const visiblePage = Math.min(currentPage, pageCount);
   const pageStart = filteredEntries.length ? (visiblePage - 1) * pageSize : 0;
@@ -501,6 +585,11 @@ export default function Dashboard() {
     statusFilter,
     search,
   ]);
+
+  // Cards use server-side totals for the active filters; the loaded list is capped at 500.
+  const currentStats = statsState?.query === statsQuery ? statsState.data : null;
+  const useAllTimeStats = currentStats !== null;
+  const metrics = currentStats ? statsToMetrics(currentStats) : filteredMetrics;
 
   const applySavedView = useCallback((view: "errors" | "fallbacks" | "slow") => {
     setDateRange("today");
@@ -714,7 +803,13 @@ export default function Dashboard() {
           </h2>
         </div>
 
-        <MetricsGrid metrics={metrics} loading={loading} creditUsage={creditUsage} />
+        <MetricsGrid
+          metrics={metrics}
+          loading={loading}
+          creditUsage={creditUsage}
+          allTime={useAllTimeStats}
+          filtered={activeFilters.length > 0}
+        />
 
         <div className="mt-4">
           <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">

@@ -2,6 +2,9 @@ import { Injectable } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import type { AuditEntry } from "../common/types";
+import { buildStatsWhere, statsQuery, type AuditStats, type AuditStatsFilter } from "./audit-stats";
+
+export type { AuditStats, AuditStatsFilter };
 
 export type DeleteFilter = "today" | "week" | "month" | "all";
 
@@ -70,6 +73,21 @@ export class AuditService {
       ...(since ? { where: { createdAt: { gte: since } } } : {}),
     });
     return rows.map(toEntry);
+  }
+
+  /** Aggregates over the whole audit log (not capped like readAuditEntries). */
+  async readAuditStats(filter: AuditStatsFilter = {}): Promise<AuditStats> {
+    const rows = await this.prisma.$queryRaw<AuditStats[]>(statsQuery(buildStatsWhere(filter)));
+    const row = rows[0];
+    return {
+      total: Number(row?.total ?? 0),
+      self_hosted: Number(row?.self_hosted ?? 0),
+      cloud: Number(row?.cloud ?? 0),
+      fallbacks: Number(row?.fallbacks ?? 0),
+      success_count: Number(row?.success_count ?? 0),
+      error_count: Number(row?.error_count ?? 0),
+      avg_duration_ms: Number(row?.avg_duration_ms ?? 0),
+    };
   }
 
   async deleteAuditEntry(id: string): Promise<boolean> {

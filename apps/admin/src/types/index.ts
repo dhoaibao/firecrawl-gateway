@@ -16,6 +16,17 @@ export interface AuditEntry {
   request_id?: string;
 }
 
+/** All-time audit aggregates computed server-side over the full log */
+export interface AuditStats {
+  total: number;
+  self_hosted: number;
+  cloud: number;
+  fallbacks: number;
+  success_count: number;
+  error_count: number;
+  avg_duration_ms: number;
+}
+
 /** Global API key record */
 export interface ApiKeyData {
   id: string;
