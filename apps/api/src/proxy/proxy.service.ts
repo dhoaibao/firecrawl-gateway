@@ -21,7 +21,12 @@ import {
   isFallbackEligible,
   requestNeedsCloud,
 } from "./policy";
-import { SettingsService, type RouteMode } from "../settings/settings.service";
+import {
+  SettingsService,
+  parseRouteMode,
+  type RouteMode,
+  type SettingRecord,
+} from "../settings/settings.service";
 import { ApiKeysService } from "../api-keys/api-keys.service";
 import { AuditService } from "../audit/audit.service";
 import {
@@ -44,6 +49,11 @@ const hopByHopHeaders = new Set([
   "host",
   "content-length",
 ]);
+const PROXY_SETTING_KEYS = [
+  "default_route_mode",
+  "self_hosted_firecrawl_url",
+  "firecrawl_api_keys",
+] as const;
 const RETRYABLE_CLOUD_STATUS = new Set([401, 402, 403, 429]);
 const CLOUD_CAPACITY_STATUS = new Set([402, 429]);
 
@@ -112,26 +122,31 @@ export class ProxyService {
       reply.code(statusCode).send(payload);
     };
 
-    const [defaultRouteMode, selfHostedSetting] = await Promise.all([
-      this.settings.getDefaultRouteMode(this.configDefaultRouteMode()),
-      this.settings.getSetting("self_hosted_firecrawl_url"),
+    // Settings and API-key validation are independent, so fetch them together.
+    const needsAuth = this.config.authEnabled && !request.admin;
+    const bearerMatch = needsAuth
+      ? String(request.headers.authorization || "").match(/^Bearer\s+(.+)$/i)
+      : null;
+    const [settingRecords, authenticated] = await Promise.all([
+      this.settings.getSettings(PROXY_SETTING_KEYS),
+      bearerMatch ? this.keys.validateApiKey(bearerMatch[1]) : null,
     ]);
-    const selfHostedBaseUrl = selfHostedSetting?.value?.replace(/\/+$/, "") || "";
-    routeMode = getRouteMode(originalUrl, request.headers, defaultRouteMode);
+    const selfHostedBaseUrl =
+      settingRecords.self_hosted_firecrawl_url?.value?.replace(/\/+$/, "") || "";
+    routeMode = getRouteMode(
+      originalUrl,
+      request.headers,
+      parseRouteMode(settingRecords.default_route_mode, this.configDefaultRouteMode()),
+    );
 
-    let apiKey: string | undefined;
-    if (this.config.authEnabled && !request.admin) {
-      const authHeader = String(request.headers.authorization || "");
-      const match = authHeader.match(/^Bearer\s+(.+)$/i);
-      if (!match) {
+    if (needsAuth) {
+      if (!bearerMatch) {
         await sendEarlyResponse("none", 401, false, "Missing or invalid API key", {
           success: false,
           error: "Missing or invalid API key",
         });
         return;
       }
-      apiKey = match[1];
-      const authenticated = await this.keys.validateApiKey(apiKey);
       if (!authenticated) {
         await sendEarlyResponse("none", 401, false, "Invalid or revoked API key", {
           success: false,
@@ -177,7 +192,7 @@ export class ProxyService {
         routeMode !== "self-hosted-only" &&
         isFallbackAllowed(routeMode, privacy))
     )
-      cloudApiKeys = await this.getCloudApiKeys();
+      cloudApiKeys = await this.getCloudApiKeys(settingRecords.firecrawl_api_keys);
     if (initialBackend === "cloud" && !cloudApiKeys.length) {
       await sendEarlyResponse("none", 502, false, "No Firecrawl Cloud API key configured", {
         success: false,
@@ -502,14 +517,15 @@ export class ProxyService {
       .send(result.body);
   }
 
-  private async getCloudApiKeys(): Promise<string[]> {
+  private async getCloudApiKeys(record: SettingRecord | null): Promise<string[]> {
     try {
-      const record = await this.settings.getSetting("firecrawl_api_keys");
       if (!record?.value) return [];
       const decrypted = decryptSettingValue(record.value, this.config.firecrawlKeysEncryptionKey);
       if (!decrypted.encrypted)
-        await this.settings.setSetting(
+        // Conditional: `record` may predate a concurrent admin update that must not be overwritten.
+        await this.settings.replaceSettingIfUnchanged(
           record.key,
+          record.value,
           encryptSettingValue(record.value, this.config.firecrawlKeysEncryptionKey),
         );
       const parsed = JSON.parse(decrypted.value) as unknown;

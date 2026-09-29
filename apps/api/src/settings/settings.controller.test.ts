@@ -55,6 +55,7 @@ describe("SettingsController creditUsage", () => {
         .fn()
         .mockResolvedValue({ key: "firecrawl_api_keys", value: JSON.stringify(rawKeys) }),
       setSetting: vi.fn().mockResolvedValue(undefined),
+      replaceSettingIfUnchanged: vi.fn().mockResolvedValue(true),
     };
     const credits = {
       refreshCreditUsageForKeys: vi.fn().mockResolvedValue([
@@ -71,10 +72,12 @@ describe("SettingsController creditUsage", () => {
     const controller = new SettingsController(settings as never, config as never, credits as never);
     await controller.creditUsage();
 
-    expect(settings.setSetting).toHaveBeenCalledWith(
+    expect(settings.replaceSettingIfUnchanged).toHaveBeenCalledWith(
       "firecrawl_api_keys",
+      JSON.stringify(rawKeys),
       expect.stringMatching(/^enc:v1:/),
     );
+    expect(settings.setSetting).not.toHaveBeenCalled();
     expect(credits.refreshCreditUsageForKeys).toHaveBeenCalledWith(rawKeys);
   });
 
@@ -85,5 +88,28 @@ describe("SettingsController creditUsage", () => {
 
     await expect(controller.creditUsage()).resolves.toEqual({ data: [] });
     expect(credits.refreshCreditUsageForKeys).not.toHaveBeenCalled();
+  });
+});
+
+describe("SettingsController list legacy migration", () => {
+  it("migrates a legacy plaintext key setting conditionally, not with an unconditional write", async () => {
+    const plaintext = JSON.stringify(["fc_test_key_1234567890abcdef"]);
+    const settings = {
+      listSettings: vi
+        .fn()
+        .mockResolvedValue([{ key: "firecrawl_api_keys", value: plaintext, updated_at: "" }]),
+      setSetting: vi.fn(),
+      replaceSettingIfUnchanged: vi.fn().mockResolvedValue(true),
+    };
+    const controller = new SettingsController(settings as never, config as never, {} as never);
+
+    await controller.list();
+
+    expect(settings.replaceSettingIfUnchanged).toHaveBeenCalledWith(
+      "firecrawl_api_keys",
+      plaintext,
+      expect.stringMatching(/^enc:v1:/),
+    );
+    expect(settings.setSetting).not.toHaveBeenCalled();
   });
 });

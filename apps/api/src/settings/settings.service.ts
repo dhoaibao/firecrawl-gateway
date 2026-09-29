@@ -15,6 +15,16 @@ export interface SettingRecord {
   updated_at: string;
 }
 
+export function parseRouteMode(setting: SettingRecord | null, fallback: RouteMode): RouteMode {
+  return setting && (VALID_ROUTE_MODES as readonly string[]).includes(setting.value)
+    ? (setting.value as RouteMode)
+    : fallback;
+}
+
+function toRecord(row: { key: string; value: string; updatedAt: Date }): SettingRecord {
+  return { key: row.key, value: row.value, updated_at: row.updatedAt.toISOString() };
+}
+
 @Injectable()
 export class SettingsService {
   private readonly cache = new Map<string, { value: SettingRecord | null; expiresAt: number }>();
@@ -31,9 +41,43 @@ export class SettingsService {
     if (existing) return existing;
     const request = this.prisma.setting
       .findUnique({ where: { key } })
-      .then((row) =>
-        row ? { key: row.key, value: row.value, updated_at: row.updatedAt.toISOString() } : null,
-      );
+      .then((row) => (row ? toRecord(row) : null));
+    return this.track(key, request);
+  }
+
+  /** Reads several settings, fetching all cache misses in a single query. */
+  async getSettings<K extends string>(
+    keys: readonly K[],
+  ): Promise<Record<K, SettingRecord | null>> {
+    const now = Date.now();
+    const missing: K[] = [];
+    const lookups: Promise<[K, SettingRecord | null]>[] = [];
+    for (const key of new Set(keys)) {
+      const cached = this.cache.get(key);
+      if (cached && cached.expiresAt > now) {
+        lookups.push(Promise.resolve([key, cached.value]));
+        continue;
+      }
+      this.cache.delete(key);
+      const existing = this.inflight.get(key);
+      if (existing) lookups.push(existing.then((value): [K, SettingRecord | null] => [key, value]));
+      else missing.push(key);
+    }
+    if (missing.length) {
+      const batch = this.prisma.setting
+        .findMany({ where: { key: { in: missing } } })
+        .then((rows) => new Map(rows.map((row) => [row.key, toRecord(row)])));
+      for (const key of missing) {
+        const request = batch.then((rows) => rows.get(key) ?? null);
+        lookups.push(
+          this.track(key, request).then((value): [K, SettingRecord | null] => [key, value]),
+        );
+      }
+    }
+    return Object.fromEntries(await Promise.all(lookups)) as Record<K, SettingRecord | null>;
+  }
+
+  private async track(key: string, request: Promise<SettingRecord | null>) {
     this.inflight.set(key, request);
     try {
       const value = await request;
@@ -65,6 +109,17 @@ export class SettingsService {
     return { key: row.key, value: row.value, updated_at: row.updatedAt.toISOString() };
   }
 
+  /** Updates a setting only if it still holds `expected`; returns whether it changed. */
+  async replaceSettingIfUnchanged(key: string, expected: string, value: string): Promise<boolean> {
+    const { count } = await this.prisma.setting.updateMany({
+      where: { key, value: expected },
+      data: { value },
+    });
+    this.cache.delete(key);
+    this.inflight.delete(key);
+    return count > 0;
+  }
+
   async deleteSetting(key: string): Promise<boolean> {
     try {
       await this.prisma.setting.delete({ where: { key } });
@@ -78,10 +133,7 @@ export class SettingsService {
   }
 
   async getDefaultRouteMode(fallback: RouteMode): Promise<RouteMode> {
-    const setting = await this.getSetting("default_route_mode");
-    return setting && (VALID_ROUTE_MODES as readonly string[]).includes(setting.value)
-      ? (setting.value as RouteMode)
-      : fallback;
+    return parseRouteMode(await this.getSetting("default_route_mode"), fallback);
   }
 
   clearCache(): void {

@@ -49,9 +49,11 @@ class CreditsUsedScanner {
   constructor(private readonly onFound: (creditsUsed: number) => void) {}
 
   push(chunk: Uint8Array): void {
+    if (this.found) return;
     for (const byte of chunk) {
       let processAgain = true;
       while (processAgain && !this.found) processAgain = this.processByte(byte);
+      if (this.found) return;
     }
   }
 

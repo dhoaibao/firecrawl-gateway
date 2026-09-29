@@ -60,8 +60,9 @@ export class SettingsController {
           : { value: row.value, encrypted: false };
       data[row.key] = parseValue(value.value, SETTING_TYPES[row.key] || "string");
       if (row.key === "firecrawl_api_keys" && !value.encrypted)
-        await this.settings.setSetting(
+        await this.settings.replaceSettingIfUnchanged(
           row.key,
+          row.value,
           encryptSettingValue(row.value, this.config.firecrawlKeysEncryptionKey),
         );
     }
@@ -136,8 +137,9 @@ export class SettingsController {
       const parsed = parseCreditKeys(record.value, this.config.firecrawlKeysEncryptionKey);
       keys = parsed.keys;
       if (!parsed.encrypted)
-        await this.settings.setSetting(
+        await this.settings.replaceSettingIfUnchanged(
           record.key,
+          record.value,
           encryptSettingValue(record.value, this.config.firecrawlKeysEncryptionKey),
         );
     } catch {

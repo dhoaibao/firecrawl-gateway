@@ -98,6 +98,38 @@ describe("CronService", () => {
     expect(credits.refreshCreditUsageForKeys).toHaveBeenCalledWith([key]);
   });
 
+  it("migrates a legacy plaintext key setting conditionally during credit refresh", async () => {
+    const key = "fc_cron_key_12345678";
+    const plaintext = JSON.stringify([key]);
+    const encryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const settings = {
+      getSetting: vi
+        .fn()
+        .mockResolvedValueOnce({ key: "firecrawl_api_keys", value: plaintext })
+        .mockResolvedValueOnce(null),
+      setSetting: vi.fn(),
+      replaceSettingIfUnchanged: vi.fn().mockResolvedValue(true),
+    };
+    const credits = {
+      refreshCreditUsageForKeys: vi.fn().mockResolvedValue([{ remainingCredits: 100 }]),
+    };
+    const service = new CronService(
+      { $queryRaw: vi.fn().mockResolvedValue([]) } as never,
+      settings as never,
+      { cronSecret: "secret", firecrawlKeysEncryptionKey: encryptionKey } as never,
+      credits as never,
+    );
+
+    await service.runMaintenance();
+
+    expect(settings.replaceSettingIfUnchanged).toHaveBeenCalledWith(
+      "firecrawl_api_keys",
+      plaintext,
+      expect.stringMatching(/^enc:v1:/),
+    );
+    expect(settings.setSetting).not.toHaveBeenCalled();
+  });
+
   it("cleans a drained batch of expired rate-limit rows and reports both prune totals", async () => {
     const queryRaw = vi
       .fn()

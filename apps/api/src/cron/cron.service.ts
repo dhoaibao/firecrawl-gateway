@@ -43,8 +43,9 @@ export class CronService {
     try {
       const parsed = parseCreditKeys(record.value, this.config.firecrawlKeysEncryptionKey);
       if (!parsed.encrypted)
-        await this.settings.setSetting(
+        await this.settings.replaceSettingIfUnchanged(
           record.key,
+          record.value,
           encryptSettingValue(record.value, this.config.firecrawlKeysEncryptionKey),
         );
       const details = await this.credits.refreshCreditUsageForKeys(parsed.keys);

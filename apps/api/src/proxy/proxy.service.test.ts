@@ -48,17 +48,36 @@ function makeReply(events: string[] = []) {
   return reply;
 }
 
-function makeSettings() {
-  return {
-    getDefaultRouteMode: vi.fn().mockResolvedValue("self-hosted-only"),
-    getSetting: vi
-      .fn()
-      .mockImplementation(async (key: string) =>
-        key === "self_hosted_firecrawl_url"
-          ? { key, value: "https://self.test/", updated_at: "2026-01-01T00:00:00.000Z" }
-          : null,
-      ),
+function settingsWith(
+  records: Record<string, { key: string; value: string; updated_at?: string } | null> = {},
+  routeMode?: string,
+) {
+  const all = {
+    default_route_mode: routeMode
+      ? { key: "default_route_mode", value: routeMode, updated_at: "2026-01-01T00:00:00.000Z" }
+      : null,
+    self_hosted_firecrawl_url: null,
+    firecrawl_api_keys: null,
+    ...records,
   };
+  return {
+    getSettings: vi.fn().mockImplementation(async () => all),
+    setSetting: vi.fn(),
+    replaceSettingIfUnchanged: vi.fn().mockResolvedValue(true),
+  };
+}
+
+function makeSettings() {
+  return settingsWith(
+    {
+      self_hosted_firecrawl_url: {
+        key: "self_hosted_firecrawl_url",
+        value: "https://self.test/",
+        updated_at: "2026-01-01T00:00:00.000Z",
+      },
+    },
+    "self-hosted-only",
+  );
 }
 
 function makeCredits() {
@@ -208,58 +227,57 @@ describe("ProxyService", () => {
     expect(reply.send).toHaveBeenCalledTimes(1);
   });
 
-  it("loads route mode and self-hosted URL concurrently without changing resolution", async () => {
-    let inFlight = 0;
-    let peakInFlight = 0;
-    let resolveMode!: (value: string) => void;
-    let resolveUrl!: (value: { key: string; value: string; updated_at: string }) => void;
-    const track = () => {
-      inFlight++;
-      peakInFlight = Math.max(peakInFlight, inFlight);
-      return () => {
-        inFlight--;
-      };
-    };
+  it("loads all settings in one call, concurrently with API-key validation", async () => {
+    let resolveSettings!: (value: Record<string, unknown>) => void;
+    let resolveKey!: (value: { id: string }) => void;
     const settings = {
-      getDefaultRouteMode: vi.fn(() => {
-        const done = track();
-        return new Promise<string>((resolve) => {
-          resolveMode = (value) => {
-            done();
-            resolve(value);
-          };
-        });
-      }),
-      getSetting: vi.fn((key: string) => {
-        if (key !== "self_hosted_firecrawl_url") return Promise.resolve(null);
-        const done = track();
-        return new Promise<{ key: string; value: string; updated_at: string }>((resolve) => {
-          resolveUrl = (value) => {
-            done();
-            resolve(value);
-          };
-        });
-      }),
+      getSettings: vi.fn(
+        () =>
+          new Promise<Record<string, unknown>>((resolve) => {
+            resolveSettings = resolve;
+          }),
+      ),
+      setSetting: vi.fn(),
+    };
+    const keys = {
+      validateApiKey: vi.fn(
+        () =>
+          new Promise<{ id: string }>((resolve) => {
+            resolveKey = resolve;
+          }),
+      ),
+      touchApiKey: vi.fn().mockResolvedValue(undefined),
     };
     const audit = { appendAudit: vi.fn().mockResolvedValue(undefined) };
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
     vi.stubGlobal("fetch", fetchMock);
-    const service = makeService(settings, audit);
-    const reply = makeReply();
+    const service = new ProxyService(
+      { ...config, authEnabled: true } as never,
+      settings as never,
+      keys as never,
+      audit as never,
+      makeCredits() as never,
+    );
 
-    const handled = service.handle(makeRequest(), reply as never);
+    const handled = service.handle(
+      makeRequest({ headers: { authorization: "Bearer gw_key" } }),
+      makeReply() as never,
+    );
     await Promise.resolve();
-    await Promise.resolve();
 
-    expect(settings.getDefaultRouteMode).toHaveBeenCalledTimes(1);
-    expect(settings.getSetting).toHaveBeenCalledWith("self_hosted_firecrawl_url");
-    expect(peakInFlight).toBe(2);
+    expect(settings.getSettings).toHaveBeenCalledTimes(1);
+    expect(settings.getSettings).toHaveBeenCalledWith([
+      "default_route_mode",
+      "self_hosted_firecrawl_url",
+      "firecrawl_api_keys",
+    ]);
+    expect(keys.validateApiKey).toHaveBeenCalledWith("gw_key");
 
-    resolveMode("self-hosted-only");
-    resolveUrl({
-      key: "self_hosted_firecrawl_url",
-      value: "https://self.test/",
-      updated_at: "2026-01-01T00:00:00.000Z",
+    resolveKey({ id: "key-1" });
+    resolveSettings({
+      default_route_mode: { key: "default_route_mode", value: "self-hosted-only" },
+      self_hosted_firecrawl_url: { key: "self_hosted_firecrawl_url", value: "https://self.test/" },
+      firecrawl_api_keys: null,
     });
     await handled;
 
@@ -270,19 +288,72 @@ describe("ProxyService", () => {
     expect(audit.appendAudit).toHaveBeenCalledWith(
       expect.objectContaining({ route_mode: "self-hosted-only" }),
     );
+    expect(keys.touchApiKey).toHaveBeenCalledWith("key-1");
+  });
+
+  it("rejects a missing or invalid API key with the resolved route mode and no upstream call", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    for (const [headers, reason] of [
+      [{}, "Missing or invalid API key"],
+      [{ authorization: "Bearer bad" }, "Invalid or revoked API key"],
+    ] as const) {
+      const keys = { validateApiKey: vi.fn().mockResolvedValue(null), touchApiKey: vi.fn() };
+      const audit = { appendAudit: vi.fn().mockResolvedValue(undefined) };
+      const service = new ProxyService(
+        { ...config, authEnabled: true } as never,
+        makeSettings() as never,
+        keys as never,
+        audit as never,
+        makeCredits() as never,
+      );
+      const reply = makeReply();
+
+      await service.handle(makeRequest({ headers }), reply as never);
+
+      expect(reply.code).toHaveBeenCalledWith(401);
+      expect(audit.appendAudit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status_code: 401,
+          route_mode: "self-hosted-only",
+          fallback_reason: reason,
+        }),
+      );
+      expect(keys.touchApiKey).not.toHaveBeenCalled();
+      expect(keys.validateApiKey).toHaveBeenCalledTimes(headers.authorization ? 1 : 0);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("migrates a legacy plaintext cloud-key record only if it is unchanged, never via an unconditional write", async () => {
+    const key = "fc_cloud_key_1234567890";
+    const plaintext = JSON.stringify([key]);
+    const settings = settingsWith(
+      { firecrawl_api_keys: { key: "firecrawl_api_keys", value: plaintext } },
+      "cloud-only",
+    );
+    const credits = makeCredits();
+    credits.reserve.mockResolvedValue({ key, keyId: "opaque-key-id", amount: 1, source: "local" });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+
+    await makeService(settings, undefined, credits).handle(makeRequest(), makeReply() as never);
+
+    expect(settings.replaceSettingIfUnchanged).toHaveBeenCalledWith(
+      "firecrawl_api_keys",
+      plaintext,
+      expect.not.stringContaining(key),
+    );
+    expect(settings.setSetting).not.toHaveBeenCalled();
+    expect(credits.reserve).toHaveBeenCalledWith([key], 1, expect.any(Set));
   });
 
   it("reserves a configured cloud key before proxying and never fetches credit usage on a normal request", async () => {
     const key = "fc_cloud_key_1234567890";
     const encrypted = encryptSettingValue(JSON.stringify([key]), config.firecrawlKeysEncryptionKey);
-    const settings = {
-      getDefaultRouteMode: vi.fn().mockResolvedValue("cloud-first"),
-      getSetting: vi
-        .fn()
-        .mockImplementation(async (name: string) =>
-          name === "firecrawl_api_keys" ? { key: name, value: encrypted } : null,
-        ),
-    };
+    const settings = settingsWith(
+      { firecrawl_api_keys: { key: "firecrawl_api_keys", value: encrypted } },
+      "cloud-first",
+    );
     const credits = makeCredits();
     credits.reserve.mockResolvedValue({ key, keyId: "opaque-key-id", amount: 1, source: "local" });
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
@@ -307,14 +378,10 @@ describe("ProxyService", () => {
   it("observes streamed actual credits without delaying the client response", async () => {
     const key = "fc_cloud_key_1234567890";
     const encrypted = encryptSettingValue(JSON.stringify([key]), config.firecrawlKeysEncryptionKey);
-    const settings = {
-      getDefaultRouteMode: vi.fn().mockResolvedValue("cloud-only"),
-      getSetting: vi
-        .fn()
-        .mockImplementation(async (name: string) =>
-          name === "firecrawl_api_keys" ? { key: name, value: encrypted } : null,
-        ),
-    };
+    const settings = settingsWith(
+      { firecrawl_api_keys: { key: "firecrawl_api_keys", value: encrypted } },
+      "cloud-only",
+    );
     const credits = makeCredits();
     credits.reserve.mockResolvedValue({
       key,
@@ -366,14 +433,10 @@ describe("ProxyService", () => {
   it("does not observe non-JSON streams for creditsUsed", async () => {
     const key = "fc_cloud_key_1234567890";
     const encrypted = encryptSettingValue(JSON.stringify([key]), config.firecrawlKeysEncryptionKey);
-    const settings = {
-      getDefaultRouteMode: vi.fn().mockResolvedValue("cloud-only"),
-      getSetting: vi
-        .fn()
-        .mockImplementation(async (name: string) =>
-          name === "firecrawl_api_keys" ? { key: name, value: encrypted } : null,
-        ),
-    };
+    const settings = settingsWith(
+      { firecrawl_api_keys: { key: "firecrawl_api_keys", value: encrypted } },
+      "cloud-only",
+    );
     const credits = makeCredits();
     credits.reserve.mockResolvedValue({
       key,
@@ -406,14 +469,10 @@ describe("ProxyService", () => {
   it("disables a 402 key and retries the request with another reserved key", async () => {
     const keys = ["fc_cloud_key_1111111111", "fc_cloud_key_2222222222"];
     const encrypted = encryptSettingValue(JSON.stringify(keys), config.firecrawlKeysEncryptionKey);
-    const settings = {
-      getDefaultRouteMode: vi.fn().mockResolvedValue("cloud-only"),
-      getSetting: vi
-        .fn()
-        .mockImplementation(async (name: string) =>
-          name === "firecrawl_api_keys" ? { key: name, value: encrypted } : null,
-        ),
-    };
+    const settings = settingsWith(
+      { firecrawl_api_keys: { key: "firecrawl_api_keys", value: encrypted } },
+      "cloud-only",
+    );
     const credits = makeCredits();
     credits.reserve
       .mockResolvedValueOnce({ key: keys[0], keyId: "opaque-1", amount: 1, source: "local" })
