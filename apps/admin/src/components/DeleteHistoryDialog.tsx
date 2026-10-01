@@ -1,8 +1,19 @@
 import { Trash2 } from "lucide-react";
+import { useReturnFocus } from "@/hooks/useReturnFocus";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
-const deleteOptions: Array<{ value: "today" | "week" | "month" | "all"; label: string }> = [
+type DeleteFilter = "today" | "week" | "month" | "all";
+
+const deleteOptions: Array<{ value: DeleteFilter; label: string }> = [
   { value: "today", label: "Today" },
   { value: "week", label: "This Week" },
   { value: "month", label: "This Month" },
@@ -11,8 +22,8 @@ const deleteOptions: Array<{ value: "today" | "week" | "month" | "all"; label: s
 
 interface DeleteHistoryDialogProps {
   open: boolean;
-  filter: "today" | "week" | "month" | "all";
-  setFilter: (value: "today" | "week" | "month" | "all") => void;
+  filter: DeleteFilter;
+  setFilter: (value: DeleteFilter) => void;
   onClose: () => void;
   onConfirm: () => void;
   deleting: boolean;
@@ -26,60 +37,55 @@ export default function DeleteHistoryDialog({
   onConfirm,
   deleting,
 }: DeleteHistoryDialogProps) {
-  if (!open) return null;
-
+  const returnFocus = useReturnFocus(open);
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next && !deleting) onClose();
       }}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="delete-history-title"
     >
-      <div className="w-full max-w-sm rounded-lg border border-white/[0.06] bg-surface-2 p-6 shadow-xl animate-slide-up">
-        <div className="mb-4 flex items-center gap-3">
+      <DialogContent
+        className="max-w-sm gap-0 p-6 sm:max-w-sm"
+        showCloseButton={false}
+        onCloseAutoFocus={returnFocus}
+      >
+        <DialogHeader className="mb-4 flex-row items-center gap-3 text-left">
           <div className="rounded-full bg-danger-muted/50 p-2">
             <Trash2 className="size-5 text-danger-fg" />
           </div>
-          <div>
-            <h3 id="delete-history-title" className="text-base font-semibold text-foreground">
+          <div className="flex flex-col gap-0.5">
+            <DialogTitle className="text-base leading-normal text-foreground">
               Delete History
-            </h3>
-            <p className="text-xs text-muted-foreground">Choose a time range to delete</p>
+            </DialogTitle>
+            <DialogDescription className="text-xs">Choose a time range to delete</DialogDescription>
           </div>
-        </div>
+        </DialogHeader>
 
-        <div className="space-y-1.5">
+        <ToggleGroup
+          type="single"
+          orientation="vertical"
+          spacing={1}
+          value={filter}
+          onValueChange={(value) => {
+            if (value) setFilter(value as DeleteFilter);
+          }}
+          aria-label="Time range to delete"
+          className="w-full flex-col items-stretch"
+        >
           {deleteOptions.map((option) => (
-            <button
+            <ToggleGroupItem
               key={option.value}
-              type="button"
-              onClick={() => setFilter(option.value)}
-              className={cn(
-                "flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm transition-colors",
-                filter === option.value
-                  ? "bg-white/[0.08] text-foreground"
-                  : "text-muted-foreground hover:bg-white/[0.04] hover:text-foreground",
-              )}
+              value={option.value}
+              disabled={deleting}
+              className="h-9 w-full justify-start rounded-md px-3 text-sm text-muted-foreground data-[state=on]:bg-white/[0.08] data-[state=on]:text-foreground"
             >
-              <span
-                className={cn(
-                  "size-4 rounded-full border-2",
-                  filter === option.value ? "border-foreground bg-foreground" : "border-white/20",
-                )}
-              >
-                {filter === option.value && (
-                  <span className="block size-full rounded-full border-2 border-surface-2 bg-foreground" />
-                )}
-              </span>
               {option.label}
-            </button>
+            </ToggleGroupItem>
           ))}
-        </div>
+        </ToggleGroup>
 
-        <div className="mt-5 flex justify-end gap-2">
+        <DialogFooter className="mt-5">
           <Button
             variant="outline"
             size="sm"
@@ -98,8 +104,8 @@ export default function DeleteHistoryDialog({
           >
             {deleting ? "Deleting..." : "Delete"}
           </Button>
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

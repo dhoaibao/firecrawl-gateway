@@ -11,7 +11,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
-import { Dialog } from "@/components/ui/dialog";
+import { FormDialog } from "@/components/FormDialog";
 import { useToast } from "@/hooks/useToast";
 import Pagination from "@/components/Pagination";
 import PageSkeleton from "@/components/PageSkeleton";
@@ -331,7 +331,7 @@ export default function ApiKeys() {
         </div>
       )}
 
-      <Dialog
+      <FormDialog
         open={showForm}
         title="Create API key"
         description="Name this key so you can identify its environment or application later."
@@ -363,7 +363,7 @@ export default function ApiKeys() {
             Use a name that describes where this key is used.
           </p>
         </form>
-      </Dialog>
+      </FormDialog>
 
       <div className="rounded-lg border border-white/[0.06] bg-surface-2 overflow-hidden">
         <DataTable

@@ -1,5 +1,5 @@
 import { CalendarDays, Server, Activity, SlidersHorizontal } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   Select,
   SelectContent,
@@ -7,7 +7,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { cn } from "@/lib/utils";
 import type { BackendFilter, StatusFilter, DateRange } from "@/types";
 
 const backendFilters: Array<{ label: string; value: BackendFilter }> = [
@@ -29,6 +28,9 @@ const datePresets: Array<{ label: string; value: DateRange }> = [
   { label: "This Week", value: "week" },
   { label: "This Month", value: "month" },
 ];
+
+const filterItemClass =
+  "h-8 border border-white/[0.08] bg-surface-1 px-3 text-xs font-medium text-muted-foreground shadow-none hover:bg-white/[0.04] hover:text-foreground data-[state=on]:border-transparent data-[state=on]:bg-foreground data-[state=on]:text-background";
 
 interface FilterBarProps {
   dateRange: DateRange;
@@ -69,47 +71,35 @@ export default function FilterBar({
     <div className="grid grid-cols-1 gap-5 border-t border-white/[0.06] pt-3 md:grid-cols-2 lg:grid-cols-4">
       {/* Period */}
       <div className="space-y-1.5">
-        <label className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+        <span
+          id="filter-period-label"
+          className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground"
+        >
           <CalendarDays className="size-3" /> Period
-        </label>
-        <div className="flex flex-wrap gap-1">
+        </span>
+        <ToggleGroup
+          type="single"
+          spacing={1}
+          value={dateRange}
+          aria-labelledby="filter-period-label"
+          className="flex-wrap"
+          onValueChange={(value) => {
+            if (value) setDateRange(value as DateRange);
+            else if (dateRange === "custom") setDateRange("all");
+            else return;
+            onChange();
+          }}
+        >
           {datePresets.map((preset) => (
-            <Button
-              key={preset.value}
-              variant={dateRange === preset.value ? "default" : "outline"}
-              size="sm"
-              className={cn(
-                "h-6 border-white/[0.08] px-2.5 text-[11px] shadow-none transition-colors",
-                dateRange === preset.value
-                  ? "bg-foreground text-background hover:bg-foreground/90"
-                  : "bg-surface-1 text-muted-foreground hover:bg-white/[0.04] hover:text-foreground",
-              )}
-              onClick={() => {
-                setDateRange(preset.value);
-                onChange();
-              }}
-            >
+            <ToggleGroupItem key={preset.value} value={preset.value} className={filterItemClass}>
               {preset.label}
-            </Button>
+            </ToggleGroupItem>
           ))}
-          <Button
-            variant={dateRange === "custom" ? "default" : "outline"}
-            size="sm"
-            className={cn(
-              "h-6 border-white/[0.08] px-2.5 text-[11px] shadow-none transition-colors",
-              dateRange === "custom"
-                ? "bg-foreground text-background hover:bg-foreground/90"
-                : "bg-surface-1 text-muted-foreground hover:bg-white/[0.04] hover:text-foreground",
-            )}
-            onClick={() => {
-              setDateRange(dateRange === "custom" ? "all" : "custom");
-              onChange();
-            }}
-          >
-            <SlidersHorizontal className="size-2.5" />
+          <ToggleGroupItem value="custom" className={filterItemClass}>
+            <SlidersHorizontal className="size-3" />
             Custom
-          </Button>
-        </div>
+          </ToggleGroupItem>
+        </ToggleGroup>
         {dateRange === "custom" && (
           <div className="flex gap-1 pt-0.5">
             <Select
@@ -119,7 +109,7 @@ export default function FilterBar({
                 onChange();
               }}
             >
-              <SelectTrigger className="h-6 w-[4.5rem] text-[11px]">
+              <SelectTrigger className="h-8 w-[4.5rem] text-[11px]">
                 <SelectValue placeholder="Day" />
               </SelectTrigger>
               <SelectContent>
@@ -141,7 +131,7 @@ export default function FilterBar({
                 onChange();
               }}
             >
-              <SelectTrigger className="h-6 w-[5.5rem] text-[11px]">
+              <SelectTrigger className="h-8 w-[5.5rem] text-[11px]">
                 <SelectValue placeholder="Month" />
               </SelectTrigger>
               <SelectContent>
@@ -173,7 +163,7 @@ export default function FilterBar({
                 onChange();
               }}
             >
-              <SelectTrigger className="h-6 w-[4.5rem] text-[11px]">
+              <SelectTrigger className="h-8 w-[4.5rem] text-[11px]">
                 <SelectValue placeholder="Year" />
               </SelectTrigger>
               <SelectContent>
@@ -194,76 +184,83 @@ export default function FilterBar({
 
       {/* Backend */}
       <div className="space-y-1.5">
-        <label className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+        <span
+          id="filter-backend-label"
+          className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground"
+        >
           <Server className="size-3" /> Backend
-        </label>
-        <div className="flex flex-wrap gap-1">
-          {backendFilters.map((filter) => (
-            <Button
-              key={filter.label}
-              variant={backendFilter === filter.value && !fallbackOnly ? "default" : "outline"}
-              size="sm"
-              className={cn(
-                "h-6 border-white/[0.08] px-2.5 text-[11px] shadow-none transition-colors",
-                backendFilter === filter.value && !fallbackOnly
-                  ? "bg-foreground text-background hover:bg-foreground/90"
-                  : "bg-surface-1 text-muted-foreground hover:bg-white/[0.04] hover:text-foreground",
-              )}
-              onClick={() => {
-                setBackendFilter(filter.value);
-                setFallbackOnly(false);
-                onChange();
-              }}
-            >
-              {filter.label}
-            </Button>
-          ))}
-          <Button
-            variant={fallbackOnly ? "default" : "outline"}
-            size="sm"
-            className={cn(
-              "h-6 border-white/[0.08] px-2.5 text-[11px] shadow-none transition-colors",
-              fallbackOnly
-                ? "bg-foreground text-background hover:bg-foreground/90"
-                : "bg-surface-1 text-muted-foreground hover:bg-white/[0.04] hover:text-foreground",
-            )}
-            onClick={() => {
-              setFallbackOnly(!fallbackOnly);
+        </span>
+        <ToggleGroup
+          type="single"
+          spacing={1}
+          value={fallbackOnly ? "fallback" : backendFilter || "all"}
+          aria-labelledby="filter-backend-label"
+          className="flex-wrap"
+          onValueChange={(value) => {
+            if (!value) {
+              // Clicking the active Fallback again clears it; ordinary backend
+              // selections cannot be deselected.
+              if (!fallbackOnly) return;
+              setFallbackOnly(false);
               setBackendFilter("");
               onChange();
-            }}
-          >
+              return;
+            }
+            if (value === "fallback") {
+              setFallbackOnly(true);
+              setBackendFilter("");
+            } else {
+              setBackendFilter(value === "all" ? "" : (value as BackendFilter));
+              setFallbackOnly(false);
+            }
+            onChange();
+          }}
+        >
+          {backendFilters.map((filter) => (
+            <ToggleGroupItem
+              key={filter.label}
+              value={filter.value || "all"}
+              className={filterItemClass}
+            >
+              {filter.label}
+            </ToggleGroupItem>
+          ))}
+          <ToggleGroupItem value="fallback" className={filterItemClass}>
             Fallback
-          </Button>
-        </div>
+          </ToggleGroupItem>
+        </ToggleGroup>
       </div>
 
       {/* Status */}
       <div className="space-y-1.5">
-        <label className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+        <span
+          id="filter-status-label"
+          className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground"
+        >
           <Activity className="size-3" /> Status
-        </label>
-        <div className="flex flex-wrap gap-1">
+        </span>
+        <ToggleGroup
+          type="single"
+          spacing={1}
+          value={statusFilter || "all"}
+          aria-labelledby="filter-status-label"
+          className="flex-wrap"
+          onValueChange={(value) => {
+            if (!value) return;
+            setStatusFilter((value === "all" ? "" : value) as StatusFilter);
+            onChange();
+          }}
+        >
           {statusFilters.map((filter) => (
-            <Button
+            <ToggleGroupItem
               key={filter.label}
-              variant={statusFilter === filter.value ? "default" : "outline"}
-              size="sm"
-              className={cn(
-                "h-6 border-white/[0.08] px-2.5 text-[11px] shadow-none transition-colors",
-                statusFilter === filter.value
-                  ? "bg-foreground text-background hover:bg-foreground/90"
-                  : "bg-surface-1 text-muted-foreground hover:bg-white/[0.04] hover:text-foreground",
-              )}
-              onClick={() => {
-                setStatusFilter(filter.value);
-                onChange();
-              }}
+              value={filter.value || "all"}
+              className={filterItemClass}
             >
               {filter.label}
-            </Button>
+            </ToggleGroupItem>
           ))}
-        </div>
+        </ToggleGroup>
       </div>
     </div>
   );

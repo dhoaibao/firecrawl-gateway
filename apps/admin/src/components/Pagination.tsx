@@ -1,4 +1,18 @@
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  Pagination as PaginationNav,
+  PaginationContent,
+  PaginationEllipsis,
+  PaginationItem,
+} from "@/components/ui/pagination";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 
 interface PaginationProps {
@@ -9,6 +23,10 @@ interface PaginationProps {
   onPageChange: (page: number) => void;
   onPageSizeChange?: (size: number) => void;
 }
+
+const pageSizeOptions = [10, 25, 50];
+const navButtonClass =
+  "size-8 border-white/[0.08] bg-surface-3 text-muted-foreground shadow-none hover:bg-surface-4 hover:text-foreground";
 
 export default function Pagination({
   currentPage,
@@ -23,8 +41,6 @@ export default function Pagination({
   const startItem = totalItems === 0 ? 0 : (currentPage - 1) * pageSize + 1;
   const endItem = Math.min(currentPage * pageSize, totalItems);
 
-  const pageSizeOptions = [10, 25, 50];
-
   const maxVisiblePages = 5;
   const visiblePages: (number | string)[] =
     totalPages <= maxVisiblePages
@@ -36,8 +52,8 @@ export default function Pagination({
           : [1, "...", currentPage - 1, currentPage, currentPage + 1, "...", totalPages];
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-t border-white/[0.06] bg-surface-2">
-      <div className="text-sm text-muted-foreground">
+    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/[0.06] bg-surface-2 px-4 py-3">
+      <div className="text-sm text-muted-foreground" aria-live="polite">
         Showing <span className="font-medium text-foreground">{startItem}</span> -{` `}
         <span className="font-medium text-foreground">{endItem}</span> of{" "}
         <span className="font-medium text-foreground">{totalItems}</span>
@@ -45,75 +61,99 @@ export default function Pagination({
 
       <div className="flex items-center gap-2">
         {onPageSizeChange && (
-          <select
-            value={pageSize}
-            onChange={(e) => onPageSizeChange(Number(e.target.value))}
-            className="h-8 rounded-lg border border-white/[0.08] bg-surface-3 px-2 text-sm text-foreground outline-none"
-          >
-            {pageSizeOptions.map((size) => (
-              <option key={size} value={size}>
-                {size} / page
-              </option>
-            ))}
-          </select>
+          <Select value={String(pageSize)} onValueChange={(v) => onPageSizeChange(Number(v))}>
+            <SelectTrigger className="h-8 w-[7rem] bg-surface-3 text-sm" aria-label="Rows per page">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {pageSizeOptions.map((size) => (
+                <SelectItem key={size} value={String(size)}>
+                  {size} / page
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         )}
 
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => onPageChange(1)}
-            disabled={currentPage <= 1}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.08] bg-surface-3 text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
-            title="First page"
-          >
-            <ChevronsLeft className="size-4" />
-          </button>
-          <button
-            onClick={() => onPageChange(currentPage - 1)}
-            disabled={currentPage <= 1}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.08] bg-surface-3 text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
-            title="Previous page"
-          >
-            <ChevronLeft className="size-4" />
-          </button>
-
-          {visiblePages.map((page, idx) =>
-            page === "..." ? (
-              <span key={`ellipsis-${idx}`} className="px-1 text-xs text-muted-foreground">
-                ...
-              </span>
-            ) : (
-              <button
-                key={page}
-                onClick={() => onPageChange(page as number)}
-                className={cn(
-                  "inline-flex h-8 min-w-[2rem] items-center justify-center rounded-lg border text-xs font-medium transition-all",
-                  currentPage === page
-                    ? "border-transparent bg-foreground text-background shadow-[var(--shadow-card)]"
-                    : "border-white/[0.08] bg-surface-3 text-muted-foreground hover:bg-surface-4 hover:text-foreground",
-                )}
+        <PaginationNav className="mx-0 w-auto">
+          <PaginationContent>
+            <PaginationItem>
+              <Button
+                variant="outline"
+                size="icon"
+                className={navButtonClass}
+                onClick={() => onPageChange(1)}
+                disabled={currentPage <= 1}
+                aria-label="First page"
               >
-                {page}
-              </button>
-            ),
-          )}
+                <ChevronsLeft className="size-4" />
+              </Button>
+            </PaginationItem>
+            <PaginationItem>
+              <Button
+                variant="outline"
+                size="icon"
+                className={navButtonClass}
+                onClick={() => onPageChange(currentPage - 1)}
+                disabled={currentPage <= 1}
+                aria-label="Previous page"
+              >
+                <ChevronLeft className="size-4" />
+              </Button>
+            </PaginationItem>
 
-          <button
-            onClick={() => onPageChange(currentPage + 1)}
-            disabled={currentPage >= totalPages}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.08] bg-surface-3 text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
-            title="Next page"
-          >
-            <ChevronRight className="size-4" />
-          </button>
-          <button
-            onClick={() => onPageChange(totalPages)}
-            disabled={currentPage >= totalPages}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.08] bg-surface-3 text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
-            title="Last page"
-          >
-            <ChevronsRight className="size-4" />
-          </button>
-        </div>
+            {visiblePages.map((page, idx) =>
+              page === "..." ? (
+                <PaginationItem key={`ellipsis-${idx}`}>
+                  <PaginationEllipsis className="size-8 text-muted-foreground" />
+                </PaginationItem>
+              ) : (
+                <PaginationItem key={page}>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    onClick={() => onPageChange(page as number)}
+                    aria-label={`Page ${page}`}
+                    aria-current={currentPage === page ? "page" : undefined}
+                    className={cn(
+                      "h-8 min-w-8 px-2 text-xs font-medium shadow-none",
+                      currentPage === page
+                        ? "border-transparent bg-foreground text-background hover:bg-foreground/90 hover:text-background"
+                        : "border-white/[0.08] bg-surface-3 text-muted-foreground hover:bg-surface-4 hover:text-foreground",
+                    )}
+                  >
+                    {page}
+                  </Button>
+                </PaginationItem>
+              ),
+            )}
+
+            <PaginationItem>
+              <Button
+                variant="outline"
+                size="icon"
+                className={navButtonClass}
+                onClick={() => onPageChange(currentPage + 1)}
+                disabled={currentPage >= totalPages}
+                aria-label="Next page"
+              >
+                <ChevronRight className="size-4" />
+              </Button>
+            </PaginationItem>
+            <PaginationItem>
+              <Button
+                variant="outline"
+                size="icon"
+                className={navButtonClass}
+                onClick={() => onPageChange(totalPages)}
+                disabled={currentPage >= totalPages}
+                aria-label="Last page"
+              >
+                <ChevronsRight className="size-4" />
+              </Button>
+            </PaginationItem>
+          </PaginationContent>
+        </PaginationNav>
       </div>
     </div>
   );

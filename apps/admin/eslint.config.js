@@ -21,7 +21,15 @@ export default defineConfig([
     rules: {
       "react-refresh/only-export-components": [
         "error",
-        { allowExportNames: ["useAuth", "useToastContext", "useConfirmDialog"] },
+        {
+          allowExportNames: [
+            "useAuth",
+            "useToastContext",
+            "useConfirmDialog",
+            "buttonVariants",
+            "toggleVariants",
+          ],
+        },
       ],
       "react-hooks/set-state-in-effect": "off",
     },

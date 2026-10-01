@@ -1,123 +1,142 @@
-import { useEffect, useId, useRef, type ReactNode } from "react";
-import { X } from "lucide-react";
+import * as React from "react";
+import { cn } from "@/lib/utils";
+import { XIcon } from "lucide-react";
+import { Dialog as DialogPrimitive } from "radix-ui";
 
 import { Button } from "@/components/ui/button";
 
-interface DialogProps {
-  open: boolean;
-  title: string;
-  description?: string;
-  children: ReactNode;
-  footer?: ReactNode;
-  onClose: () => void;
+function Dialog({ ...props }: React.ComponentProps<typeof DialogPrimitive.Root>) {
+  return <DialogPrimitive.Root data-slot="dialog" {...props} />;
 }
 
-export function Dialog({ open, title, description, children, footer, onClose }: DialogProps) {
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const closeButtonRef = useRef<HTMLButtonElement>(null);
-  const titleId = useId();
-  const descriptionId = useId();
-  const previouslyFocusedRef = useRef<Element | null>(null);
-  const onCloseRef = useRef(onClose);
+function DialogTrigger({ ...props }: React.ComponentProps<typeof DialogPrimitive.Trigger>) {
+  return <DialogPrimitive.Trigger data-slot="dialog-trigger" {...props} />;
+}
 
-  useEffect(() => {
-    onCloseRef.current = onClose;
-  }, [onClose]);
+function DialogPortal({ ...props }: React.ComponentProps<typeof DialogPrimitive.Portal>) {
+  return <DialogPrimitive.Portal data-slot="dialog-portal" {...props} />;
+}
 
-  useEffect(() => {
-    if (!open) return;
+function DialogClose({ ...props }: React.ComponentProps<typeof DialogPrimitive.Close>) {
+  return <DialogPrimitive.Close data-slot="dialog-close" {...props} />;
+}
 
-    previouslyFocusedRef.current = document.activeElement;
-    const focusTimer = window.setTimeout(() => {
-      const firstField = dialogRef.current?.querySelector<HTMLElement>(
-        "input:not([disabled]), select:not([disabled]), textarea:not([disabled])",
-      );
-      const firstFocusable = dialogRef.current?.querySelector<HTMLElement>(
-        'button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
-      );
-      (firstField || firstFocusable || closeButtonRef.current)?.focus();
-    }, 0);
+function DialogOverlay({
+  className,
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Overlay>) {
+  return (
+    <DialogPrimitive.Overlay
+      data-slot="dialog-overlay"
+      className={cn(
+        "fixed inset-0 z-50 bg-black/55 backdrop-blur-sm data-[state=open]:animate-fade-in",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
 
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onCloseRef.current();
-        return;
-      }
-      if (event.key !== "Tab" || !dialogRef.current) return;
+function DialogContent({
+  className,
+  children,
+  showCloseButton = true,
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Content> & {
+  showCloseButton?: boolean;
+}) {
+  return (
+    <DialogPortal data-slot="dialog-portal">
+      <DialogOverlay />
+      <DialogPrimitive.Content
+        data-slot="dialog-content"
+        className={cn(
+          "fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-xl border border-white/[0.08] bg-surface-2 p-0 shadow-[var(--shadow-modal)] outline-none data-[state=open]:animate-fade-in sm:max-w-lg",
+          className,
+        )}
+        {...props}
+      >
+        {children}
+        {showCloseButton && (
+          <DialogPrimitive.Close
+            data-slot="dialog-close"
+            className="absolute top-4 right-4 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-surface-4 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
+          >
+            <XIcon />
+            <span className="sr-only">Close</span>
+          </DialogPrimitive.Close>
+        )}
+      </DialogPrimitive.Content>
+    </DialogPortal>
+  );
+}
 
-      const focusable = dialogRef.current.querySelectorAll<HTMLElement>(
-        'input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
-      );
-      if (focusable.length === 0) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.clearTimeout(focusTimer);
-      document.removeEventListener("keydown", handleKeyDown);
-      if (previouslyFocusedRef.current instanceof HTMLElement) {
-        previouslyFocusedRef.current.focus();
-      }
-    };
-  }, [open]);
-
-  if (!open) return null;
-
+function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm animate-fade-in"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
+      data-slot="dialog-header"
+      className={cn("flex flex-col gap-2 text-center sm:text-left", className)}
+      {...props}
+    />
+  );
+}
+
+function DialogFooter({
+  className,
+  showCloseButton = false,
+  children,
+  ...props
+}: React.ComponentProps<"div"> & {
+  showCloseButton?: boolean;
+}) {
+  return (
+    <div
+      data-slot="dialog-footer"
+      className={cn("flex flex-col-reverse gap-2 sm:flex-row sm:justify-end", className)}
+      {...props}
     >
-      <div
-        ref={dialogRef}
-        className="w-full max-w-lg overflow-hidden rounded-xl border border-white/[0.08] bg-surface-2 shadow-[var(--shadow-modal)] animate-slide-up"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        aria-describedby={description ? descriptionId : undefined}
-      >
-        <header className="flex items-start justify-between gap-4 border-b border-white/[0.06] bg-surface-3 px-5 py-4">
-          <div>
-            <h2 id={titleId} className="text-base font-semibold text-foreground">
-              {title}
-            </h2>
-            {description && (
-              <p id={descriptionId} className="mt-1 text-sm text-muted-foreground">
-                {description}
-              </p>
-            )}
-          </div>
-          <Button
-            ref={closeButtonRef}
-            variant="ghost"
-            size="icon"
-            className="size-8 shrink-0"
-            onClick={onClose}
-            aria-label="Close dialog"
-          >
-            <X className="size-4" />
-          </Button>
-        </header>
-        <div className="px-5 py-5">{children}</div>
-        {footer && (
-          <footer className="flex justify-end gap-2 border-t border-white/[0.06] bg-surface-1 px-5 py-4">
-            {footer}
-          </footer>
-        )}
-      </div>
+      {children}
+      {showCloseButton && (
+        <DialogPrimitive.Close asChild>
+          <Button variant="outline">Close</Button>
+        </DialogPrimitive.Close>
+      )}
     </div>
   );
 }
+
+function DialogTitle({ className, ...props }: React.ComponentProps<typeof DialogPrimitive.Title>) {
+  return (
+    <DialogPrimitive.Title
+      data-slot="dialog-title"
+      className={cn("text-lg leading-none font-semibold", className)}
+      {...props}
+    />
+  );
+}
+
+function DialogDescription({
+  className,
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Description>) {
+  return (
+    <DialogPrimitive.Description
+      data-slot="dialog-description"
+      className={cn("text-sm text-muted-foreground", className)}
+      {...props}
+    />
+  );
+}
+
+export {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogOverlay,
+  DialogPortal,
+  DialogTitle,
+  DialogTrigger,
+};

@@ -17,7 +17,11 @@ export default function PageLayout({
   children,
 }: PageLayoutProps) {
   return (
-    <div id="content" className="min-h-screen bg-background text-foreground">
+    <div
+      id="content"
+      tabIndex={-1}
+      className="min-h-screen outline-none bg-background text-foreground"
+    >
       <div className="mx-auto max-w-[1680px] px-4 py-4 lg:px-6">
         <header className="mb-6 flex flex-col gap-4 border-b border-white/[0.06] pb-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 items-center gap-3">

@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import { useLocation, Link } from "react-router-dom";
-import { LayoutDashboard, Key, LogOut, Menu, X, Shield, Settings, KeyRound } from "lucide-react";
+import { LayoutDashboard, Key, LogOut, Menu, Shield, Settings, KeyRound } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useReturnFocus } from "@/hooks/useReturnFocus";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
+import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 
 const navItems = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard },
@@ -16,15 +18,18 @@ export default function Sidebar() {
   const { admin, logout } = useAuth();
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const returnFocus = useReturnFocus(mobileOpen);
 
+  // The mobile drawer is a modal; close it when the viewport reaches the desktop
+  // breakpoint so its overlay, scroll lock and aria-hidden cannot linger.
   useEffect(() => {
-    if (!mobileOpen) return;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMobileOpen(false);
+    const desktop = window.matchMedia("(min-width: 1024px)");
+    const closeOnDesktop = (event: MediaQueryListEvent) => {
+      if (event.matches) setMobileOpen(false);
     };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [mobileOpen]);
+    desktop.addEventListener("change", closeOnDesktop);
+    return () => desktop.removeEventListener("change", closeOnDesktop);
+  }, []);
 
   const isActive = (href: string) =>
     href === "/" ? location.pathname === "/" : location.pathname === href;
@@ -99,27 +104,28 @@ export default function Sidebar() {
           variant="outline"
           size="icon"
           className="size-8 border-white/[0.08] bg-surface-3 text-foreground"
-          onClick={() => setMobileOpen((v) => !v)}
-          aria-label={mobileOpen ? "Close menu" : "Open menu"}
+          onClick={() => setMobileOpen(true)}
+          aria-label="Open menu"
           aria-expanded={mobileOpen}
         >
-          {mobileOpen ? <X className="size-4" /> : <Menu className="size-4" />}
+          <Menu className="size-4" />
         </Button>
       </div>
 
-      {mobileOpen && (
-        <div
-          className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm lg:hidden"
-          onClick={() => setMobileOpen(false)}
-        />
-      )}
+      <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+        <SheetContent
+          side="left"
+          showCloseButton={false}
+          onCloseAutoFocus={returnFocus}
+          className="w-60 max-w-[15rem] gap-0 border-white/[0.06] p-0 lg:hidden"
+        >
+          <SheetTitle className="sr-only">Navigation</SheetTitle>
+          <SheetDescription className="sr-only">Main navigation menu</SheetDescription>
+          {sidebarContent}
+        </SheetContent>
+      </Sheet>
 
-      <aside
-        className={cn(
-          "fixed bottom-0 left-0 top-0 z-50 flex w-60 flex-col border-r border-white/[0.06] bg-surface-1 transition-transform duration-200 lg:translate-x-0",
-          mobileOpen ? "translate-x-0" : "-translate-x-full",
-        )}
-      >
+      <aside className="fixed bottom-0 left-0 top-0 z-50 hidden w-60 flex-col border-r border-white/[0.06] bg-surface-1 lg:flex">
         {sidebarContent}
       </aside>
     </>

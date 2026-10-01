@@ -179,10 +179,12 @@ Use the components in `apps/admin/src/components/ui/`. Do not introduce new thir
 - **MetricCard** (`MetricCard.tsx`): Small card with uppercase label, icon badge, large value, and detail text.
 - **MetricsGrid** (`MetricsGrid.tsx`): Five-column metric skeleton + metric card layout.
 - **EmptyState** (`EmptyState.tsx`): Centered state with gradient icon container, title, description, optional action.
-- **Pagination** (`Pagination.tsx`): Compact page numbers + first/previous/next/last + page-size selector.
-- **FilterBar** (`FilterBar.tsx`): Dashboard-specific filter cluster with preset buttons and compact selects.
-- **ConfirmDialog** (`ConfirmDialog.tsx`): Accessible alert dialog with focus trap, escape handling, and danger/warning variants. Uses `role="alertdialog"`.
-- **ToastStack** (`ToastStack.tsx`): Top-center fixed stack for success/error toasts with icon-only dismissal.
+- **Pagination** (`Pagination.tsx`): Compact page numbers + first/previous/next/last + page-size selector, built on shadcn `pagination`, `button`, and `select` with labelled controls and `aria-current` on the active page.
+- **FilterBar** (`FilterBar.tsx`): Dashboard-specific filter cluster using shadcn `toggle-group` (single select, 32 px targets) for period/backend/status and compact selects for custom dates.
+- **ConfirmDialog** (`ConfirmDialog.tsx`): shadcn `alert-dialog` (Radix focus trap, Escape, focus restore) with danger/warning variants. Uses `role="alertdialog"`.
+- **FormDialog** (`FormDialog.tsx`), **DeleteHistoryDialog**: shadcn `dialog` with the surface header/body/footer layout.
+- **AuditDetailDrawer** and the mobile navigation drawer: shadcn `sheet` (right and left sides).
+- **Toasts** (`contexts/ToastContext.tsx`, `ui/sonner.tsx`): `sonner` top-center toasts (live region, close button) styled with success/danger muted tokens; always call them through `useToast()`.
 - **PageSkeleton** (`PageSkeleton.tsx`): Full-page table skeleton for list views.
 
 ### Icons
@@ -261,11 +263,11 @@ Before considering Admin UI work complete:
 
 - Color/theme/animation/shadow definitions: `apps/admin/src/index.css`.
 - App shell, root routing, and protected layouts: `apps/admin/src/App.tsx`.
-- UI primitives: `apps/admin/src/components/ui/{button,card,table,badge,select,skeleton}.tsx`.
+- UI primitives: `apps/admin/src/components/ui/{button,card,table,badge,select,skeleton,dialog,alert-dialog,sheet,pagination,toggle,toggle-group,sonner}.tsx`.
 - Layout components: `apps/admin/src/components/Sidebar.tsx`, `apps/admin/src/components/PageLayout.tsx`.
 - Page implementations: `apps/admin/src/pages/{Dashboard,ApiKeys,Configure,Account,Login}.tsx`.
 - Shared helpers: `apps/admin/src/lib/utils.ts`, `apps/admin/src/lib/routing.ts`, and `apps/admin/src/lib/api.ts`.
-- Feedback components: `apps/admin/src/components/ToastStack.tsx`, `apps/admin/src/components/ConfirmDialog.tsx`.
+- Feedback components: `apps/admin/src/contexts/ToastContext.tsx`, `apps/admin/src/components/ConfirmDialog.tsx`.
 - Data display: `apps/admin/src/components/DataTable.tsx`, `apps/admin/src/components/MetricCard.tsx`, `apps/admin/src/components/MetricsGrid.tsx`.
 
 ## Open Questions

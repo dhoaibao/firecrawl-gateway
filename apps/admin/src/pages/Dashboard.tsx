@@ -693,7 +693,11 @@ export default function Dashboard() {
   }, []);
 
   return (
-    <main id="content" className="min-h-screen bg-background text-foreground">
+    <main
+      id="content"
+      tabIndex={-1}
+      className="min-h-screen outline-none bg-background text-foreground"
+    >
       {/* Sticky header */}
       <section className="sticky top-0 z-20 border-b border-white/[0.06] bg-surface-2/95 backdrop-blur">
         <div className="mx-auto flex max-w-[1680px] flex-col gap-3 px-4 py-3 lg:px-6">

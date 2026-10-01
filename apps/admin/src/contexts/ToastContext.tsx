@@ -1,16 +1,11 @@
-import { createContext, useContext, useState, useCallback, useRef, type ReactNode } from "react";
-import { ToastStack } from "@/components/ToastStack";
+import { createContext, useContext, useCallback, useMemo, type ReactNode } from "react";
+import { toast } from "sonner";
+import { Toaster } from "@/components/ui/sonner";
 
-export interface Toast {
-  id: number;
-  message: string;
-  type: "success" | "error";
-}
+export type ToastType = "success" | "error";
 
 interface ToastContextValue {
-  toasts: Toast[];
-  addToast: (message: string, type?: Toast["type"]) => void;
-  removeToast: (id: number) => void;
+  addToast: (message: string, type?: ToastType) => void;
 }
 
 const ToastContext = createContext<ToastContextValue | null>(null);
@@ -24,34 +19,28 @@ export function useToastContext(): ToastContextValue {
 }
 
 export function ToastProvider({ children }: { children: ReactNode }) {
-  const [toasts, setToasts] = useState<Toast[]>([]);
-  const timersRef = useRef<Map<number, number>>(new Map());
-
-  const removeToast = useCallback((id: number) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
-    const timer = timersRef.current.get(id);
-    if (timer) {
-      window.clearTimeout(timer);
-      timersRef.current.delete(id);
-    }
+  const addToast = useCallback((message: string, type: ToastType = "error") => {
+    if (type === "success") toast.success(message);
+    else toast.error(message);
   }, []);
-
-  const addToast = useCallback(
-    (message: string, type: Toast["type"] = "error") => {
-      const id = Date.now() + Math.random();
-      setToasts((prev) => [...prev, { id, message, type }]);
-      const timer = window.setTimeout(() => {
-        removeToast(id);
-      }, 4000);
-      timersRef.current.set(id, timer);
-    },
-    [removeToast],
-  );
+  const value = useMemo(() => ({ addToast }), [addToast]);
 
   return (
-    <ToastContext.Provider value={{ toasts, addToast, removeToast }}>
+    <ToastContext.Provider value={value}>
       {children}
-      <ToastStack toasts={toasts} onRemove={removeToast} />
+      <Toaster
+        position="top-center"
+        duration={4000}
+        closeButton
+        toastOptions={{
+          classNames: {
+            toast: "!rounded-lg !border !px-4 !py-3 !shadow-lg !backdrop-blur !text-sm !font-sans",
+            success: "!border-success-muted !bg-success-muted/90 !text-success-fg",
+            error: "!border-danger-muted !bg-danger-muted/90 !text-danger-fg",
+            closeButton: "!border-white/[0.08] !bg-surface-3 !text-foreground",
+          },
+        }}
+      />
     </ToastContext.Provider>
   );
 }
