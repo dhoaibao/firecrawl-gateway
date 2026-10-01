@@ -25,6 +25,8 @@ import { useToast } from "@/hooks/useToast";
 import { useConfirmDialog } from "@/components/ConfirmDialog";
 import PageLayout from "@/components/PageLayout";
 import { api } from "@/lib/api";
+import { creditKeyPrefix, nextUpPrefixes } from "@/lib/credits";
+import { Badge } from "@/components/ui/badge";
 import type { SettingsData, CreditUsageItem } from "@/types";
 
 type SettingKey = keyof SettingsData;
@@ -96,10 +98,14 @@ function makeRows(keys: string[], idCounter: { current: number }): ApiKeyRow[] {
 function ApiKeyRow({
   row,
   usage,
+  nextUp,
+  tiedForNext,
   onRemove,
 }: {
   row: ApiKeyRow;
   usage: CreditUsageItem | undefined;
+  nextUp: boolean;
+  tiedForNext: boolean;
   onRemove: () => void;
 }) {
   return (
@@ -109,6 +115,18 @@ function ApiKeyRow({
           <code className="truncate text-sm font-mono text-foreground" title={row.key}>
             {maskKey(row.key)}
           </code>
+          {nextUp && (
+            <Badge
+              variant="success"
+              title={
+                tiedForNext
+                  ? "Tied on renewal day and credits; the gateway picks one at random"
+                  : "Renews soonest, so the gateway uses this key first"
+              }
+            >
+              {tiedForNext ? "Tied for next" : "Next up"}
+            </Badge>
+          )}
         </div>
         <Button
           variant="outline"
@@ -132,7 +150,11 @@ function ApiKeyRow({
             {usage.billingPeriodEnd ? new Date(usage.billingPeriodEnd).toLocaleDateString() : "—"}
           </span>
         </div>
-      ) : null}
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          Credit usage appears after this key is saved.
+        </p>
+      )}
     </div>
   );
 }
@@ -149,6 +171,8 @@ export default function Configure() {
   const idCounter = useRef(0);
   const { addToast } = useToast();
   const { confirm: confirmReset, dialog: resetDialog } = useConfirmDialog();
+  const usageByPrefix = new Map(creditUsage.map((item) => [item.keyPrefix, item]));
+  const nextUpSet = nextUpPrefixes(creditUsage);
   const successfulCreditUsage = creditUsage.filter(
     (usage) => !usage.error && typeof usage.remainingCredits === "number",
   );
@@ -423,14 +447,19 @@ export default function Configure() {
                         until you add at least one key.
                       </div>
                     )}
-                    {apiKeyRows.map((row, i) => (
-                      <ApiKeyRow
-                        key={row.id}
-                        row={row}
-                        usage={creditUsage[i]}
-                        onRemove={() => removeApiKey(i)}
-                      />
-                    ))}
+                    {apiKeyRows.map((row, i) => {
+                      const prefix = creditKeyPrefix(row.key);
+                      return (
+                        <ApiKeyRow
+                          key={row.id}
+                          row={row}
+                          usage={usageByPrefix.get(prefix)}
+                          nextUp={nextUpSet.has(prefix)}
+                          tiedForNext={nextUpSet.has(prefix) && nextUpSet.size > 1}
+                          onRemove={() => removeApiKey(i)}
+                        />
+                      );
+                    })}
                   </div>
                 </div>
               </Card>
