@@ -24,6 +24,7 @@ export interface CreditReservation {
 const CREDIT_USAGE_CACHE_TTL_MS = 30_000;
 const CREDIT_KEY_COOLDOWN_MS = 30_000;
 const REDIS_FAILURE_COOLDOWN_MS = 5_000;
+const MS_PER_DAY = 86_400_000;
 const CREDITS_USED_KEY = "creditsUsed";
 const METADATA_KEY = "metadata";
 const MAX_SAFE_CREDITS_USED = Number.MAX_SAFE_INTEGER;
@@ -241,7 +242,10 @@ export class CreditRoutingService {
   >();
   private readonly localCooldownUntil = new Map<string, number>();
   private readonly localDisabled = new Set<string>();
-  private localCursor = 0;
+  private readonly localPools = new Map<
+    string,
+    { renewsAt: number | null; credits: number | null }
+  >();
   private redisUnavailableUntil = 0;
 
   constructor(
@@ -412,9 +416,19 @@ export class CreditRoutingService {
         if (details.remainingCredits === null)
           return { ...details, error: "Credit usage response did not include remainingCredits" };
 
+        const parsedRenewal = details.billingPeriodEnd
+          ? Date.parse(details.billingPeriodEnd)
+          : Number.NaN;
+        const renewsAt = Number.isFinite(parsedRenewal) && parsedRenewal > 0 ? parsedRenewal : null;
         if (snapshot.available) {
-          await this.ledger.reconcile(keyId, details.remainingCredits, snapshot.sequence);
+          await this.ledger.reconcile(
+            keyId,
+            details.remainingCredits,
+            snapshot.sequence,
+            renewsAt ?? 0,
+          );
         }
+        this.localPools.set(keyId, { renewsAt, credits: details.remainingCredits });
         if (details.remainingCredits > 0) {
           this.localDisabled.delete(keyId);
           if ((this.localCooldownUntil.get(keyId) || 0) <= Date.now())
@@ -451,20 +465,42 @@ export class CreditRoutingService {
     return Promise.all(apiKeys.map((apiKey) => this.refreshCreditUsage(apiKey)));
   }
 
+  /**
+   * Local fallback mirrors the Redis rule: earliest renewal day first (unknown
+   * renewal last), then most remaining credits, then a random pick among ties.
+   * Renewal/credit data comes from the last successful credit-usage refresh;
+   * credits are decremented locally per reservation for ordering only.
+   */
   private async reserveLocally(
     candidates: Array<{ key: string; keyId: string }>,
     amount: number,
   ): Promise<CreditReservation | null> {
     const now = Date.now();
-    for (let offset = 0; offset < candidates.length; offset += 1) {
-      const index = (this.localCursor + offset) % candidates.length;
-      const candidate = candidates[index];
+    let best: Array<{ key: string; keyId: string }> = [];
+    let bestDay = Number.POSITIVE_INFINITY;
+    let bestCredits = -1;
+    for (const candidate of candidates) {
       if (this.localDisabled.has(candidate.keyId)) continue;
       if ((this.localCooldownUntil.get(candidate.keyId) || 0) > now) continue;
-      this.localCursor = (index + 1) % candidates.length;
-      return { ...candidate, amount, source: "local" };
+      const pool = this.localPools.get(candidate.keyId);
+      const day = pool?.renewsAt
+        ? Math.floor(pool.renewsAt / MS_PER_DAY)
+        : Number.POSITIVE_INFINITY;
+      const credits = pool?.credits ?? -1;
+      if (!best.length || day < bestDay || (day === bestDay && credits > bestCredits)) {
+        best = [candidate];
+        bestDay = day;
+        bestCredits = credits;
+      } else if (day === bestDay && credits === bestCredits) {
+        best.push(candidate);
+      }
     }
-    return null;
+    if (!best.length) return null;
+    const selected = best[Math.floor(Math.random() * best.length)];
+    const pool = this.localPools.get(selected.keyId);
+    if (pool?.credits !== null && pool?.credits !== undefined)
+      pool.credits = Math.max(0, pool.credits - amount);
+    return { ...selected, amount, source: "local" };
   }
 }
 

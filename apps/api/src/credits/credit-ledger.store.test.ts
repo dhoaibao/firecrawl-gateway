@@ -28,7 +28,10 @@ describe("RedisCreditLedgerStore", () => {
     expect(client.eval).toHaveBeenCalledTimes(1);
     const options = client.eval.mock.calls[0][1] as { keys: string[]; arguments: string[] };
     expect(options.keys).toHaveLength(6);
-    expect(options.arguments).toEqual([expect.any(String), "3", "300"]);
+    expect(options.arguments).toEqual([expect.any(String), "3", "300", expect.any(String)]);
+    const script = client.eval.mock.calls[0][0] as string;
+    expect(script).toContain("renewsAt");
+    expect(script).toContain("ties");
     expect(options.keys.join(" ")).not.toContain("fc_secret_api_key_one");
     expect(options.keys.join(" ")).not.toContain("fc_secret_api_key_two");
   });

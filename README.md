@@ -71,7 +71,7 @@ The API listens on `http://localhost:8080`. Set `VITE_API_BASE_URL` to that API 
 
 Create two Vercel projects with roots `apps/api` and `apps/admin`. Each root contains its own `vercel.json`:
 
-- API: configure the variables in `.env.example`, including `DATABASE_URL`, `CRON_SECRET`, the encryption/session secrets, and the single-admin credentials. Set optional `REDIS_URL` to enable shared per-key estimated-credit reservations; without it, the API uses local key rotation.
+- API: configure the variables in `.env.example`, including `DATABASE_URL`, `CRON_SECRET`, the encryption/session secrets, and the single-admin credentials. Set optional `REDIS_URL` to enable shared per-key estimated-credit reservations; without it, the API selects keys locally by the same rule from its last credit refresh.
 - Admin: configure `VITE_API_BASE_URL` to the API's exact origin.
 - Configure exact `ADMIN_ORIGIN` and `API_ORIGIN` values so credentialed CORS is restricted.
 - Verify Prisma migrations separately before starting or redeploying the API. Do not assume Vercel builds or the typecheck workflow apply migrations.

@@ -57,14 +57,17 @@ describe("CreditRoutingService", () => {
     );
   });
 
-  it("falls back to local rotation when Redis is unavailable without fetching credit usage", async () => {
+  it("falls back to random local selection among ties without fetching credit usage", async () => {
     const ledger = makeLedger();
     const service = new CreditRoutingService(config as never, ledger as never);
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const keys = ["fc_first_secret_key", "fc_second_secret_key"];
+    const random = vi.spyOn(Math, "random");
 
+    random.mockReturnValueOnce(0);
     const first = await service.reserve(keys, 1);
+    random.mockReturnValueOnce(0.99);
     const second = await service.reserve(keys, 1);
 
     expect(first?.key).toBe(keys[0]);
@@ -81,6 +84,7 @@ describe("CreditRoutingService", () => {
     const service = new CreditRoutingService(config as never, ledger as never);
     const keys = ["fc_first_secret_key", "fc_second_secret_key"];
 
+    vi.spyOn(Math, "random").mockReturnValue(0);
     const first = await service.reserve(keys, 1);
     expect(first?.key).toBe(keys[0]);
     await service.recordResponse(first!, 402);
@@ -99,8 +103,11 @@ describe("CreditRoutingService", () => {
     const service = new CreditRoutingService(config as never, ledger as never);
     const keys = ["fc_first_secret_key", "fc_second_secret_key", "fc_third_secret_key"];
 
+    const random = vi.spyOn(Math, "random");
+    random.mockReturnValueOnce(0);
     const disabled = await service.reserve(keys, 1);
     await service.recordResponse(disabled!, 402);
+    random.mockReturnValueOnce(0.99);
     const cooledDown = await service.reserve(keys, 1);
     await service.recordResponse(cooledDown!, 429);
 
@@ -255,13 +262,42 @@ describe("CreditRoutingService", () => {
     const key = "fc_refresh_secret_key";
 
     await expect(service.refreshCreditUsage(key)).resolves.toMatchObject({ remainingCredits: 425 });
-    expect(ledger.reconcile).toHaveBeenCalledWith(service.keyId(key), 425, 12);
+    expect(ledger.reconcile).toHaveBeenCalledWith(service.keyId(key), 425, 12, 0);
     vi.advanceTimersByTime(30_001);
 
     await expect(service.refreshCreditUsage(key)).resolves.toMatchObject({
       error: "HTTP 503: upstream unavailable",
     });
     expect(ledger.reconcile).toHaveBeenCalledTimes(1);
+  });
+
+  it("prefers the soonest renewal day, then most credits, in local fallback and passes renewal to Redis", async () => {
+    const ledger = makeLedger({
+      capture: vi.fn().mockResolvedValue({ available: true, sequence: 1 }),
+    });
+    const service = new CreditRoutingService(config as never, ledger as never);
+    const usage: Record<string, { remainingCredits: number; billingPeriodEnd: string }> = {
+      fc_late_many: { remainingCredits: 900, billingPeriodEnd: "2026-09-20T01:00:00Z" },
+      fc_soon_few: { remainingCredits: 100, billingPeriodEnd: "2026-09-05T23:00:00Z" },
+      fc_soon_many: { remainingCredits: 500, billingPeriodEnd: "2026-09-05T01:00:00Z" },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: { headers: { authorization: string } }) => {
+        const key = init.headers.authorization.replace("Bearer ", "");
+        return new Response(JSON.stringify({ data: usage[key] }), { status: 200 });
+      }),
+    );
+    const keys = Object.keys(usage);
+    await service.refreshCreditUsageForKeys(keys);
+    expect(ledger.reconcile).toHaveBeenCalledWith(
+      service.keyId("fc_soon_few"),
+      100,
+      1,
+      Date.parse("2026-09-05T23:00:00Z"),
+    );
+
+    expect((await service.reserve(keys, 1))?.key).toBe("fc_soon_many");
   });
 
   it("coalesces concurrent refreshes and caches only successful responses", async () => {

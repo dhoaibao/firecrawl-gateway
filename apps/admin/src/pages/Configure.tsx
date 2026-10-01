@@ -350,8 +350,9 @@ export default function Configure() {
                 </CardHeader>
                 <div className="space-y-4 px-5 py-4">
                   <p className="text-sm text-muted-foreground">
-                    Add Firecrawl API keys. The gateway uses the key with the most remaining credits
-                    first, randomizing ties, and tries the remaining keys on rate limits or auth
+                    Add Firecrawl API keys. The gateway uses the key that renews soonest first; on
+                    the same renewal day it prefers the key with more remaining credits, picking
+                    randomly on equal credits. It tries the remaining keys on rate limits or auth
                     errors.
                   </p>
                   <div className="flex gap-2">

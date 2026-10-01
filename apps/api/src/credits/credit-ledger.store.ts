@@ -27,10 +27,15 @@ local candidateCount = #KEYS / 3
 local now = tonumber(ARGV[1])
 local amount = tonumber(ARGV[2])
 local reservationTtlSeconds = tonumber(ARGV[3]) or 300
-local selected = 0
-local selectedCredits = -1
+local random = tonumber(ARGV[4]) or 0
+local msPerDay = 86400000
+local bestDay = nil
+local bestCredits = -1
+local ties = {}
 local initialized = false
 
+-- Selection rule: earliest renewal day first (unknown renewal sorts last), then
+-- most remaining credits, then a random pick among exact ties.
 for i = 1, candidateCount do
   local pool = KEYS[i]
   local creditsRaw = redis.call('HGET', pool, 'credits')
@@ -39,12 +44,23 @@ for i = 1, candidateCount do
     local credits = tonumber(creditsRaw) or 0
     local disabled = redis.call('HGET', pool, 'disabled') == '1'
     local cooldownUntil = tonumber(redis.call('HGET', pool, 'cooldownUntil') or '0') or 0
-    if not disabled and cooldownUntil <= now and credits >= amount and credits > selectedCredits then
-      selected = i
-      selectedCredits = credits
+    if not disabled and cooldownUntil <= now and credits >= amount then
+      local renewsAt = tonumber(redis.call('HGET', pool, 'renewsAt') or '0') or 0
+      local day = math.huge
+      if renewsAt > 0 then day = math.floor(renewsAt / msPerDay) end
+      if bestDay == nil or day < bestDay or (day == bestDay and credits > bestCredits) then
+        bestDay = day
+        bestCredits = credits
+        ties = { i }
+      elseif day == bestDay and credits == bestCredits then
+        ties[#ties + 1] = i
+      end
     end
   end
 end
+
+local selected = 0
+if #ties > 0 then selected = ties[math.floor(random * #ties) + 1] or ties[1] end
 
 if not initialized then return {-1, 0} end
 if selected == 0 then return {0, 0} end
@@ -126,6 +142,7 @@ local reservations = KEYS[2]
 local snapshot = tonumber(ARGV[1]) or 0
 local snapshotSequence = tonumber(ARGV[2]) or 0
 local now = ARGV[3]
+local renewsAt = tonumber(ARGV[4]) or 0
 local pending = 0
 local outstanding = 0
 local ids = redis.call('ZRANGE', reservations, 0, -1)
@@ -154,7 +171,7 @@ if credits < 0 then credits = 0 end
 local disabled = snapshot <= 0 and '1' or '0'
 local cooldownUntil = tonumber(redis.call('HGET', pool, 'cooldownUntil') or '0') or 0
 if cooldownUntil <= tonumber(now) then cooldownUntil = 0 end
-redis.call('HSET', pool, 'credits', credits, 'authoritative', snapshot, 'initialized', '1', 'disabled', disabled, 'cooldownUntil', cooldownUntil, 'reserved', outstanding, 'updatedAt', now)
+redis.call('HSET', pool, 'credits', credits, 'authoritative', snapshot, 'initialized', '1', 'disabled', disabled, 'cooldownUntil', cooldownUntil, 'reserved', outstanding, 'renewsAt', renewsAt, 'updatedAt', now)
 return credits
 `;
 
@@ -197,7 +214,12 @@ export class RedisCreditLedgerStore implements OnModuleDestroy {
     const result = await this.run((client) =>
       client.eval(RESERVE_SCRIPT, {
         keys: [...poolKeys, ...reservationSetKeys, ...reservationKeys],
-        arguments: [String(Date.now()), String(amount), String(this.reservationTtlSeconds())],
+        arguments: [
+          String(Date.now()),
+          String(amount),
+          String(this.reservationTtlSeconds()),
+          String(Math.random()),
+        ],
       }),
     );
     if (!result.available) return { kind: "unavailable" };
@@ -240,6 +262,7 @@ export class RedisCreditLedgerStore implements OnModuleDestroy {
     keyId: string,
     remainingCredits: number,
     snapshotSequence: number,
+    renewsAtMs = 0,
   ): Promise<boolean> {
     if (!this.client) return false;
     const result = await this.run((client) =>
@@ -249,6 +272,7 @@ export class RedisCreditLedgerStore implements OnModuleDestroy {
           String(Math.max(0, remainingCredits)),
           String(snapshotSequence),
           String(Date.now()),
+          String(Number.isFinite(renewsAtMs) && renewsAtMs > 0 ? Math.floor(renewsAtMs) : 0),
         ],
       }),
     );
