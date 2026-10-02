@@ -265,7 +265,7 @@ Before considering Admin UI work complete:
 - App shell, root routing, and protected layouts: `apps/admin/src/App.tsx`.
 - UI primitives: `apps/admin/src/components/ui/{button,card,table,badge,select,skeleton,dialog,alert-dialog,sheet,pagination,toggle,toggle-group,sonner}.tsx`.
 - Layout components: `apps/admin/src/components/Sidebar.tsx`, `apps/admin/src/components/PageLayout.tsx`.
-- Page implementations: `apps/admin/src/pages/{Dashboard,ApiKeys,Configure,Account,Login}.tsx`.
+- Page implementations: `apps/admin/src/pages/{Dashboard,ApiKeys,CloudKeys,Configure,Account,Login}.tsx`.
 - Shared helpers: `apps/admin/src/lib/utils.ts`, `apps/admin/src/lib/routing.ts`, and `apps/admin/src/lib/api.ts`.
 - Feedback components: `apps/admin/src/contexts/ToastContext.tsx`, `apps/admin/src/components/ConfirmDialog.tsx`.
 - Data display: `apps/admin/src/components/DataTable.tsx`, `apps/admin/src/components/MetricCard.tsx`, `apps/admin/src/components/MetricsGrid.tsx`.

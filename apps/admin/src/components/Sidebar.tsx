@@ -1,6 +1,15 @@
 import { useEffect, useState } from "react";
 import { useLocation, Link } from "react-router-dom";
-import { LayoutDashboard, Key, LogOut, Menu, Shield, Settings, KeyRound } from "lucide-react";
+import {
+  LayoutDashboard,
+  Key,
+  LogOut,
+  Menu,
+  Shield,
+  Settings,
+  KeyRound,
+  CreditCard,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useReturnFocus } from "@/hooks/useReturnFocus";
 import { useAuth } from "@/contexts/AuthContext";
@@ -10,6 +19,7 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/
 const navItems = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard },
   { label: "API Keys", href: "/api-keys", icon: Key },
+  { label: "Cloud API Keys", href: "/cloud-keys", icon: CreditCard },
   { label: "Configure", href: "/configure", icon: Settings },
   { label: "Account", href: "/account", icon: KeyRound },
 ];

@@ -1,15 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from "react";
-import {
-  Settings,
-  Save,
-  RotateCcw,
-  Plus,
-  Trash2,
-  Shield,
-  CreditCard,
-  RefreshCw,
-  Route,
-} from "lucide-react";
+import { useState, useEffect, useCallback } from "react";
+import { Settings, Save, RotateCcw, Shield, Route } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,9 +15,7 @@ import { useToast } from "@/hooks/useToast";
 import { useConfirmDialog } from "@/components/ConfirmDialog";
 import PageLayout from "@/components/PageLayout";
 import { api } from "@/lib/api";
-import { creditKeyPrefix, nextUpPrefixes } from "@/lib/credits";
-import { Badge } from "@/components/ui/badge";
-import type { SettingsData, CreditUsageItem } from "@/types";
+import type { SettingsData } from "@/types";
 
 type SettingKey = keyof SettingsData;
 
@@ -36,7 +24,7 @@ interface SettingField {
   label: string;
   description: string;
   type: "number" | "select" | "text";
-  category: "security" | "cloud" | "routing";
+  category: "security" | "routing";
   icon: React.ComponentType<{ className?: string }>;
   min?: number;
   step?: number;
@@ -78,138 +66,19 @@ const FIELDS: SettingField[] = [
 const CATEGORIES = [
   { key: "routing" as const, label: "Routing", icon: Route },
   { key: "security" as const, label: "Security & Access", icon: Shield },
-  { key: "cloud" as const, label: "Firecrawl Cloud API Keys", icon: CreditCard },
 ] as const;
-
-interface ApiKeyRow {
-  id: string;
-  key: string;
-}
-
-function maskKey(key: string): string {
-  if (key.length <= 12) return key;
-  return `${key.slice(0, 8)}...${key.slice(-4)}`;
-}
-
-function makeRows(keys: string[], idCounter: { current: number }): ApiKeyRow[] {
-  return keys.map((key) => ({ id: `key-${idCounter.current++}`, key }));
-}
-
-function ApiKeyRow({
-  row,
-  usage,
-  nextUp,
-  tiedForNext,
-  onRemove,
-}: {
-  row: ApiKeyRow;
-  usage: CreditUsageItem | undefined;
-  nextUp: boolean;
-  tiedForNext: boolean;
-  onRemove: () => void;
-}) {
-  return (
-    <div className="flex flex-col gap-2 rounded-lg border border-white/[0.06] bg-surface-1 px-4 py-3">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2 min-w-0">
-          <code className="truncate text-sm font-mono text-foreground" title={row.key}>
-            {maskKey(row.key)}
-          </code>
-          {nextUp && (
-            <Badge
-              variant="success"
-              title={
-                tiedForNext
-                  ? "Tied on renewal day and credits; the gateway picks one at random"
-                  : "Renews soonest, so the gateway uses this key first"
-              }
-            >
-              {tiedForNext ? "Tied for next" : "Next up"}
-            </Badge>
-          )}
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-7 border-danger-muted bg-danger-muted/30 text-danger-fg hover:bg-danger-muted/50 shrink-0"
-          onClick={onRemove}
-        >
-          <Trash2 className="size-3 mr-1" /> Remove
-        </Button>
-      </div>
-      {usage?.error ? (
-        <p className="text-xs text-danger-fg">{usage.error}</p>
-      ) : usage ? (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-          <span className="font-medium text-foreground">
-            {usage.remainingCredits?.toLocaleString() ?? "—"} /{" "}
-            {usage.planCredits?.toLocaleString() ?? "—"} credits
-          </span>
-          <span>
-            Renews on{" "}
-            {usage.billingPeriodEnd ? new Date(usage.billingPeriodEnd).toLocaleDateString() : "—"}
-          </span>
-        </div>
-      ) : (
-        <p className="text-xs text-muted-foreground">
-          Credit usage appears after this key is saved.
-        </p>
-      )}
-    </div>
-  );
-}
 
 export default function Configure() {
   const [settings, setSettings] = useState<SettingsData>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [apiKeyRows, setApiKeyRows] = useState<ApiKeyRow[]>([]);
-  const [newKey, setNewKey] = useState("");
-  const [creditUsage, setCreditUsage] = useState<CreditUsageItem[]>([]);
-  const [creditUsageLoading, setCreditUsageLoading] = useState(false);
   const [savedSnapshot, setSavedSnapshot] = useState("");
-  const idCounter = useRef(0);
   const { addToast } = useToast();
   const { confirm: confirmReset, dialog: resetDialog } = useConfirmDialog();
-  const usageByPrefix = new Map(creditUsage.map((item) => [item.keyPrefix, item]));
-  const nextUpSet = nextUpPrefixes(creditUsage);
-  const successfulCreditUsage = creditUsage.filter(
-    (usage) => !usage.error && typeof usage.remainingCredits === "number",
-  );
-  const totalRemainingCredits = successfulCreditUsage.reduce(
-    (total, usage) => total + (usage.remainingCredits ?? 0),
-    0,
-  );
-  const totalPlanCredits = successfulCreditUsage.reduce(
-    (total, usage) => total + (usage.planCredits ?? 0),
-    0,
-  );
 
   useEffect(() => {
     document.title = "Configure — Firecrawl Gateway";
   }, []);
-
-  const fetchCreditUsage = useCallback(
-    async (signal?: AbortSignal) => {
-      setCreditUsageLoading(true);
-      try {
-        const json = await api.get<{ data: CreditUsageItem[] }>(
-          "/admin/api/settings/credit-usage",
-          { signal },
-        );
-        if (signal?.aborted) return;
-        setCreditUsage(json.data || []);
-      } catch (err) {
-        if (signal?.aborted) return;
-        addToast(err instanceof Error ? err.message : "Failed to load credit usage", "error");
-      } finally {
-        if (!signal?.aborted) {
-          setCreditUsageLoading(false);
-        }
-      }
-    },
-    [addToast],
-  );
 
   const fetchSettings = useCallback(
     async (signal?: AbortSignal) => {
@@ -218,10 +87,7 @@ export default function Configure() {
         if (signal?.aborted) return;
         const data = json.data || {};
         setSettings(data);
-        idCounter.current = 0;
-        const rows = makeRows(data.firecrawl_api_keys || [], idCounter);
-        setApiKeyRows(rows);
-        setSavedSnapshot(JSON.stringify({ settings: data, keys: rows.map((row) => row.key) }));
+        setSavedSnapshot(JSON.stringify(data));
       } catch (err) {
         if (signal?.aborted) return;
         addToast(err instanceof Error ? err.message : "Failed to load settings", "error");
@@ -240,17 +106,7 @@ export default function Configure() {
     return () => controller.abort();
   }, [fetchSettings]);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    void fetchCreditUsage(controller.signal);
-    return () => controller.abort();
-  }, [fetchCreditUsage]);
-
-  const currentSnapshot = JSON.stringify({
-    settings,
-    keys: apiKeyRows.map((row) => row.key),
-  });
-  const isDirty = Boolean(savedSnapshot) && currentSnapshot !== savedSnapshot;
+  const isDirty = Boolean(savedSnapshot) && JSON.stringify(settings) !== savedSnapshot;
 
   useEffect(() => {
     if (!isDirty) return;
@@ -265,37 +121,19 @@ export default function Configure() {
     setSettings((prev) => ({ ...prev, [key]: value }));
   }
 
-  function addApiKey() {
-    const trimmed = newKey.trim();
-    if (!trimmed) return;
-    if (apiKeyRows.some((row) => row.key === trimmed)) {
-      addToast("This key is already in the list", "error");
-      return;
-    }
-    setApiKeyRows((prev) => [...prev, { id: `key-${idCounter.current++}`, key: trimmed }]);
-    setNewKey("");
-  }
-
-  function removeApiKey(index: number) {
-    setApiKeyRows((prev) => prev.filter((_, i) => i !== index));
-  }
-
   async function handleSave() {
     setSaving(true);
     try {
       const payload: Partial<SettingsData> = {
-        firecrawl_api_keys: apiKeyRows.map((row) => row.key),
         self_hosted_firecrawl_url: settings.self_hosted_firecrawl_url ?? "",
         default_route_mode: settings.default_route_mode ?? DEFAULT_ROUTE_MODE,
         api_key_inactivity_revoke_days: settings.api_key_inactivity_revoke_days ?? 0,
       };
 
       await api.put<{ data: SettingsData }>("/admin/api/settings", payload);
-      setSettings((prev) => ({ ...prev, ...payload }));
-      setSavedSnapshot(
-        JSON.stringify({ settings: { ...settings, ...payload }, keys: payload.firecrawl_api_keys }),
-      );
-      await fetchCreditUsage();
+      const next = { ...settings, ...payload };
+      setSettings(next);
+      setSavedSnapshot(JSON.stringify(next));
       addToast("Settings saved successfully", "success");
     } catch (err) {
       addToast(err instanceof Error ? err.message : "Failed to save settings", "error");
@@ -358,114 +196,6 @@ export default function Configure() {
       <div className="grid gap-4 lg:grid-cols-2">
         {CATEGORIES.map((cat) => {
           const catFields = FIELDS.filter((f) => f.category === cat.key);
-          if (cat.key === "cloud") {
-            return (
-              <Card
-                key={cat.key}
-                className="border-white/[0.06] bg-surface-2 py-0 shadow-none lg:col-span-2"
-              >
-                <CardHeader className="border-b border-white/[0.06] bg-surface-3 px-5 py-4">
-                  <div className="flex items-center gap-2">
-                    <cat.icon className="size-4 text-muted-foreground" />
-                    <CardTitle className="text-sm font-semibold text-foreground">
-                      {cat.label}
-                    </CardTitle>
-                  </div>
-                </CardHeader>
-                <div className="space-y-4 px-5 py-4">
-                  <p className="text-sm text-muted-foreground">
-                    Add Firecrawl API keys. The gateway uses the key that renews soonest first; on
-                    the same renewal day it prefers the key with more remaining credits, picking
-                    randomly on equal credits. It tries the remaining keys on rate limits or auth
-                    errors.
-                  </p>
-                  <div className="flex gap-2">
-                    <Input
-                      type="text"
-                      placeholder="Enter Firecrawl API key..."
-                      value={newKey}
-                      onChange={(e) => setNewKey(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          addApiKey();
-                        }
-                      }}
-                      className="flex-1"
-                    />
-                    <Button variant="outline" size="sm" onClick={addApiKey}>
-                      <Plus className="size-4 mr-1" /> Add
-                    </Button>
-                  </div>
-                  <div className="flex flex-col gap-3 rounded-lg border border-white/[0.06] bg-surface-1 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="flex min-w-0 items-center gap-3">
-                      <div className="rounded-md border border-white/[0.06] bg-white/[0.04] p-2 text-muted-foreground">
-                        <CreditCard className="size-4" />
-                      </div>
-                      <div className="min-w-0">
-                        <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-                          Total available credits
-                        </p>
-                        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                          <span className="font-mono text-xl font-semibold tabular-nums text-foreground">
-                            {creditUsageLoading && creditUsage.length === 0
-                              ? "—"
-                              : totalRemainingCredits.toLocaleString()}
-                          </span>
-                          {!creditUsageLoading && successfulCreditUsage.length > 0 && (
-                            <span className="text-xs text-muted-foreground">
-                              of {totalPlanCredits.toLocaleString()} combined plan credits
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-xs text-muted-foreground">
-                          {creditUsageLoading
-                            ? "Refreshing credit balances..."
-                            : creditUsage.length === 0
-                              ? "No saved API keys"
-                              : `${successfulCreditUsage.length} of ${creditUsage.length} key balances included${successfulCreditUsage.length < creditUsage.length ? ` · ${creditUsage.length - successfulCreditUsage.length} unavailable` : ""}`}
-                        </p>
-                      </div>
-                    </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="shrink-0"
-                      onClick={() => void fetchCreditUsage()}
-                      disabled={creditUsageLoading}
-                    >
-                      <RefreshCw
-                        className={`size-4 mr-1 ${creditUsageLoading ? "animate-spin" : ""}`}
-                      />
-                      {creditUsageLoading ? "Refreshing..." : "Refresh usage"}
-                    </Button>
-                  </div>
-                  <div className="space-y-2">
-                    {apiKeyRows.length === 0 && (
-                      <div className="flex items-center gap-2 rounded-lg border border-white/[0.06] bg-surface-1 px-4 py-3 text-sm text-muted-foreground">
-                        No API keys configured. Cloud fallback and cloud-first routing will not work
-                        until you add at least one key.
-                      </div>
-                    )}
-                    {apiKeyRows.map((row, i) => {
-                      const prefix = creditKeyPrefix(row.key);
-                      return (
-                        <ApiKeyRow
-                          key={row.id}
-                          row={row}
-                          usage={usageByPrefix.get(prefix)}
-                          nextUp={nextUpSet.has(prefix)}
-                          tiedForNext={nextUpSet.has(prefix) && nextUpSet.size > 1}
-                          onRemove={() => removeApiKey(i)}
-                        />
-                      );
-                    })}
-                  </div>
-                </div>
-              </Card>
-            );
-          }
-
           if (catFields.length === 0) return null;
 
           return (
