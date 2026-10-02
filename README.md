@@ -6,14 +6,7 @@ This repository is a separate gateway application, not Firecrawl or PostgreSQL. 
 
 ## Why this exists
 
-Operators may want to keep existing Firecrawl-compatible clients pointed at one gateway origin while deciding where eligible work should run. This project is intended to make that boundary explicit:
-
-- route requests to an external self-hosted Firecrawl instance, Firecrawl Cloud, or an eligible fallback;
-- issue `fc_`-prefixed virtual API keys to clients while keeping the single administrator's credentials environment-backed;
-- configure upstream Cloud keys and routing policy from the admin dashboard; and
-- inspect request outcomes, backend choice, fallback behavior, status, and latency in PostgreSQL-backed audit data.
-
-The gateway is useful when self-hosted capacity and Cloud capabilities need different operational treatment, but it is not a promise of full upstream feature parity. Requests that require Cloud-managed behavior still need Cloud, and sensitive or private requests are subject to stricter fallback rules.
+Keep Firecrawl-compatible clients pointed at one gateway origin while deciding where eligible work runs: an external self-hosted Firecrawl, Firecrawl Cloud, or a policy-controlled fallback. It issues `fc_`-prefixed virtual API keys, lets the single administrator configure Cloud keys and routing from a dashboard, and records outcomes in PostgreSQL-backed audit data. It is not a promise of full upstream feature parity: Cloud-managed requests still need Cloud, and sensitive or private requests face stricter fallback rules.
 
 ## Architecture
 
@@ -22,16 +15,7 @@ The Bun-workspace Turborepo contains two independently deployable Vercel project
 - `apps/api` — a native NestJS API on the Fastify adapter. It authenticates virtual API keys, applies route policy, proxies `/v1/*` and `/v2/*`, and exposes health, readiness, administration, and maintenance routes.
 - `apps/admin` — a root-hosted React/Vite admin SPA. It calls authenticated `/admin/api/*` endpoints on the API and does not run under an `/admin` URL prefix.
 
-```mermaid
-flowchart LR
-    Client[Firecrawl-compatible client] -->|/v1/* or /v2/*| API[Gateway API]
-    Browser[Operator browser] -->|root-hosted UI| Admin[Admin SPA]
-    Admin -->|authenticated /admin/api/*| API
-    API -->|Cloud routes and eligible fallback| Cloud[External Firecrawl Cloud]
-    API -->|Self-hosted routes and eligible fallback| SelfHosted[External self-hosted Firecrawl]
-    API -->|settings, keys, audits, rate limits| DB[(External PostgreSQL)]
-    Cron[Vercel maintenance cron] -->|/api/cron/maintenance| API
-```
+![Firecrawl Gateway architecture](assets/gateway-architecture.png)
 
 The self-hosted Firecrawl URL is configured in the admin UI. Cloud API keys are encrypted in PostgreSQL. PostgreSQL is also the source for global settings, API keys, audit logs, and shared rate-limit state; the repository does not add a file-based audit store.
 
@@ -55,28 +39,9 @@ The API's security and runtime boundaries are deliberate:
 - The API function is configured for up to 120 seconds, subject to the Vercel plan's maximum. The daily maintenance cron permanently removes audit entries older than 30 days.
 - Prisma migrations are not applied during API startup. The single-admin cutover is destructive and requires explicit approval; see [`RELEASING.md`](RELEASING.md) and [`SELF_HOST.md`](SELF_HOST.md).
 
-## Quick start
+## Getting started
 
-```bash
-bun install
-cp .env.example .env
-bun run db:generate
-bun run db:migrate
-bun run dev
-```
-
-The API listens on `http://localhost:8080`. Set `VITE_API_BASE_URL` to that API origin when running the admin locally. The migration command requires a migration-capable direct PostgreSQL connection and must be run only after reviewing the migration warning above.
-
-## Deploy
-
-Create two Vercel projects with roots `apps/api` and `apps/admin`. Each root contains its own `vercel.json`:
-
-- API: configure the variables in `.env.example`, including `DATABASE_URL`, `CRON_SECRET`, the encryption/session secrets, and the single-admin credentials. Set optional `REDIS_URL` to enable shared per-key estimated-credit reservations; without it, the API selects keys locally by the same rule from its last credit refresh.
-- Admin: configure `VITE_API_BASE_URL` to the API's exact origin.
-- Configure exact `ADMIN_ORIGIN` and `API_ORIGIN` values so credentialed CORS is restricted.
-- Verify Prisma migrations separately before starting or redeploying the API. Do not assume Vercel builds or the typecheck workflow apply migrations.
-
-Vercel deployment is separate from GitHub Actions: the repository workflow only runs `bun run typecheck` for pull requests and pushes to `main`. Use [`RELEASING.md`](RELEASING.md) for release and deployment verification, and [`QUICKSTART.md`](QUICKSTART.md) for the full setup sequence.
+Follow [`QUICKSTART.md`](QUICKSTART.md) for local development and the two-project Vercel setup, and [`.env.example`](.env.example) for configuration. Prisma migrations are never applied by Vercel builds, the typecheck workflow, or API startup; the single-admin cutover is destructive, so review [`RELEASING.md`](RELEASING.md) before running `bun run db:migrate`.
 
 ## Documentation
 
