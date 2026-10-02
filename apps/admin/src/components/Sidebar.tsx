@@ -18,7 +18,7 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/
 
 const navItems = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard },
-  { label: "API Keys", href: "/api-keys", icon: Key },
+  { label: "Virtual API Keys", href: "/api-keys", icon: Key },
   { label: "Cloud API Keys", href: "/cloud-keys", icon: CreditCard },
   { label: "Configure", href: "/configure", icon: Settings },
   { label: "Account", href: "/account", icon: KeyRound },

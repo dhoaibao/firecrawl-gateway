@@ -47,7 +47,7 @@ export default function ApiKeys() {
   const [pageSize, setPageSize] = useState(10);
 
   useEffect(() => {
-    document.title = "API Keys — Firecrawl Gateway";
+    document.title = "Virtual API Keys — Firecrawl Gateway";
   }, []);
 
   const filteredKeys = keys.filter((k) => {
@@ -68,7 +68,7 @@ export default function ApiKeys() {
       const json = await api.get<{ data: ApiKeyData[] }>("/admin/api/api-keys");
       setKeys(json.data || []);
     } catch (err) {
-      addToast(err instanceof Error ? err.message : "Error loading API keys", "error");
+      addToast(err instanceof Error ? err.message : "Error loading virtual API keys", "error");
     } finally {
       setLoading(false);
     }
@@ -91,7 +91,7 @@ export default function ApiKeys() {
       setShowForm(false);
       await fetchKeys();
     } catch (err) {
-      addToast(err instanceof Error ? err.message : "Failed to create API key", "error");
+      addToast(err instanceof Error ? err.message : "Failed to create virtual API key", "error");
     } finally {
       setCreating(false);
     }
@@ -100,17 +100,18 @@ export default function ApiKeys() {
   async function doRevoke(id: string) {
     try {
       await api.delete(`/admin/api/api-keys/${id}`);
-      addToast("API key revoked", "success");
+      addToast("Virtual API key revoked", "success");
       await fetchKeys();
     } catch (err) {
-      addToast(err instanceof Error ? err.message : "Failed to revoke API key", "error");
+      addToast(err instanceof Error ? err.message : "Failed to revoke virtual API key", "error");
     }
   }
 
   function handleRevoke(id: string) {
     confirmRevoke({
-      title: "Revoke API Key",
-      message: "Are you sure you want to revoke this API key? This action cannot be undone.",
+      title: "Revoke Virtual API Key",
+      message:
+        "Are you sure you want to revoke this virtual API key? This action cannot be undone.",
       confirmLabel: "Revoke",
       variant: "warning",
       onConfirm: () => doRevoke(id),
@@ -123,7 +124,7 @@ export default function ApiKeys() {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      addToast("Failed to copy API key", "error");
+      addToast("Failed to copy virtual API key", "error");
     }
   }
 
@@ -143,7 +144,7 @@ export default function ApiKeys() {
 
   return (
     <PageLayout
-      title="API Keys"
+      title="Virtual API Keys"
       icon={Key}
       count={{ filtered: filteredKeys.length, total: keys.length }}
       actions={
@@ -305,7 +306,7 @@ export default function ApiKeys() {
       {createdKey && (
         <div className="mb-6 rounded-lg border border-success-muted bg-success-muted/30 p-4 space-y-2">
           <p className="text-sm font-medium text-success-fg">
-            API key created. Copy it now — it won't be shown again.
+            Virtual API key created. Copy it now — it won't be shown again.
           </p>
           <div className="flex items-center gap-2">
             <code className="flex-1 rounded-lg bg-surface-2 px-3 py-2 text-sm font-mono text-foreground">
@@ -316,8 +317,8 @@ export default function ApiKeys() {
               size="icon"
               className="size-8 shrink-0"
               onClick={() => createdKey.key && copyKey(createdKey.key)}
-              aria-label={copied ? "API key copied" : "Copy API key"}
-              title={copied ? "Copied" : "Copy API key"}
+              aria-label={copied ? "Virtual API key copied" : "Copy virtual API key"}
+              title={copied ? "Copied" : "Copy virtual API key"}
             >
               {copied ? <Check className="size-4 text-success" /> : <Copy className="size-4" />}
             </Button>
@@ -333,7 +334,7 @@ export default function ApiKeys() {
 
       <FormDialog
         open={showForm}
-        title="Create API key"
+        title="Create virtual API key"
         description="Name this key so you can identify its environment or application later."
         onClose={() => setShowForm(false)}
         footer={
@@ -435,10 +436,14 @@ export default function ApiKeys() {
           emptyState={
             <EmptyState
               icon={KeyRound}
-              title={keys.length === 0 ? "No API keys found" : "No API keys match your filters"}
+              title={
+                keys.length === 0
+                  ? "No virtual API keys found"
+                  : "No virtual API keys match your filters"
+              }
               description={
                 keys.length === 0
-                  ? "Create your first API key to start using the gateway."
+                  ? "Create your first virtual API key to start using the gateway."
                   : "Try adjusting your search or filter criteria."
               }
               action={
