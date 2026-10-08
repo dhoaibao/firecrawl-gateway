@@ -1,11 +1,12 @@
-# Self-hosted Firecrawl for a single user. Defaults fit a ~2 GB host; the
-# .env.example presets scale concurrency and memory ceilings up for 4 GB / 8 GB.
+# Self-hosted Firecrawl for a single user. Defaults fit a ~4 GB host (about
+# 2.4 GB in use at idle); the .env.example presets scale up for 6 GB / 8 GB.
 #
 # Adapted from https://github.com/firecrawl/firecrawl/blob/main/docker-compose.yaml
 # and SELF_HOST.md. Differences from upstream: published GHCR images instead of
-# local builds, low-concurrency defaults, env-driven memory ceilings (default sum
-# ~1.8 GB), and the API bound to loopback. The limits are estimates, not upstream
-# guidance; tune them with `docker stats`.
+# local builds, low-concurrency defaults, env-driven memory ceilings, and the API
+# bound to loopback. The api ceiling comes from measurement: the harness runs
+# 8 Node processes plus itself (~1.7 GiB steady with NUQ_WORKER_COUNT=1, ~0.33
+# GiB more per extra worker), so a 2 GB api limit or less is not viable.
 #
 # Usage (from this directory):
 #   cp .env.example .env
@@ -70,10 +71,10 @@ services:
     cap_drop:
       - ALL
     cpus: ${PLAYWRIGHT_CPUS:-1.0}
-    mem_limit: ${PLAYWRIGHT_MEM_LIMIT:-512m}
-    memswap_limit: ${PLAYWRIGHT_MEM_LIMIT:-512m}
+    mem_limit: ${PLAYWRIGHT_MEM_LIMIT:-768m}
+    memswap_limit: ${PLAYWRIGHT_MEM_LIMIT:-768m}
     tmpfs:
-      - /tmp/.cache:noexec,nosuid,size=${PLAYWRIGHT_TMPFS_SIZE:-64m}
+      - /tmp/.cache:noexec,nosuid,size=${PLAYWRIGHT_TMPFS_SIZE:-128m}
 
   api:
     <<: *common-service
@@ -101,9 +102,9 @@ services:
     ports:
       - "${FIRECRAWL_BIND_ADDRESS:-127.0.0.1}:${FIRECRAWL_PORT:-3002}:3002"
     command: node dist/src/harness.js --start-docker
-    cpus: ${API_CPUS:-1.0}
-    mem_limit: ${API_MEM_LIMIT:-768m}
-    memswap_limit: ${API_MEM_LIMIT:-768m}
+    cpus: ${API_CPUS:-2.0}
+    mem_limit: ${API_MEM_LIMIT:-2560m}
+    memswap_limit: ${API_MEM_LIMIT:-2560m}
 
   redis:
     image: redis:alpine
@@ -130,8 +131,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 6
-    mem_limit: ${RABBITMQ_MEM_LIMIT:-256m}
-    memswap_limit: ${RABBITMQ_MEM_LIMIT:-256m}
+    mem_limit: ${RABBITMQ_MEM_LIMIT:-384m}
+    memswap_limit: ${RABBITMQ_MEM_LIMIT:-384m}
 
   nuq-postgres:
     image: ghcr.io/firecrawl/nuq-postgres:${NUQ_POSTGRES_VERSION:-latest}
