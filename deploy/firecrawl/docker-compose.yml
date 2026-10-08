@@ -1,0 +1,155 @@
+# Self-hosted Firecrawl for a single user. Defaults fit a ~2 GB host; the
+# .env.example presets scale concurrency and memory ceilings up for 4 GB / 8 GB.
+#
+# Adapted from https://github.com/firecrawl/firecrawl/blob/main/docker-compose.yaml
+# and SELF_HOST.md. Differences from upstream: published GHCR images instead of
+# local builds, low-concurrency defaults, env-driven memory ceilings (default sum
+# ~1.8 GB), and the API bound to loopback. The limits are estimates, not upstream
+# guidance; tune them with `docker stats`.
+#
+# Usage (from this directory):
+#   cp .env.example .env
+#   docker compose up -d
+#   curl http://127.0.0.1:3002/v0/health/readiness
+
+name: firecrawl
+
+x-common-service: &common-service
+  image: ghcr.io/firecrawl/firecrawl:${FIRECRAWL_VERSION:-2.11.489}
+  restart: unless-stopped
+  networks:
+    - backend
+  ulimits:
+    nofile:
+      soft: 65535
+      hard: 65535
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+      compress: "true"
+
+x-common-env: &common-env
+  REDIS_URL: redis://redis:6379
+  REDIS_RATE_LIMIT_URL: redis://redis:6379
+  PLAYWRIGHT_MICROSERVICE_URL: http://playwright-service:3000/scrape
+  POSTGRES_USER: ${POSTGRES_USER:-postgres}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+  POSTGRES_DB: ${POSTGRES_DB:-postgres}
+  POSTGRES_HOST: nuq-postgres
+  POSTGRES_PORT: "5432"
+  USE_DB_AUTHENTICATION: "false"
+  # Low-concurrency profile for 1 user. The harness starts this many separate
+  # scrape worker processes (config.ts NUQ_WORKER_COUNT, upstream default 5).
+  # Upstream's NUM_WORKERS_PER_QUEUE / MAX_CONCURRENT_JOBS / BROWSER_POOL_SIZE
+  # are not read by apps/api/src, so they are intentionally not set here.
+  NUQ_WORKER_COUNT: ${NUQ_WORKER_COUNT:-1}
+  BULL_AUTH_KEY: ${BULL_AUTH_KEY:-}
+  LOGGING_LEVEL: ${LOGGING_LEVEL:-info}
+  PROXY_SERVER: ${PROXY_SERVER:-}
+  PROXY_USERNAME: ${PROXY_USERNAME:-}
+  PROXY_PASSWORD: ${PROXY_PASSWORD:-}
+
+services:
+  playwright-service:
+    image: ghcr.io/firecrawl/playwright-service:${PLAYWRIGHT_SERVICE_VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      PORT: "3000"
+      PROXY_SERVER: ${PROXY_SERVER:-}
+      PROXY_USERNAME: ${PROXY_USERNAME:-}
+      PROXY_PASSWORD: ${PROXY_PASSWORD:-}
+      BLOCK_MEDIA: ${BLOCK_MEDIA:-}
+      # Concurrent browser pages; upstream default is 10.
+      MAX_CONCURRENT_PAGES: ${PLAYWRIGHT_MAX_CONCURRENT_PAGES:-1}
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cpus: ${PLAYWRIGHT_CPUS:-1.0}
+    mem_limit: ${PLAYWRIGHT_MEM_LIMIT:-512m}
+    memswap_limit: ${PLAYWRIGHT_MEM_LIMIT:-512m}
+    tmpfs:
+      - /tmp/.cache:noexec,nosuid,size=${PLAYWRIGHT_TMPFS_SIZE:-64m}
+
+  api:
+    <<: *common-service
+    environment:
+      <<: *common-env
+      HOST: "0.0.0.0"
+      PORT: "3002"
+      EXTRACT_WORKER_PORT: "3004"
+      WORKER_PORT: "3005"
+      NUQ_RABBITMQ_URL: amqp://rabbitmq:5672
+      HARNESS_STARTUP_TIMEOUT_MS: ${HARNESS_STARTUP_TIMEOUT_MS:-60000}
+      ENV: local
+    depends_on:
+      redis:
+        condition: service_started
+      playwright-service:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+      nuq-postgres:
+        condition: service_healthy
+    # The API is unauthenticated (USE_DB_AUTHENTICATION=false). Keep it on
+    # loopback and put an authenticating reverse proxy or private network in
+    # front of it before exposing it to the gateway.
+    ports:
+      - "${FIRECRAWL_BIND_ADDRESS:-127.0.0.1}:${FIRECRAWL_PORT:-3002}:3002"
+    command: node dist/src/harness.js --start-docker
+    cpus: ${API_CPUS:-1.0}
+    mem_limit: ${API_MEM_LIMIT:-768m}
+    memswap_limit: ${API_MEM_LIMIT:-768m}
+
+  redis:
+    image: redis:alpine
+    restart: unless-stopped
+    command: redis-server --maxmemory ${REDIS_MAXMEMORY:-32mb} --maxmemory-policy noeviction
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    mem_limit: ${REDIS_MEM_LIMIT:-64m}
+    memswap_limit: ${REDIS_MEM_LIMIT:-64m}
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    restart: unless-stopped
+    command: rabbitmq-server
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+    mem_limit: ${RABBITMQ_MEM_LIMIT:-256m}
+    memswap_limit: ${RABBITMQ_MEM_LIMIT:-256m}
+
+  nuq-postgres:
+    image: ghcr.io/firecrawl/nuq-postgres:${NUQ_POSTGRES_VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    mem_limit: ${POSTGRES_MEM_LIMIT:-192m}
+    memswap_limit: ${POSTGRES_MEM_LIMIT:-192m}
+
+networks:
+  backend:
+    driver: bridge

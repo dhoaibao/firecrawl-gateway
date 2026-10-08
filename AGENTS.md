@@ -4,7 +4,7 @@
 
 ## Repository Purpose
 
-This Bun-workspace Turborepo ships an independently deployable NestJS/Fastify gateway API and root-hosted React/Vite admin dashboard for externally hosted Firecrawl and PostgreSQL services; it does not host either runtime service.
+This Bun-workspace Turborepo ships an independently deployable NestJS/Fastify gateway API and root-hosted React/Vite admin dashboard for externally hosted Firecrawl and PostgreSQL services; it does not host PostgreSQL. `deploy/firecrawl/docker-compose.yml` is an optional reference stack for self-hosting Firecrawl.
 
 ## Project Operating Guide
 
