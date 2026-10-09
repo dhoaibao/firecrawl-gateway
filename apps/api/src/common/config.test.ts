@@ -30,6 +30,14 @@ describe("loadConfig", () => {
     expect(loadConfig(baseEnv).redisUrl).toBe("");
   });
 
+  it("defaults the self-hosted Firecrawl to the Compose stack and trims trailing slashes", () => {
+    expect(loadConfig(baseEnv).selfHostedBaseUrl).toBe("http://127.0.0.1:3002");
+    expect(
+      loadConfig({ ...baseEnv, FIRECRAWL_SELF_HOSTED_URL: "http://firecrawl:3002/" })
+        .selfHostedBaseUrl,
+    ).toBe("http://firecrawl:3002");
+  });
+
   it("allows an empty session secret when authentication is disabled", () => {
     const config = loadConfig({ AUTH_ENABLED: "false", ...baseEnv, SESSION_SECRET: undefined });
 

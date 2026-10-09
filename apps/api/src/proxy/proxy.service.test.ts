@@ -6,6 +6,7 @@ import { ProxyService } from "./proxy.service";
 
 const config = {
   cloudBaseUrl: "https://cloud.test",
+  selfHostedBaseUrl: "https://self.test",
   requestTimeoutMs: 1_000,
   maxBodyBytes: 1_024 * 1_024,
   authEnabled: false,
@@ -56,7 +57,6 @@ function settingsWith(
     default_route_mode: routeMode
       ? { key: "default_route_mode", value: routeMode, updated_at: "2026-01-01T00:00:00.000Z" }
       : null,
-    self_hosted_firecrawl_url: null,
     firecrawl_api_keys: null,
     ...records,
   };
@@ -68,16 +68,7 @@ function settingsWith(
 }
 
 function makeSettings() {
-  return settingsWith(
-    {
-      self_hosted_firecrawl_url: {
-        key: "self_hosted_firecrawl_url",
-        value: "https://self.test/",
-        updated_at: "2026-01-01T00:00:00.000Z",
-      },
-    },
-    "self-hosted-only",
-  );
+  return settingsWith({}, "self-hosted-only");
 }
 
 function makeCredits() {
@@ -266,17 +257,12 @@ describe("ProxyService", () => {
     await Promise.resolve();
 
     expect(settings.getSettings).toHaveBeenCalledTimes(1);
-    expect(settings.getSettings).toHaveBeenCalledWith([
-      "default_route_mode",
-      "self_hosted_firecrawl_url",
-      "firecrawl_api_keys",
-    ]);
+    expect(settings.getSettings).toHaveBeenCalledWith(["default_route_mode", "firecrawl_api_keys"]);
     expect(keys.validateApiKey).toHaveBeenCalledWith("gw_key");
 
     resolveKey({ id: "key-1" });
     resolveSettings({
       default_route_mode: { key: "default_route_mode", value: "self-hosted-only" },
-      self_hosted_firecrawl_url: { key: "self_hosted_firecrawl_url", value: "https://self.test/" },
       firecrawl_api_keys: null,
     });
     await handled;

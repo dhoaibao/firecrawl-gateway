@@ -29,6 +29,12 @@ export const configSchema = z
       .url()
       .default("https://api.firecrawl.dev")
       .transform((value) => value.replace(/\/+$/, "")),
+    // Firecrawl from deploy/firecrawl/docker-compose.yml (published on 127.0.0.1:3002 by default).
+    selfHostedBaseUrl: z
+      .string()
+      .url()
+      .default("http://127.0.0.1:3002")
+      .transform((value) => value.replace(/\/+$/, "")),
     requestTimeoutMs: z.coerce.number().int().positive().default(120_000),
     maxBodyBytes: z.coerce.number().int().positive().default(5_242_880),
     authEnabled: boolFromEnv.default(true),
@@ -74,6 +80,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   return configSchema.parse({
     port: env.PORT,
     cloudBaseUrl: env.FIRECRAWL_CLOUD_BASE_URL,
+    selfHostedBaseUrl: env.FIRECRAWL_SELF_HOSTED_URL,
     requestTimeoutMs: env.API_REQUEST_TIMEOUT_MS ?? env.GATEWAY_REQUEST_TIMEOUT_MS,
     maxBodyBytes: env.API_MAX_BODY_BYTES ?? env.GATEWAY_MAX_BODY_BYTES,
     authEnabled: env.AUTH_ENABLED,

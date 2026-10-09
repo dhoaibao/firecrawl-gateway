@@ -49,11 +49,7 @@ const hopByHopHeaders = new Set([
   "host",
   "content-length",
 ]);
-const PROXY_SETTING_KEYS = [
-  "default_route_mode",
-  "self_hosted_firecrawl_url",
-  "firecrawl_api_keys",
-] as const;
+const PROXY_SETTING_KEYS = ["default_route_mode", "firecrawl_api_keys"] as const;
 const RETRYABLE_CLOUD_STATUS = new Set([401, 402, 403, 429]);
 const CLOUD_CAPACITY_STATUS = new Set([402, 429]);
 
@@ -131,8 +127,6 @@ export class ProxyService {
       this.settings.getSettings(PROXY_SETTING_KEYS),
       bearerMatch ? this.keys.validateApiKey(bearerMatch[1]) : null,
     ]);
-    const selfHostedBaseUrl =
-      settingRecords.self_hosted_firecrawl_url?.value?.replace(/\/+$/, "") || "";
     routeMode = getRouteMode(
       originalUrl,
       request.headers,
@@ -226,7 +220,7 @@ export class ProxyService {
         "cloud",
         request,
         bodyBuffer,
-        this.backendUrl("cloud", originalUrl, selfHostedBaseUrl),
+        this.backendUrl("cloud", originalUrl),
         reservation.key,
       );
       if (cloudResult.kind === "response" && cloudResult.response) {
@@ -253,14 +247,14 @@ export class ProxyService {
     if (initialBackend === "cloud") {
       cloudAttempt = await proxyCloud();
       if (!cloudAttempt) {
-        if (isCloudQuotaFallbackAllowed(routeMode, needsCloud) && selfHostedBaseUrl) {
+        if (isCloudQuotaFallbackAllowed(routeMode, needsCloud)) {
           fallbackUsed = true;
           fallbackReason = "No available Firecrawl Cloud credit pool; falling back to self-hosted";
           result = await this.proxyToBackend(
             "self-hosted",
             request,
             bodyBuffer,
-            this.backendUrl("self-hosted", originalUrl, selfHostedBaseUrl),
+            this.backendUrl("self-hosted", originalUrl),
           );
         } else {
           await sendEarlyResponse("cloud", 429, false, "No available Firecrawl Cloud credit pool", {
@@ -278,7 +272,7 @@ export class ProxyService {
         initialBackend,
         request,
         bodyBuffer,
-        this.backendUrl(initialBackend, originalUrl, selfHostedBaseUrl),
+        this.backendUrl(initialBackend, originalUrl),
       );
       if (
         initialBackend === "self-hosted" &&
@@ -349,7 +343,7 @@ export class ProxyService {
         "self-hosted",
         request,
         bodyBuffer,
-        this.backendUrl("self-hosted", originalUrl, selfHostedBaseUrl),
+        this.backendUrl("self-hosted", originalUrl),
       );
     }
     const status = result.kind === "network-error" ? 502 : result.response?.status || 502;
@@ -386,8 +380,8 @@ export class ProxyService {
     );
   }
 
-  private backendUrl(backend: string, originalUrl: string, selfHostedBaseUrl: string): string {
-    const base = backend === "cloud" ? this.config.cloudBaseUrl : selfHostedBaseUrl;
+  private backendUrl(backend: string, originalUrl: string): string {
+    const base = backend === "cloud" ? this.config.cloudBaseUrl : this.config.selfHostedBaseUrl;
     return `${base}${originalUrl}`;
   }
 

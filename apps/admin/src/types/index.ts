@@ -51,7 +51,6 @@ export interface SettingsData {
   firecrawl_api_keys?: string[];
   api_key_inactivity_revoke_days?: number;
   default_route_mode?: RouteMode;
-  self_hosted_firecrawl_url?: string;
 }
 
 export interface CreditUsageItem {

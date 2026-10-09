@@ -23,7 +23,7 @@ interface SettingField {
   key: SettingKey;
   label: string;
   description: string;
-  type: "number" | "select" | "text";
+  type: "number" | "select";
   category: "security" | "routing";
   icon: React.ComponentType<{ className?: string }>;
   min?: number;
@@ -32,14 +32,6 @@ interface SettingField {
 }
 
 const FIELDS: SettingField[] = [
-  {
-    key: "self_hosted_firecrawl_url",
-    label: "Self-hosted Firecrawl URL",
-    description: "URL of the external self-hosted Firecrawl instance.",
-    type: "text",
-    category: "routing",
-    icon: Route,
-  },
   {
     key: "default_route_mode",
     label: "Default Route Mode",
@@ -125,7 +117,6 @@ export default function Configure() {
     setSaving(true);
     try {
       const payload: Partial<SettingsData> = {
-        self_hosted_firecrawl_url: settings.self_hosted_firecrawl_url ?? "",
         default_route_mode: settings.default_route_mode ?? DEFAULT_ROUTE_MODE,
         api_key_inactivity_revoke_days: settings.api_key_inactivity_revoke_days ?? 0,
       };
@@ -238,13 +229,6 @@ export default function Configure() {
                           ))}
                         </SelectContent>
                       </Select>
-                    ) : field.type === "text" ? (
-                      <Input
-                        type="url"
-                        value={settings[field.key] ?? ""}
-                        onChange={(e) => updateSetting(field.key, e.target.value)}
-                        placeholder="https://your-firecrawl-instance.example.com"
-                      />
                     ) : (
                       <Input
                         type="number"

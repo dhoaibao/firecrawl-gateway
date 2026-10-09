@@ -15,13 +15,11 @@ const VALID_SETTINGS = [
   "firecrawl_api_keys",
   "api_key_inactivity_revoke_days",
   "default_route_mode",
-  "self_hosted_firecrawl_url",
 ] as const;
 const SETTING_TYPES: Record<string, "string" | "number" | "json"> = {
   firecrawl_api_keys: "json",
   api_key_inactivity_revoke_days: "number",
   default_route_mode: "string",
-  self_hosted_firecrawl_url: "string",
 };
 const MAX_CLOUD_API_KEYS = 10;
 const MIN_API_KEY_LENGTH = 8;
@@ -86,18 +84,6 @@ export class SettingsController {
         )
           apiError(400, `${key} must be one of ${VALID_ROUTE_MODES.join(", ")}`);
         value = rawValue;
-      } else if (key === "self_hosted_firecrawl_url") {
-        const rawUrl = String(rawValue).trim();
-        if (!rawUrl) value = "";
-        else {
-          try {
-            const url = new URL(rawUrl);
-            if (!/^https?:$/.test(url.protocol) || !url.hostname) throw new Error();
-            value = url.toString().replace(/\/+$/, "");
-          } catch {
-            apiError(400, `${key} must be a valid HTTP(S) URL`);
-          }
-        }
       } else if (type === "json") {
         if (!Array.isArray(rawValue)) apiError(400, `${key} must be an array of API keys`);
         if ((rawValue as unknown[]).length > MAX_CLOUD_API_KEYS)

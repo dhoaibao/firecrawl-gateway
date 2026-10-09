@@ -81,7 +81,7 @@ export default function MetricsGrid({
     {
       label: "Self-hosted Requests",
       value: metrics.selfHosted.toLocaleString(),
-      detail: "external instance traffic",
+      detail: "self-hosted stack traffic",
       icon: Server,
     },
     {
