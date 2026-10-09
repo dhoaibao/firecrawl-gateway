@@ -8,9 +8,6 @@ import rawBody from "fastify-raw-body";
 import { AppModule } from "./app.module";
 import { loadConfig } from "./common/config";
 import { randomUUID } from "node:crypto";
-import type { IncomingMessage, ServerResponse } from "node:http";
-
-let appPromise: ReturnType<typeof createApp> | undefined;
 
 export async function createApp(): Promise<NestFastifyApplication> {
   const config = loadConfig();
@@ -64,13 +61,4 @@ async function bootstrap(): Promise<void> {
   await app.listen(config.port, "0.0.0.0");
 }
 
-export default async function handler(
-  request: IncomingMessage,
-  response: ServerResponse,
-): Promise<void> {
-  appPromise ??= createApp();
-  const app = await appPromise;
-  app.getHttpAdapter().getInstance().server.emit("request", request, response);
-}
-
-if (process.env.VERCEL !== "1") void bootstrap();
+if (require.main === module) void bootstrap();

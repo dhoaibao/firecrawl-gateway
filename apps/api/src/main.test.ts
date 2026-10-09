@@ -19,9 +19,9 @@ vi.mock("fastify-raw-body", async (importOriginal) => {
   return { default: Object.assign(plugin, realPlugin) };
 });
 
-// Must run before "./main" is imported (static imports are hoisted): main.ts
-// auto-invokes bootstrap() unless VERCEL=1, so the test environment must be
-// complete and VERCEL must be set before the module evaluates.
+// Must run before "./main" is imported (static imports are hoisted), so the
+// test environment is complete before the module evaluates. main.ts only
+// starts listening when run directly, so importing it here does not bind a port.
 const savedEnv = vi.hoisted(() => {
   const saved = { ...process.env };
   Object.assign(process.env, {
@@ -31,7 +31,6 @@ const savedEnv = vi.hoisted(() => {
       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     AUTH_ENABLED: "false",
     LOG_LEVEL: "silent",
-    VERCEL: "1", // prevent main.ts from auto-bootstrapping and listening
   });
   return saved;
 });

@@ -56,10 +56,10 @@ export class CronService {
   }
 
   /**
-   * Batch sizes are chosen against the 120s maxDuration in apps/api/vercel.json:
+   * Batch sizes are chosen against API_REQUEST_TIMEOUT_MS (120s by default):
    * a single indexed DELETE of 5,000 rows typically completes well under a
    * second, so even the full bound of 20 batches per table per run stays far
-   * inside the function budget while keeping individual lock windows short.
+   * inside the request budget while keeping individual lock windows short.
    *
    * The iteration bound means one run deletes at most
    * BATCH_SIZE * MAX_PRUNE_BATCHES rows per table. The audit_logs table has
