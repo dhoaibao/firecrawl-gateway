@@ -11,6 +11,7 @@ All notable repository changes are documented here. This file follows the struct
 
 ### Changed
 
+- The GHCR deployment workflow also deploys the `deploy/firecrawl` stack when the optional `FIRECRAWL_ENV_FILE` secret is set.
 - Added a GHCR deployment flow: a root `Dockerfile` (`api` and `web` targets), `deploy/gateway/` (compose file, nginx config, `.env.example`), and `.github/workflows/docker-publish.yml` that builds, pushes to GHCR, and deploys over SSH with `prisma migrate deploy` on each deploy and a `maintenance` service replacing the external cron.
 - Removed all Vercel deployment support: both `vercel.json` files, the `api/index.js` serverless entry, the default `handler` export from `apps/api/src/main.ts` (the API now listens only when run directly), and Vercel documentation. The API runs as a Node server, the admin builds to a static SPA, and the daily `GET /api/cron/maintenance` call is no longer made by the platform (see the GHCR deployment entry below).
 - The self-hosted Firecrawl backend is the repository's own `deploy/firecrawl` Docker Compose stack, called directly at `FIRECRAWL_SELF_HOSTED_URL` (default `http://127.0.0.1:3002`) instead of an admin-configured external URL. The `self_hosted_firecrawl_url` setting is removed from the admin UI and settings API.

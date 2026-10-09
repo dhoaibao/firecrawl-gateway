@@ -43,7 +43,7 @@ Pushes to `main` run `.github/workflows/docker-publish.yml`: it builds the `api`
 - `maintenance`: calls `GET /api/cron/maintenance` with `CRON_SECRET` at start and every 24 hours, so no host cron is needed. The job permanently deletes audit entries older than 30 days; deletion is batched, so a large backlog drains over several runs. The 30-day window is fixed in code.
 - `migrate` (profile `tools`): `prisma migrate deploy`.
 
-**Server setup (once).** Install Docker with the Compose plugin, create a deploy user in the `docker` group with the public half of the deploy SSH key in its `authorized_keys`, and create `DEPLOY_PATH`. Start the `deploy/firecrawl` stack first (see below) so its network `firecrawl_backend` exists; the gateway joins it and reaches Firecrawl at `FIRECRAWL_SELF_HOSTED_URL=http://api:3002`. Without the Firecrawl stack, run `docker network create firecrawl_backend` or set `FIRECRAWL_NETWORK` to another existing network. Put TLS in front with a host nginx and certbot. Its server block must overwrite the forwarded headers and match the gateway limits, otherwise nginx defaults (1 MiB bodies, 60 s read timeout) reject valid requests:
+**Server setup (once).** Install Docker with the Compose plugin, create a deploy user in the `docker` group with the public half of the deploy SSH key in its `authorized_keys`, and create `DEPLOY_PATH`. The workflow deploys the `deploy/firecrawl` stack itself (see below), which creates the network `firecrawl_backend`; the gateway joins it and reaches Firecrawl at `FIRECRAWL_SELF_HOSTED_URL=http://api:3002`. For a Cloud-only setup, omit `FIRECRAWL_ENV_FILE` and either run `docker network create firecrawl_backend` or set `FIRECRAWL_NETWORK` to another existing network. Put TLS in front with a host nginx and certbot. Its server block must overwrite the forwarded headers and match the gateway limits, otherwise nginx defaults (1 MiB bodies, 60 s read timeout) reject valid requests:
 
 ```nginx
 server {
@@ -67,17 +67,18 @@ server {
 
 **GitHub setup (once).** Create an environment named `production` (Settings > Environments; add required reviewers if each deploy should be approved) and add these secrets to it:
 
-| Secret            | Value                                                                      |
-| ----------------- | -------------------------------------------------------------------------- |
-| `SSH_HOST`        | Server hostname or IP                                                      |
-| `SSH_USER`        | Deploy user, a member of the `docker` group                                |
-| `SSH_PORT`        | Optional, defaults to 22                                                   |
-| `SSH_PRIVATE_KEY` | Private key matching the deploy user's `authorized_keys`                   |
-| `SSH_KNOWN_HOSTS` | Output of `ssh-keyscan -p <port> <host>`; verify the fingerprint yourself  |
-| `DEPLOY_PATH`     | Absolute directory on the server (letters, digits, `. _ / -` only)         |
-| `ENV_FILE`        | Full contents of the server `.env`, based on `deploy/gateway/.env.example` |
+| Secret               | Value                                                                                                              |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `SSH_HOST`           | Server hostname or IP                                                                                              |
+| `SSH_USER`           | Deploy user, a member of the `docker` group                                                                        |
+| `SSH_PORT`           | Optional, defaults to 22                                                                                           |
+| `SSH_PRIVATE_KEY`    | Private key matching the deploy user's `authorized_keys`                                                           |
+| `SSH_KNOWN_HOSTS`    | Output of `ssh-keyscan -p <port> <host>`; verify the fingerprint yourself                                          |
+| `DEPLOY_PATH`        | Absolute directory on the server (letters, digits, `. _ / -` only)                                                 |
+| `ENV_FILE`           | Full contents of the server `.env`, based on `deploy/gateway/.env.example`                                         |
+| `FIRECRAWL_ENV_FILE` | Optional. Full contents of `deploy/firecrawl/.env`, based on its `.env.example`; enables the Firecrawl deploy step |
 
-The workflow appends `IMAGE_PREFIX` and `IMAGE_TAG=sha-<commit>` to `ENV_FILE`, writes it as a `0600` file, logs in to GHCR with the job's short-lived `GITHUB_TOKEN` (no PAT is stored on the server), then runs `docker compose pull`, stops `maintenance`, `web`, and `gateway` (a short outage on every deploy, so nothing uses the database during a migration), runs **`prisma migrate deploy` on every deploy**, and runs `docker compose up -d --wait`. If the migration fails the services stay stopped: fix forward or redeploy an earlier tag. A final step fails the job unless `gateway`, `web`, and `maintenance` are running. Because migrations run automatically, review the post-baseline single-admin cutover in `RELEASING.md` before the first deploy: it deletes users, virtual API keys, and audit logs on a database that has not applied it yet.
+When `FIRECRAWL_ENV_FILE` is set, the workflow first uploads `deploy/firecrawl/docker-compose.yml` and that `.env` to `$DEPLOY_PATH/firecrawl` and runs `docker compose up -d --wait` there (no `pull`, so an unchanged file and `.env` is a no-op and queued Firecrawl jobs are not lost on a gateway-only deploy; changing `FIRECRAWL_VERSION` or the compose file recreates the affected services), then checks that `api`, `playwright-service`, `redis`, `rabbitmq`, and `nuq-postgres` are running. The Firecrawl API runs unauthenticated and binds to `127.0.0.1` by default; keep it that way. The workflow appends `IMAGE_PREFIX` and `IMAGE_TAG=sha-<commit>` to `ENV_FILE`, writes it as a `0600` file, logs in to GHCR with the job's short-lived `GITHUB_TOKEN` (no PAT is stored on the server), then runs `docker compose pull`, stops `maintenance`, `web`, and `gateway` (a short outage on every deploy, so nothing uses the database during a migration), runs **`prisma migrate deploy` on every deploy**, and runs `docker compose up -d --wait`. If the migration fails the services stay stopped: fix forward or redeploy an earlier tag. A final step fails the job unless `gateway`, `web`, and `maintenance` are running. Because migrations run automatically, review the post-baseline single-admin cutover in `RELEASING.md` before the first deploy: it deletes users, virtual API keys, and audit logs on a database that has not applied it yet.
 
 **Rollback.** Run the workflow manually (Actions > docker-publish > Run workflow) with `image_tag` set to an earlier `sha-<7 hex>`. It skips the build and redeploys that image; `latest` is rejected. Migrations only move forward. A deploy for a commit that is no longer the head of `main` is skipped as stale.
 

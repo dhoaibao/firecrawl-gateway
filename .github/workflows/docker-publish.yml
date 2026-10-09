@@ -110,6 +110,7 @@ jobs:
       packages: read
     env:
       DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+      FIRECRAWL_ENV_FILE: ${{ secrets.FIRECRAWL_ENV_FILE }}
       IMAGE_PREFIX: ${{ needs.plan.outputs.image_prefix }}
       IMAGE_TAG: ${{ needs.plan.outputs.image_tag }}
     steps:
@@ -163,6 +164,38 @@ jobs:
             IdentitiesOnly yes
             StrictHostKeyChecking yes
           EOF
+
+      # Self-hosted Firecrawl (deploy/firecrawl), started first so its docker network
+      # exists for the gateway. Skipped when FIRECRAWL_ENV_FILE is not set (Cloud
+      # only; then create the network yourself or point FIRECRAWL_NETWORK elsewhere).
+      # `up -d` without a pull is a no-op while the compose file and .env are
+      # unchanged, so queued Firecrawl jobs are not lost on a gateway-only deploy.
+      - name: Deploy Firecrawl stack
+        if: steps.fresh.outputs.stale != 'true' && env.FIRECRAWL_ENV_FILE != ''
+        run: |
+          set -euo pipefail
+          fc_path="$DEPLOY_PATH/firecrawl"
+          ssh deploy "mkdir -p '$fc_path'"
+          scp deploy/firecrawl/docker-compose.yml "deploy:$fc_path/docker-compose.yml"
+          printf '%s\n' "$FIRECRAWL_ENV_FILE" | ssh deploy "umask 077; cat > '$fc_path/.env.new' && mv -f '$fc_path/.env.new' '$fc_path/.env'"
+          ssh deploy bash -s -- "$fc_path" <<'REMOTE'
+          # Same stdin caveat as the gateway step: docker commands read /dev/null.
+          set -euo pipefail
+          cd "$1"
+          if ! docker compose up -d --remove-orphans --wait --wait-timeout 180 </dev/null; then
+            docker compose ps </dev/null
+            docker compose logs --tail 50 api </dev/null
+            exit 1
+          fi
+          docker compose ps </dev/null
+          REMOTE
+          running="$(ssh deploy "cd '$fc_path' && docker compose ps --status running --services")"
+          for service in api playwright-service redis rabbitmq nuq-postgres; do
+            if ! printf '%s\n' "$running" | grep -qx "$service"; then
+              echo "::error::Firecrawl service $service is not running after deploy"
+              exit 1
+            fi
+          done
 
       - name: Upload compose file and .env
         if: steps.fresh.outputs.stale != 'true'
