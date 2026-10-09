@@ -4,18 +4,18 @@
 
 ## Repository Purpose
 
-This Bun-workspace Turborepo ships an independently deployable NestJS/Fastify gateway API and root-hosted React/Vite admin dashboard for externally hosted Firecrawl and PostgreSQL services; it does not host PostgreSQL. `deploy/firecrawl/docker-compose.yml` is an optional reference stack for self-hosting Firecrawl.
+This Bun-workspace Turborepo ships an independently deployable NestJS/Fastify gateway API and root-hosted React/Vite admin dashboard for Firecrawl and an externally hosted PostgreSQL; it does not host PostgreSQL. `deploy/firecrawl/docker-compose.yml` is the repository's Docker Compose stack for the self-hosted Firecrawl backend (Firecrawl Cloud stays external).
 
 ## Project Operating Guide
 
 ### Architecture and change map
 
-- `apps/api/src/main.ts` and `apps/api/src/app.module.ts` bootstrap the Vercel-compatible API. Gateway route handling and fallback policy belong in `apps/api/src/proxy/` and `apps/api/src/proxy/policy.ts`.
+- `apps/api/src/main.ts` and `apps/api/src/app.module.ts` bootstrap the long-running Node API. Gateway route handling and fallback policy belong in `apps/api/src/proxy/` and `apps/api/src/proxy/policy.ts`.
 - API administration is split across `apps/api/src/auth/`, `api-keys/`, `settings/`, `audit/`, `credits/`, and `cron/`; shared runtime configuration is in `apps/api/src/common/config.ts`.
 - Estimated-credit routing lives in `apps/api/src/credits/`; the optional `REDIS_URL` ledger store shares reservations across instances, otherwise key rotation is per-instance.
 - PostgreSQL schema and migration history are canonical in `apps/api/prisma/schema.prisma` and `apps/api/prisma/migrations/`. Prisma manages global API keys, settings, audit logs, and rate-limit records.
 - The root-hosted admin SPA lives in `apps/admin/src/`; follow `docs/DESIGN.md` for its design standard. Admin API requests remain under `/admin/api/*` on the API origin.
-- `apps/api/vercel.json` and `apps/admin/vercel.json` configure separate Vercel projects. Consult `RELEASING.md` for release and deployment checks.
+- The API runs as a Node server (`bun run start` in `apps/api`) and the admin builds to a static SPA in `apps/admin/dist`; no hosting-platform config is kept in the repository. Consult `RELEASING.md` for release and deployment checks.
 
 ### Canonical sources and required flows
 
@@ -27,7 +27,7 @@ This Bun-workspace Turborepo ships an independently deployable NestJS/Fastify ga
 
 ### Project-specific boundaries
 
-- Firecrawl, PostgreSQL, and Vercel are external deployment prerequisites. API and admin deploy independently; a passing GitHub Actions typecheck (`.github/workflows/deploy.yml`) is not deployment evidence.
+- Firecrawl Cloud and PostgreSQL are external deployment prerequisites; the self-hosted Firecrawl comes from `deploy/firecrawl`. API and admin deploy independently; a passing GitHub Actions typecheck (`.github/workflows/deploy.yml`) is not deployment evidence.
 - The post-baseline single-admin migration deletes existing users, virtual API keys, and audit logs before removing user ownership. It needs a migration-capable direct PostgreSQL connection; see `RELEASING.md` before an approved migration.
 - The API forwards request bodies as UTF-8, so it is intended for UTF-8 JSON rather than binary or Latin-1 payloads. Audit logs are stored only in PostgreSQL.
 - Routing modes and Cloud requirements are decided in `apps/api/src/proxy/policy.ts`; sensitive headers, cookies, and private target URLs restrict fallback.

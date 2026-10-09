@@ -4,9 +4,9 @@ This document is a lightweight checklist for an authorized maintainer preparing 
 
 ## Release boundary
 
-- The repository contains two independently deployable Vercel projects: `apps/api` and `apps/admin`.
+- The repository contains two independently deployable apps: `apps/api` (Node server) and `apps/admin` (static SPA).
 - GitHub Actions runs typecheck-only CI for pull requests and pushes to `main`. It does not build, deploy, run migrations, or publish releases.
-- Firecrawl Cloud, self-hosted Firecrawl, PostgreSQL, and Vercel are external services or deployment platforms. A repository release does not create or upgrade those services.
+- Firecrawl Cloud and PostgreSQL are external services. A repository release does not create or upgrade those services, nor does it redeploy a running self-hosted Firecrawl stack from `deploy/firecrawl`.
 
 ## Prepare the release
 
@@ -38,26 +38,25 @@ After review and merge on the intended commit:
 
 The exact version, tag, and release are decisions for the maintainer; this checklist does not select one.
 
-## Verify Vercel deployments separately
+## Verify deployments separately
 
-For each Vercel project, verify the deployment that corresponds to the intended commit and project root:
+Verify the deployment that corresponds to the intended commit:
 
-- API project root: `apps/api`; admin project root: `apps/admin`.
 - Confirm the configured origins and `VITE_API_BASE_URL` match the deployed API/admin origins.
 - Check the API `/health` and `/ready` endpoints, then perform a minimal non-sensitive request through the intended gateway origin.
 - Confirm the root-hosted admin loads and can reach the API using the configured origin.
-- Confirm the authenticated maintenance cron is configured for the API project and review deployment logs without exposing secrets.
+- Confirm the scheduler calls `GET /api/cron/maintenance` with `CRON_SECRET` and review logs without exposing secrets.
 
-A green GitHub typecheck does not prove that either Vercel project deployed successfully or that external Firecrawl/PostgreSQL configuration is correct.
+A green GitHub typecheck does not prove that either app deployed successfully or that the self-hosted Firecrawl stack, Firecrawl Cloud, or PostgreSQL configuration is correct.
 
 ## Prisma migrations are separate
 
-Do not treat a release or Vercel deployment as permission to migrate the database. Prisma migrations are separate, operationally sensitive, and approval-gated:
+Do not treat a release or deployment as permission to migrate the database. Prisma migrations are separate, operationally sensitive, and approval-gated:
 
 - Stop any running API process first.
 - Take or verify an appropriate PostgreSQL backup and use a migration-capable direct `DATABASE_URL`; do not use a transaction-only PgBouncer endpoint as-is.
 - Review the exact migration and obtain explicit cutover approval before running `bun run db:migrate`.
-- The post-baseline single-admin cutover intentionally deletes existing users, virtual API keys, and audit-log records, then removes user ownership. This is destructive and is not applied by API startup, GitHub Actions, or the Vercel build.
+- The post-baseline single-admin cutover intentionally deletes existing users, virtual API keys, and audit-log records, then removes user ownership. This is destructive and is not applied by API startup or GitHub Actions.
 - Verify the API only after the migration completes successfully and the administrator has confirmed the resulting configuration.
 
 For contributor and review expectations, see [`CONTRIBUTING.md`](CONTRIBUTING.md). For security-sensitive release concerns, see [`SECURITY.md`](SECURITY.md).

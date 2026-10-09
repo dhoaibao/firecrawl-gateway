@@ -4,7 +4,7 @@ This repository provides a public, non-sensitive path for questions about the ga
 
 ## Before opening a request
 
-Check the [README](README.md), [Quick Start](QUICKSTART.md), [External Service Guide](SELF_HOST.md), and [`apps/api/README.md`](apps/api/README.md) first. Include the relevant Bun, Node.js, deployment, and browser versions when they matter.
+Check the [README](README.md), [Quick Start](QUICKSTART.md), [Self-Hosting Guide](SELF_HOST.md), and [`apps/api/README.md`](apps/api/README.md) first. Include the relevant Bun, Node.js, deployment, and browser versions when they matter.
 
 ## Non-sensitive questions and issues
 
@@ -14,6 +14,6 @@ Include a minimal reproduction and redacted logs. Never include API keys, passwo
 
 ## Out of scope for this repository
 
-Firecrawl Cloud or self-hosted Firecrawl availability, PostgreSQL provider incidents, Vercel account or platform issues, billing, and credentials for external services must be handled with the relevant provider. This repository does not host or administer those services.
+Firecrawl Cloud availability, PostgreSQL provider incidents, hosting-platform issues, billing, and credentials for external services must be handled with the relevant provider. This repository does not host or administer those services. Problems in the self-hosted Firecrawl Docker Compose stack in `deploy/firecrawl` can be raised here; upstream Firecrawl bugs belong to the Firecrawl project.
 
 Do not use a public issue for a suspected vulnerability. Follow [`SECURITY.md`](SECURITY.md) instead. For conduct concerns, follow [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).

@@ -49,7 +49,7 @@ body:
     attributes:
       label: Environment
       description: Include the relevant Bun, Node.js, deployment, and browser versions.
-      placeholder: Bun 1.3.x, Node.js 22.x, Vercel, ...
+      placeholder: Bun 1.3.x, Node.js 22.x, Docker, ...
     validations:
       required: true
 
