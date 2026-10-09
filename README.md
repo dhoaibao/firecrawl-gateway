@@ -36,17 +36,17 @@ The API's security and runtime boundaries are deliberate:
 - The single administrator is configured with `ADMIN_EMAIL` and `ADMIN_PASSWORD`; those credentials are not stored in PostgreSQL. Admin sessions use signed HTTP-only cookies.
 - `ADMIN_ORIGIN` and `API_ORIGIN` should be exact deployed origins for credentialed CORS; do not use `*` for this setup.
 - Request bodies are inspected and forwarded as UTF-8 JSON. Binary uploads and Latin-1 text can be corrupted in transit, so this gateway is not a general binary proxy.
-- Upstream requests time out after `API_REQUEST_TIMEOUT_MS` (120 seconds by default). The maintenance endpoint, which an external scheduler must call daily, permanently removes audit entries older than 30 days.
+- Upstream requests time out after `API_REQUEST_TIMEOUT_MS` (120 seconds by default). The `maintenance` container calls the maintenance endpoint daily; it permanently removes audit entries older than 30 days.
 - Prisma migrations are not applied during API startup. The single-admin cutover is destructive and requires explicit approval; see [`RELEASING.md`](RELEASING.md) and [`SELF_HOST.md`](SELF_HOST.md).
 
 ## Getting started
 
-Follow [`QUICKSTART.md`](QUICKSTART.md) for local development and running the API and admin, and [`.env.example`](.env.example) for configuration. Prisma migrations are never applied by builds, the typecheck workflow, or API startup; the single-admin cutover is destructive, so review [`RELEASING.md`](RELEASING.md) before running `bun run db:migrate`.
+Follow [`QUICKSTART.md`](QUICKSTART.md) for local development and the Docker/GHCR deployment, and [`.env.example`](.env.example) for configuration. Prisma migrations are never applied by builds, the typecheck workflow, or API startup; the single-admin cutover is destructive, so review [`RELEASING.md`](RELEASING.md) before running `bun run db:migrate`.
 
 ## Documentation
 
 - [`QUICKSTART.md`](QUICKSTART.md) — local development and running the API and admin
-- [`SELF_HOST.md`](SELF_HOST.md) — self-hosted Firecrawl (Docker Compose) and PostgreSQL configuration
+- [`SELF_HOST.md`](SELF_HOST.md) — self-hosted Firecrawl (Docker Compose), GHCR deployment, and PostgreSQL configuration
 - [`apps/api/README.md`](apps/api/README.md) — API routes and Prisma operations
 - [`docs/DESIGN.md`](docs/DESIGN.md) — admin UI design rules
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — development and pull request guidance

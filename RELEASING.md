@@ -5,7 +5,7 @@ This document is a lightweight checklist for an authorized maintainer preparing 
 ## Release boundary
 
 - The repository contains two independently deployable apps: `apps/api` (Node server) and `apps/admin` (static SPA).
-- GitHub Actions runs typecheck-only CI for pull requests and pushes to `main`. It does not build, deploy, run migrations, or publish releases.
+- `deploy.yml` runs typecheck-only CI for pull requests and pushes to `main`. `docker-publish.yml` builds and publishes the images to GHCR and deploys them over SSH on pushes to `main`, running `prisma migrate deploy` on each deploy. Neither publishes GitHub releases.
 - Firecrawl Cloud and PostgreSQL are external services. A repository release does not create or upgrade those services, nor does it redeploy a running self-hosted Firecrawl stack from `deploy/firecrawl`.
 
 ## Prepare the release
@@ -45,7 +45,8 @@ Verify the deployment that corresponds to the intended commit:
 - Confirm the configured origins and `VITE_API_BASE_URL` match the deployed API/admin origins.
 - Check the API `/health` and `/ready` endpoints, then perform a minimal non-sensitive request through the intended gateway origin.
 - Confirm the root-hosted admin loads and can reach the API using the configured origin.
-- Confirm the scheduler calls `GET /api/cron/maintenance` with `CRON_SECRET` and review logs without exposing secrets.
+- Confirm the `maintenance` container logged a successful call (`docker compose logs maintenance`) and review logs without exposing secrets.
+- Check the deployed `IMAGE_TAG` (`sha-<7 hex>`) matches the intended commit; roll back by re-running the workflow manually with an earlier tag.
 
 A green GitHub typecheck does not prove that either app deployed successfully or that the self-hosted Firecrawl stack, Firecrawl Cloud, or PostgreSQL configuration is correct.
 
@@ -56,7 +57,7 @@ Do not treat a release or deployment as permission to migrate the database. Pris
 - Stop any running API process first.
 - Take or verify an appropriate PostgreSQL backup and use a migration-capable direct `DATABASE_URL`; do not use a transaction-only PgBouncer endpoint as-is.
 - Review the exact migration and obtain explicit cutover approval before running `bun run db:migrate`.
-- The post-baseline single-admin cutover intentionally deletes existing users, virtual API keys, and audit-log records, then removes user ownership. This is destructive and is not applied by API startup or GitHub Actions.
+- The post-baseline single-admin cutover intentionally deletes existing users, virtual API keys, and audit-log records, then removes user ownership. This is destructive. It is not applied by API startup, but `docker-publish.yml` stops the gateway and runs `prisma migrate deploy` on every deploy, so a database that has not yet applied it will be wiped by the next deploy; apply it deliberately or hold deploys until then. Require reviewers on the `production` environment to gate this.
 - Verify the API only after the migration completes successfully and the administrator has confirmed the resulting configuration.
 
 For contributor and review expectations, see [`CONTRIBUTING.md`](CONTRIBUTING.md). For security-sensitive release concerns, see [`SECURITY.md`](SECURITY.md).

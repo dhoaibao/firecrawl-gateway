@@ -34,9 +34,56 @@ The readiness endpoint is a heartbeat only; the scrape call is the real check. T
 - Persistence: like upstream, no volumes are defined, so queued jobs are lost when containers are recreated.
 - Versions: `FIRECRAWL_VERSION` pins the API image (the config keys above were checked against source at v2.11.162 and v2.11.473, not 2.11.489); `playwright-service` and `nuq-postgres` default to `latest` because their release tags were not verified. Upstream warns that compose contract and image release should match, so re-check the upstream compose file when bumping the version.
 
-## Running the API and admin
+## Deploy with GitHub Container Registry (GHCR)
 
-Run the API as a long-running Node server (`bun run build`, then `bun run start` from `apps/api`; it listens on `PORT`, default 8080). Build the admin with `VITE_API_BASE_URL` set to the API origin (`bun run build` in `apps/admin`) and serve `apps/admin/dist` as a static SPA that falls back to `index.html` for unknown paths. Set exact `ADMIN_ORIGIN` and `API_ORIGIN` values for the API. No scheduler is bundled: call `GET /api/cron/maintenance` once a day with `Authorization: Bearer $CRON_SECRET` (for example from host cron). This daily maintenance job permanently deletes audit entries older than 30 days; deletion is batched, so a large existing backlog drains over several daily runs. The 30-day window is fixed in code and not configurable.
+Pushes to `main` run `.github/workflows/docker-publish.yml`: it builds the `api` and `web` images from the root `Dockerfile`, pushes them to `ghcr.io/<owner>/<repo>-api` and `-web` (tags `sha-<7 hex>` and `latest`), then deploys over SSH using `deploy/gateway/docker-compose.yml`. Images contain no secrets; configuration is written to the server's `.env` at deploy time.
+
+- `gateway`: the NestJS API (Node server, `PORT` 8080, internal only).
+- `web`: nginx serving the admin SPA and proxying `/admin/api`, `/v1`, `/v2`, `/health`, and `/ready` to `gateway`. One public origin serves both, so the admin needs no `VITE_API_BASE_URL` and there is no CORS: set `API_ORIGIN` and `ADMIN_ORIGIN` to the same HTTPS origin and `TRUST_PROXY=true`. It binds to `127.0.0.1:${WEB_PORT:-8080}` only.
+- `maintenance`: calls `GET /api/cron/maintenance` with `CRON_SECRET` at start and every 24 hours, so no host cron is needed. The job permanently deletes audit entries older than 30 days; deletion is batched, so a large backlog drains over several runs. The 30-day window is fixed in code.
+- `migrate` (profile `tools`): `prisma migrate deploy`.
+
+**Server setup (once).** Install Docker with the Compose plugin, create a deploy user in the `docker` group with the public half of the deploy SSH key in its `authorized_keys`, and create `DEPLOY_PATH`. Start the `deploy/firecrawl` stack first (see below) so its network `firecrawl_backend` exists; the gateway joins it and reaches Firecrawl at `FIRECRAWL_SELF_HOSTED_URL=http://api:3002`. Without the Firecrawl stack, run `docker network create firecrawl_backend` or set `FIRECRAWL_NETWORK` to another existing network. Put TLS in front with a host nginx and certbot. Its server block must overwrite the forwarded headers and match the gateway limits, otherwise nginx defaults (1 MiB bodies, 60 s read timeout) reject valid requests:
+
+```nginx
+server {
+    listen 80;
+    server_name <DOMAIN>;
+
+    client_max_body_size 5m;        # API_MAX_BODY_BYTES default
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;        # streamed upstream responses
+        proxy_read_timeout 130s;    # API_REQUEST_TIMEOUT_MS is 120 s
+        proxy_send_timeout 130s;
+    }
+}
+```
+
+**GitHub setup (once).** Create an environment named `production` (Settings > Environments; add required reviewers if each deploy should be approved) and add these secrets to it:
+
+| Secret            | Value                                                                      |
+| ----------------- | -------------------------------------------------------------------------- |
+| `SSH_HOST`        | Server hostname or IP                                                      |
+| `SSH_USER`        | Deploy user, a member of the `docker` group                                |
+| `SSH_PORT`        | Optional, defaults to 22                                                   |
+| `SSH_PRIVATE_KEY` | Private key matching the deploy user's `authorized_keys`                   |
+| `SSH_KNOWN_HOSTS` | Output of `ssh-keyscan -p <port> <host>`; verify the fingerprint yourself  |
+| `DEPLOY_PATH`     | Absolute directory on the server (letters, digits, `. _ / -` only)         |
+| `ENV_FILE`        | Full contents of the server `.env`, based on `deploy/gateway/.env.example` |
+
+The workflow appends `IMAGE_PREFIX` and `IMAGE_TAG=sha-<commit>` to `ENV_FILE`, writes it as a `0600` file, logs in to GHCR with the job's short-lived `GITHUB_TOKEN` (no PAT is stored on the server), then runs `docker compose pull`, stops `maintenance`, `web`, and `gateway` (a short outage on every deploy, so nothing uses the database during a migration), runs **`prisma migrate deploy` on every deploy**, and runs `docker compose up -d --wait`. If the migration fails the services stay stopped: fix forward or redeploy an earlier tag. A final step fails the job unless `gateway`, `web`, and `maintenance` are running. Because migrations run automatically, review the post-baseline single-admin cutover in `RELEASING.md` before the first deploy: it deletes users, virtual API keys, and audit logs on a database that has not applied it yet.
+
+**Rollback.** Run the workflow manually (Actions > docker-publish > Run workflow) with `image_tag` set to an earlier `sha-<7 hex>`. It skips the build and redeploys that image; `latest` is rejected. Migrations only move forward. A deploy for a commit that is no longer the head of `main` is skipped as stale.
+
+**Notes.** GHCR packages are private by default; keep them private and do not flip them public. Old and untagged versions are never pruned automatically. If a `GITHUB_TOKEN` pull is denied, fall back to a classic PAT with `read:packages` stored as a secret. GitHub keeps only one pending run per concurrency group, so a delayed older deploy can occasionally replace the newest one in the queue; recover with a manual run using the newest `sha-<7 hex>`. Docker publishes bypass UFW, which is why the compose file binds to `127.0.0.1`.
+
+Run the stack manually with `cd deploy/gateway && cp .env.example .env`, set `IMAGE_PREFIX` and `IMAGE_TAG`, `docker login ghcr.io`, then `docker compose pull && docker compose stop maintenance web gateway && docker compose --profile tools run --rm -T migrate && docker compose up -d --wait`. For local development without Docker, run `bun run build` then `bun run start` in `apps/api` and `bun run dev` in `apps/admin`.
 
 The API remains compatible with `/health`, `/ready`, `/v1/*`, `/v2/*`, and `/admin/api/*`. Request bodies are decoded as UTF-8 before being forwarded: non-UTF-8 payloads such as binary uploads or Latin-1 text are corrupted in transit, so the gateway is intended for UTF-8 JSON traffic. Admin sessions are signed HTTP-only cookies and may need to be re-created at cutover. User-management endpoints and UI have been removed; API keys and audit records are global.
 

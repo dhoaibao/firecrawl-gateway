@@ -7,7 +7,7 @@ Thanks for helping improve Firecrawl Gateway. The repository contains two indepe
 - `apps/api` is the gateway API. It proxies `/v1/*` and `/v2/*`, serves health/readiness endpoints, and exposes authenticated administration routes under `/admin/api/*`.
 - `apps/admin` is the root-hosted operator dashboard. It talks to the API through `VITE_API_BASE_URL`.
 - Firecrawl Cloud and PostgreSQL are external deployment prerequisites, not services maintained by this repository. Self-hosted Firecrawl is provided by the Docker Compose stack in `deploy/firecrawl`.
-- GitHub Actions runs typecheck-only CI. The API and admin deploy separately; a green GitHub check is not a deployment confirmation.
+- GitHub Actions runs typecheck CI (`deploy.yml`) and, on pushes to `main`, `docker-publish.yml`, which publishes images to GHCR and deploys them over SSH to the `production` environment. A green check is not a deployment confirmation.
 
 ## Before you start
 

@@ -32,8 +32,8 @@ Maintainers may ask for a smaller or further-redacted reproduction. Coordinate a
 
 ## CI and deployment boundary
 
-- The GitHub Actions workflow is intentionally typecheck-only for pull requests and pushes to `main`; it is not a security scan, build, or deployment system.
-- The API and admin dashboard deploy separately. Production credentials and external service configuration belong in the deployment environment, not in GitHub Actions logs or repository files.
+- The typecheck workflow is intentionally typecheck-only; it is not a security scan. `docker-publish.yml` builds images and deploys on pushes to `main` using secrets on the `production` environment (SSH key, `ENV_FILE`); restrict who can edit workflows and consider required reviewers on that environment.
+- Images contain no secrets; the API and admin dashboard are deployed as GHCR images from one compose file. Production credentials and external service configuration belong in the deployment environment, not in GitHub Actions logs or repository files.
 - A passing CI check does not prove that CORS origins, database access, upstream URLs, API keys, or rate limits are safe. Include the relevant deployment boundary in a report without including its secret values.
 
 ## Migration warning
