@@ -1,0 +1,72 @@
+# Gateway stack pulled from GHCR on the server by .github/workflows/docker-publish.yml.
+# The workflow uploads this file and writes .env (ENV_FILE secret plus IMAGE_PREFIX
+# and IMAGE_TAG) next to it. Copy .env.example for a manual run.
+#
+# The gateway joins the Firecrawl stack's network (deploy/firecrawl) so
+# FIRECRAWL_SELF_HOSTED_URL can be http://api:3002. Start that stack first, or
+# create the network yourself: docker network create firecrawl_backend
+
+name: firecrawl-gateway
+
+x-api-image: &api-image ${IMAGE_PREFIX:?set IMAGE_PREFIX}-api:${IMAGE_TAG:?set IMAGE_TAG}
+
+services:
+  gateway:
+    image: *api-image
+    env_file: .env
+    restart: unless-stopped
+    networks:
+      - default
+      - firecrawl
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  web:
+    image: ${IMAGE_PREFIX:?set IMAGE_PREFIX}-web:${IMAGE_TAG:?set IMAGE_TAG}
+    restart: unless-stopped
+    depends_on:
+      gateway:
+        condition: service_healthy
+    # Loopback only: the host nginx terminates TLS and proxies to this port.
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Replaces a host cron: calls the authenticated maintenance endpoint at start
+  # and then every 24 hours.
+  maintenance:
+    image: *api-image
+    env_file: .env
+    restart: unless-stopped
+    depends_on:
+      gateway:
+        condition: service_healthy
+    command:
+      - node
+      - -e
+      - "const run=async()=>{try{const r=await fetch('http://gateway:'+(process.env.PORT||8080)+'/api/cron/maintenance',{headers:{authorization:'Bearer '+process.env.CRON_SECRET}});console.log('maintenance',r.status)}catch(e){console.error('maintenance failed',e.message)}};run();setInterval(run,86400000)"
+
+  # One-off: docker compose --profile tools run --rm -T migrate
+  migrate:
+    image: *api-image
+    env_file: .env
+    profiles: [tools]
+    restart: "no"
+    command: ["./node_modules/.bin/prisma", "migrate", "deploy"]
+
+networks:
+  firecrawl:
+    name: ${FIRECRAWL_NETWORK:-firecrawl_backend}
+    external: true

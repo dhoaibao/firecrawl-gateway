@@ -1,0 +1,17 @@
+**/.env
+**/.env.*
+!**/.env.example
+**/node_modules
+**/dist
+**/.turbo
+**/coverage
+.git
+.github
+.husky
+.codegraph
+.serena
+.playwright-mcp
+packages
+deploy
+!deploy/gateway
+*.md

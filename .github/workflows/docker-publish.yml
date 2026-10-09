@@ -1,0 +1,220 @@
+name: docker-publish
+
+# Builds the api and web images, publishes them to GHCR, and deploys them over
+# SSH. Secrets live on the `production` environment (Settings > Environments),
+# where required reviewers can gate each deploy. See SELF_HOST.md.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Rollback: existing image tag to redeploy (sha-<7 hex>)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    outputs:
+      image_prefix: ${{ steps.plan.outputs.image_prefix }}
+      image_tag: ${{ steps.plan.outputs.image_tag }}
+      stale: ${{ steps.plan.outputs.stale }}
+    steps:
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.image_tag }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = push ]; then tag="sha-${SHA::7}"; else tag="$INPUT_TAG"; fi
+          if ! [[ "$tag" =~ ^sha-[0-9a-f]{7}$ ]]; then
+            echo "::error::image_tag must be sha-<7 hex>"
+            exit 1
+          fi
+          stale=false
+          if [ "$EVENT" = push ]; then
+            head="$(gh api "repos/$REPO/commits/main" --jq .sha)"
+            if [ "$head" != "$SHA" ]; then
+              stale=true
+              echo "::notice::$SHA is not the head of main; skipping deploy"
+            fi
+          fi
+          {
+            echo "image_prefix=ghcr.io/${REPO,,}"
+            echo "image_tag=$tag"
+            echo "stale=$stale"
+          } >> "$GITHUB_OUTPUT"
+
+  build-and-push:
+    name: Build and push (${{ matrix.image }})
+    needs: plan
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        image: [api, web]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ needs.plan.outputs.image_prefix }}-${{ matrix.image }}
+          tags: |
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ${{ matrix.image }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  deploy:
+    name: Deploy
+    needs: [plan, build-and-push]
+    if: >-
+      ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.stale != 'true'
+      && (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    env:
+      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+      IMAGE_PREFIX: ${{ needs.plan.outputs.image_prefix }}
+      IMAGE_TAG: ${{ needs.plan.outputs.image_tag }}
+    steps:
+      - id: fresh
+        name: Re-check for newer commits
+        if: github.event_name == 'push'
+        env:
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          head="$(gh api "repos/$REPO/commits/main" --jq .sha)"
+          if [ "$head" != "$SHA" ]; then
+            echo "::notice::a newer commit exists on main; skipping this deploy"
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.fresh.outputs.stale != 'true'
+
+      - name: Configure SSH
+        if: steps.fresh.outputs.stale != 'true'
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$DEPLOY_PATH" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::DEPLOY_PATH must be an absolute path of letters, digits and . _ / -"
+            exit 1
+          fi
+          port="${SSH_PORT:-22}"
+          if ! [[ "$port" =~ ^[0-9]+$ ]]; then
+            echo "::error::SSH_PORT must be numeric"
+            exit 1
+          fi
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host deploy
+            HostName $SSH_HOST
+            User $SSH_USER
+            Port $port
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+          EOF
+
+      - name: Upload compose file and .env
+        if: steps.fresh.outputs.stale != 'true'
+        env:
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+        run: |
+          set -euo pipefail
+          ssh deploy "mkdir -p '$DEPLOY_PATH'"
+          scp deploy/gateway/docker-compose.yml "deploy:$DEPLOY_PATH/docker-compose.yml"
+          {
+            printf '%s\n' "$ENV_FILE"
+            printf 'IMAGE_PREFIX=%s\n' "$IMAGE_PREFIX"
+            printf 'IMAGE_TAG=%s\n' "$IMAGE_TAG"
+          } | ssh deploy "umask 077; cat > '$DEPLOY_PATH/.env.new' && mv -f '$DEPLOY_PATH/.env.new' '$DEPLOY_PATH/.env'"
+
+      - name: Pull, migrate, and restart
+        if: steps.fresh.outputs.stale != 'true'
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" | ssh deploy "docker login ghcr.io -u '$GHCR_USER' --password-stdin"
+          ssh deploy bash -s -- "$DEPLOY_PATH" <<'REMOTE'
+          # The script arrives on stdin, so every docker command must read /dev/null instead;
+          # otherwise `compose run` swallows the rest of the script and the job still exits 0.
+          set -euo pipefail
+          cd "$1"
+          docker compose pull </dev/null
+          # Quiesce every database user before migrating (RELEASING.md: stop the API
+          # first). This is a short outage on each deploy. If migrate fails the
+          # services stay stopped; fix forward or redeploy an earlier tag.
+          docker compose stop maintenance web gateway </dev/null
+          docker compose --profile tools run --rm -T migrate </dev/null
+          if ! docker compose up -d --remove-orphans --wait --wait-timeout 120 </dev/null; then
+            docker compose ps </dev/null
+            docker compose logs --tail 50 gateway web </dev/null
+            exit 1
+          fi
+          docker compose ps </dev/null
+          docker image prune -f </dev/null
+          docker logout ghcr.io </dev/null
+          REMOTE
+
+      - name: Verify services are running
+        if: steps.fresh.outputs.stale != 'true'
+        run: |
+          set -euo pipefail
+          running="$(ssh deploy "cd '$DEPLOY_PATH' && docker compose ps --status running --services")"
+          for service in gateway web maintenance; do
+            if ! printf '%s\n' "$running" | grep -qx "$service"; then
+              echo "::error::service $service is not running after deploy"
+              exit 1
+            fi
+          done
