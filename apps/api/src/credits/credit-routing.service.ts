@@ -28,6 +28,7 @@ const MS_PER_DAY = 86_400_000;
 const CREDITS_USED_KEY = "creditsUsed";
 const METADATA_KEY = "metadata";
 const MAX_SAFE_CREDITS_USED = Number.MAX_SAFE_INTEGER;
+const KEY_ID_CACHE_LIMIT = 256;
 const MAX_SCANNED_KEY_LENGTH = Math.max(CREDITS_USED_KEY.length, METADATA_KEY.length);
 
 type CreditsUsedScanState =
@@ -51,7 +52,27 @@ class CreditsUsedScanner {
 
   push(chunk: Uint8Array): void {
     if (this.found) return;
-    for (const byte of chunk) {
+    const length = chunk.length;
+    // Next quote/backslash positions in this chunk. -2: not searched yet, -1: none in the rest.
+    // Each is searched again only once consumed, so the scan stays linear in the chunk size.
+    let nextQuote = -2;
+    let nextBackslash = -2;
+    let i = 0;
+    while (i < length) {
+      if (this.state === "string" && !this.escaped) {
+        // Skip to the next quote or backslash instead of stepping through every string byte.
+        if (nextQuote !== -1 && nextQuote < i) nextQuote = chunk.indexOf(34, i);
+        if (nextBackslash !== -1 && nextBackslash < i) nextBackslash = chunk.indexOf(92, i);
+        let end = nextQuote === -1 ? length : nextQuote;
+        if (nextBackslash !== -1 && nextBackslash < end) end = nextBackslash;
+        for (let j = i; j < end && this.candidate.length <= MAX_SCANNED_KEY_LENGTH; j++) {
+          const byte = chunk[j];
+          this.candidate += byte >= 32 && byte <= 126 ? String.fromCharCode(byte) : "\\0";
+        }
+        i = end;
+        if (i >= length) return;
+      }
+      const byte = chunk[i++];
       let processAgain = true;
       while (processAgain && !this.found) processAgain = this.processByte(byte);
       if (this.found) return;
@@ -246,6 +267,7 @@ export class CreditRoutingService {
     string,
     { renewsAt: number | null; credits: number | null }
   >();
+  private readonly keyIds = new Map<string, string>();
   private redisUnavailableUntil = 0;
 
   constructor(
@@ -254,10 +276,16 @@ export class CreditRoutingService {
   ) {}
 
   keyId(apiKey: string): string {
-    return crypto
+    const cached = this.keyIds.get(apiKey);
+    if (cached !== undefined) return cached;
+    const keyId = crypto
       .createHmac("sha256", Buffer.from(this.config.firecrawlKeysEncryptionKey, "hex"))
       .update(apiKey)
       .digest("hex");
+    // Bounded so rotated-out keys cannot accumulate indefinitely.
+    if (this.keyIds.size >= KEY_ID_CACHE_LIMIT) this.keyIds.clear();
+    this.keyIds.set(apiKey, keyId);
+    return keyId;
   }
 
   async reserve(

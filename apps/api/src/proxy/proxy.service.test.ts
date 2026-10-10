@@ -1,6 +1,7 @@
 import { Writable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RequestWithContext } from "../common/types";
+import * as cryptoModule from "../common/crypto";
 import { encryptSettingValue } from "../common/crypto";
 import { ProxyService } from "./proxy.service";
 
@@ -359,6 +360,44 @@ describe("ProxyService", () => {
     expect(
       fetchMock.mock.calls.some(([url]) => String(url).includes("/v2/team/credit-usage")),
     ).toBe(false);
+  });
+
+  it("reuses parsed cloud keys until the stored setting value changes, without sharing the array", async () => {
+    const first = "fc_cloud_key_1234567890";
+    const second = "fc_cloud_key_0987654321";
+    const encode = (key: string) =>
+      encryptSettingValue(JSON.stringify([key]), config.firecrawlKeysEncryptionKey);
+    let record = { key: "firecrawl_api_keys", value: encode(first) };
+    const settings = settingsWith({}, "cloud-first");
+    settings.getSettings.mockImplementation(async () => ({
+      default_route_mode: {
+        key: "default_route_mode",
+        value: "cloud-first",
+        updated_at: "2026-01-01T00:00:00.000Z",
+      },
+      firecrawl_api_keys: record,
+    }));
+    const decrypt = vi.spyOn(cryptoModule, "decryptSettingValue");
+    const credits = makeCredits();
+    credits.reserve.mockImplementation(async (keys: string[]) => {
+      const reservation = { key: keys[0], keyId: "opaque-key-id", amount: 1, source: "local" };
+      keys.push("mutated-by-caller");
+      return reservation;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async () => new Response(null, { status: 204 })),
+    );
+    const service = makeService(settings, undefined, credits);
+
+    await service.handle(makeRequest(), makeReply() as never);
+    await service.handle(makeRequest(), makeReply() as never);
+    expect(decrypt).toHaveBeenCalledTimes(1);
+    record = { key: "firecrawl_api_keys", value: encode(second) };
+    await service.handle(makeRequest(), makeReply() as never);
+
+    expect(decrypt).toHaveBeenCalledTimes(2);
+    expect(credits.reserve.mock.calls.map(([keys]) => keys[0])).toEqual([first, first, second]);
   });
 
   it("observes streamed actual credits without delaying the client response", async () => {

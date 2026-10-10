@@ -60,6 +60,8 @@ function isJsonContentType(contentType: string | null): boolean {
 
 @Injectable()
 export class ProxyService {
+  private cloudKeysCache: { value: string; keys: string[] } | null = null;
+
   constructor(
     @Inject(API_CONFIG) private readonly config: ApiConfig,
     private readonly settings: SettingsService,
@@ -514,6 +516,8 @@ export class ProxyService {
   private async getCloudApiKeys(record: SettingRecord | null): Promise<string[]> {
     try {
       if (!record?.value) return [];
+      // Keyed on the stored (encrypted) value, so a settings change is picked up on the next read.
+      if (this.cloudKeysCache?.value === record.value) return [...this.cloudKeysCache.keys];
       const decrypted = decryptSettingValue(record.value, this.config.firecrawlKeysEncryptionKey);
       if (!decrypted.encrypted)
         // Conditional: `record` may predate a concurrent admin update that must not be overwritten.
@@ -523,9 +527,11 @@ export class ProxyService {
           encryptSettingValue(record.value, this.config.firecrawlKeysEncryptionKey),
         );
       const parsed = JSON.parse(decrypted.value) as unknown;
-      return Array.isArray(parsed)
+      const keys = Array.isArray(parsed)
         ? parsed.filter((key): key is string => typeof key === "string" && key.length > 0)
         : [];
+      this.cloudKeysCache = { value: record.value, keys };
+      return [...keys];
     } catch {
       return [];
     }

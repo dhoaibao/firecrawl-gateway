@@ -57,6 +57,17 @@ describe("CreditRoutingService", () => {
     );
   });
 
+  it("returns a stable opaque key ID per API key", () => {
+    const service = new CreditRoutingService(config as never, makeLedger() as never);
+
+    const id = service.keyId("fc_first_secret_key");
+
+    expect(service.keyId("fc_first_secret_key")).toBe(id);
+    expect(service.keyId("fc_second_secret_key")).not.toBe(id);
+    expect(id).toMatch(/^[0-9a-f]{64}$/);
+    expect(id).not.toContain("fc_first_secret_key");
+  });
+
   it("falls back to random local selection among ties without fetching credit usage", async () => {
     const ledger = makeLedger();
     const service = new CreditRoutingService(config as never, ledger as never);
@@ -242,6 +253,74 @@ describe("CreditRoutingService", () => {
     expect(body).toBe('{"metadata":{"creditsUsed": 7}}');
     expect(settleStarted).toBe(true);
     resolveSettlement();
+  });
+
+  async function observeChunks(chunks: string[]): Promise<number | null> {
+    let found: number | null = null;
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk));
+        controller.close();
+      },
+    });
+    await new Response(
+      observeCreditsUsedStream(source, (creditsUsed) => {
+        found = creditsUsed;
+      }),
+    ).text();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return found;
+  }
+
+  it("finds creditsUsed after strings with escapes, split at any byte boundary", async () => {
+    const documents = [
+      '{"message":"a \\"quoted\\" \\\\ value","metadata":{"creditsUsed":4}}',
+      '{"a":"\\\\","metadata":{"creditsUsed":5}}',
+      '{"data":{"creditsUsed":2},"metadata":{"creditsUsed":8}}',
+      '{"metadata":{"credits\\uUsed":2}}',
+    ];
+    for (const document of documents) {
+      const whole = extractCreditsUsed(new TextEncoder().encode(document));
+      const bytewise = await observeChunks([...document]);
+      expect(bytewise).toBe(whole);
+    }
+    expect(extractCreditsUsed(new TextEncoder().encode(documents[0]))).toBe(4);
+    expect(extractCreditsUsed(new TextEncoder().encode(documents[1]))).toBe(5);
+    expect(extractCreditsUsed(new TextEncoder().encode(documents[2]))).toBe(8);
+  });
+
+  it("scans long string values and large bodies without a match", async () => {
+    const long = "x".repeat(200_000);
+    expect(
+      extractCreditsUsed(
+        new TextEncoder().encode(`{"markdown":"${long}","metadata":{"creditsUsed":9}}`),
+      ),
+    ).toBe(9);
+    expect(
+      extractCreditsUsed(
+        new TextEncoder().encode(`{"markdown":"${long}","other":"${long}","data":[1,2,3]}`),
+      ),
+    ).toBeNull();
+    expect(
+      await observeChunks([`{"markdown":"${long}`, long, `","metadata":{"creditsUsed":6}}`]),
+    ).toBe(6);
+  });
+
+  it("keeps scanning linear on escape-heavy strings by never re-searching a consumed suffix", () => {
+    class CountingBytes extends Uint8Array {
+      scanned = 0;
+      override indexOf(value: number, from = 0): number {
+        const found = super.indexOf(value, from);
+        this.scanned += (found === -1 ? this.length : found) - from;
+        return found;
+      }
+    }
+    const text = `{"markdown":"${"\\\\".repeat(20_000)}","metadata":{"creditsUsed":3}}`;
+    const bytes = new CountingBytes(new TextEncoder().encode(text));
+
+    expect(extractCreditsUsed(bytes)).toBe(3);
+    // One pass each for quotes and backslashes; a re-scan per escape would be ~n^2/2.
+    expect(bytes.scanned).toBeLessThanOrEqual(2 * bytes.length);
   });
 
   it("reconciles successful authoritative refreshes but retains state after failed refreshes", async () => {
