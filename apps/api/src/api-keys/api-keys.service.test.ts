@@ -286,6 +286,65 @@ describe("ApiKeysService", () => {
     });
   });
 
+  describe("portal user ownership", () => {
+    function ownedService(owner: unknown) {
+      const service = new ApiKeysService({} as never, {} as never);
+      const keyHash = service.hashApiKey("fc_owned");
+      const prisma = {
+        apiKey: { findFirst: vi.fn().mockResolvedValue(row({ keyHash, userId: "user-1" })) },
+        user: { findUnique: vi.fn().mockResolvedValue(owner) },
+      };
+      return {
+        prisma,
+        service: new ApiKeysService(prisma as never, {} as never),
+      };
+    }
+
+    it("exposes the owner on the validated record", async () => {
+      const { service, prisma } = ownedService({ status: "active", deletedAt: null });
+
+      const key = await service.validateApiKey("fc_owned");
+
+      expect(key?.user_id).toBe("user-1");
+      expect(key?.owner_active).toBe(true);
+      expect(prisma.user.findUnique).toHaveBeenCalledWith({
+        where: { id: "user-1" },
+        select: { status: true, deletedAt: true },
+      });
+    });
+
+    it.each([
+      ["a suspended owner", { status: "suspended", deletedAt: null }],
+      ["a deleted owner", { status: "active", deletedAt: new Date() }],
+      ["a missing owner", null],
+    ])("flags the key as owned by an inactive account for %s", async (_name, owner) => {
+      const { service } = ownedService(owner);
+
+      // Recognised, not dropped: callers must be able to refuse it instead of treating it
+      // as an unknown (anonymous) key.
+      await expect(service.validateApiKey("fc_owned")).resolves.toMatchObject({
+        id: "key-1",
+        user_id: "user-1",
+        owner_active: false,
+      });
+    });
+
+    it("does not look up an owner for global keys", async () => {
+      const service = new ApiKeysService({} as never, {} as never);
+      const keyHash = service.hashApiKey("fc_global");
+      const prisma = {
+        apiKey: { findFirst: vi.fn().mockResolvedValue(row({ keyHash })) },
+        user: { findUnique: vi.fn() },
+      };
+      const global = new ApiKeysService(prisma as never, {} as never);
+
+      const key = await global.validateApiKey("fc_global");
+
+      expect(key).toMatchObject({ id: "key-1", user_id: null, owner_active: true });
+      expect(prisma.user.findUnique).not.toHaveBeenCalled();
+    });
+  });
+
   it("validates a non-revoked key without loading a user relation", async () => {
     const key = "fc_global-test";
     const prisma = {

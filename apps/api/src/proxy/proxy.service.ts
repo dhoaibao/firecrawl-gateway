@@ -21,6 +21,7 @@ import {
 import {
   DEFAULT_ROUTE_MODE,
   chooseInitialBackend,
+  effectiveRouteMode,
   hasSensitiveHeaders,
   isCloudQuotaFallbackAllowed,
   isFallbackAllowed,
@@ -38,6 +39,7 @@ import { ApiKeysService, isApiKeyExpired } from "../api-keys/api-keys.service";
 import { AuditService } from "../audit/audit.service";
 import { MetricsService } from "../metrics/metrics.service";
 import { MAX_RESPONSE_CACHE_TTL_SECONDS, integerSetting } from "../settings/runtime-settings";
+import { UserCloudKeysService } from "../user-cloud-keys/user-cloud-keys.service";
 import { CircuitBreaker } from "./circuit-breaker";
 import {
   MAX_CACHED_ENTRY_BYTES,
@@ -88,6 +90,8 @@ interface ProxyContext {
   primaryTargetUrl: string;
   /** Set once the virtual API key validates; stays null for playground and rejected requests. */
   apiKeyId: string | null;
+  /** The portal user who owns the key; null for global keys and the admin playground. */
+  userId: string | null;
 }
 
 /** What a request needs once it passed validation and the routing decision. */
@@ -138,6 +142,17 @@ function isJsonContentType(contentType: string | null): boolean {
   return mediaType === "application/json" || mediaType?.endsWith("+json") === true;
 }
 
+function selfHostedForbiddenResult(): ProxyResult {
+  const message = "The self-hosted backend is not available for this API key";
+  return {
+    kind: "network-error",
+    backend: "self-hosted",
+    error: new Error(message),
+    body: Buffer.from(JSON.stringify({ success: false, error: message })),
+    durationMs: 0,
+  };
+}
+
 function circuitOpenResult(): ProxyResult {
   const message = "Self-hosted Firecrawl is temporarily unavailable (circuit open)";
   return {
@@ -164,6 +179,7 @@ export class ProxyService {
     private readonly audit: AuditService,
     private readonly credits: CreditRoutingService,
     private readonly metrics: MetricsService,
+    private readonly userCloudKeys: UserCloudKeysService,
   ) {
     this.selfHostedBreaker = new CircuitBreaker({
       failureThreshold: config.selfHostedBreakerFailureThreshold,
@@ -339,6 +355,7 @@ export class ProxyService {
       routeMode: DEFAULT_ROUTE_MODE,
       primaryTargetUrl: "",
       apiKeyId: null,
+      userId: null,
     };
   }
 
@@ -350,9 +367,11 @@ export class ProxyService {
     const { request } = ctx;
     // Settings and API-key validation are independent, so fetch them together.
     const needsAuth = this.config.authEnabled && !request.admin;
-    const bearerMatch = needsAuth
-      ? String(request.headers.authorization || "").match(/^Bearer\s+(.+)$/i)
-      : null;
+    // A bearer token is looked up even when authentication is off: keys are not
+    // required then, but a portal user's key must still be isolated (below).
+    const bearerMatch = request.admin
+      ? null
+      : String(request.headers.authorization || "").match(/^Bearer\s+(.+)$/i);
     const [settings, authenticated] = await Promise.all([
       this.settings.getSettings(PROXY_SETTING_KEYS),
       bearerMatch ? this.keys.validateApiKey(bearerMatch[1]) : null,
@@ -360,22 +379,40 @@ export class ProxyService {
     // Clients cannot choose the route mode; only the admin's default decides it.
     ctx.routeMode = parseRouteMode(settings.default_route_mode, DEFAULT_ROUTE_MODE);
 
-    if (!needsAuth) return settings;
-    if (!bearerMatch) {
-      await this.rejectEarly(ctx, "none", 401, "Missing or invalid API key", {
-        success: false,
-        error: "Missing or invalid API key",
-      });
-      return null;
-    }
-    if (!authenticated) {
+    // A recognised key whose owner is suspended or deleted is refused in every mode.
+    // Treating it as unknown would let an open deployment serve it as anonymous traffic.
+    if (authenticated && authenticated.owner_active === false) {
       await this.rejectEarly(ctx, "none", 401, "Invalid or revoked API key", {
         success: false,
         error: "Invalid or revoked API key",
       });
       return null;
     }
+    if (!needsAuth) {
+      // Open deployment (AUTH_ENABLED=false) or the admin playground: no key is
+      // required and unknown or global keys change nothing. A portal user's key is
+      // still enforced exactly as when authentication is on, so turning
+      // authentication off can never lift its Cloud-only isolation.
+      if (!authenticated?.user_id) return settings;
+    } else if (!bearerMatch) {
+      await this.rejectEarly(ctx, "none", 401, "Missing or invalid API key", {
+        success: false,
+        error: "Missing or invalid API key",
+      });
+      return null;
+    } else if (!authenticated) {
+      await this.rejectEarly(ctx, "none", 401, "Invalid or revoked API key", {
+        success: false,
+        error: "Invalid or revoked API key",
+      });
+      return null;
+    }
+    if (!authenticated) return settings;
     ctx.apiKeyId = authenticated.id;
+    // A portal user's key is Cloud-only whatever the admin's global mode is, and uses
+    // only that user's own Cloud keys (see buildPlan). Decided here, once the key is known.
+    ctx.userId = authenticated.user_id ?? null;
+    ctx.routeMode = effectiveRouteMode(ctx.routeMode, { userId: ctx.userId });
     // Expiry is read from the (briefly cached) record on every request, so it is exact.
     if (isApiKeyExpired(authenticated)) {
       await this.rejectEarly(ctx, "none", 401, "API key has expired", {
@@ -451,9 +488,19 @@ export class ProxyService {
     };
     const needsCloud = requestNeedsCloud(ctx.path, json);
     const firstBackend = chooseInitialBackend(ctx.routeMode, needsCloud);
+    // A user's key never sees the admin's pool: its entries come only from that user's own keys.
     const keyEntries = mayUseCloudKeys(firstBackend, ctx.routeMode, privacy)
-      ? await this.getCloudKeyEntries(settings.firecrawl_api_keys)
+      ? ctx.userId
+        ? await this.loadUserKeyEntries(ctx.userId)
+        : await this.getCloudKeyEntries(settings.firecrawl_api_keys)
       : [];
+    if (keyEntries === null) {
+      await this.rejectEarly(ctx, "none", 503, "Could not load the user's Cloud API keys", {
+        success: false,
+        error: "Your Firecrawl Cloud API keys are temporarily unavailable. Please try again.",
+      });
+      return null;
+    }
     const { initialBackend, cloudApiKeys, fallbackApiKeys } = selectKeyPools(
       ctx.routeMode,
       firstBackend,
@@ -461,6 +508,13 @@ export class ProxyService {
       keyEntries,
     );
     if (initialBackend === "cloud" && !cloudApiKeys.length) {
+      if (ctx.userId) {
+        await this.rejectEarly(ctx, "none", 409, "No Firecrawl Cloud API key configured", {
+          success: false,
+          error: "No Firecrawl Cloud API key configured. Add your own key in the portal.",
+        });
+        return null;
+      }
       await this.rejectEarly(ctx, "none", 502, "No Firecrawl Cloud API key configured", {
         success: false,
         error: "No Firecrawl Cloud API key configured. Add one in Settings.",
@@ -697,6 +751,7 @@ export class ProxyService {
       target_url: ctx.primaryTargetUrl,
       request_id: ctx.request.requestId,
       api_key_id: ctx.apiKeyId ?? undefined,
+      user_id: ctx.userId ?? undefined,
     };
     // Every audited request, including early rejections, is also counted here.
     this.metrics.observeRequest({
@@ -757,6 +812,10 @@ export class ProxyService {
   }
 
   private proxySelfHosted(ctx: ProxyContext, plan: RoutePlan): Promise<ProxyResult> {
+    // Second line of defence: a user's key is forced to cloud-only before routing, so
+    // this should be unreachable. If a routing change ever breaks that, refuse here
+    // rather than call the self-hosted backend on behalf of a portal user.
+    if (ctx.userId) return Promise.resolve(selfHostedForbiddenResult());
     plan.selfHostedAttempted = true;
     // While the circuit is open the call never reaches upstream and surfaces as
     // a network error, so the existing fallback policy (and its privacy gates)
@@ -941,6 +1000,15 @@ export class ProxyService {
       .code(result.response?.status || 502)
       .headers(headers)
       .send(result.body);
+  }
+
+  /** The user's own Cloud keys, or null when they could not be read (not "no keys"). */
+  private async loadUserKeyEntries(userId: string): Promise<CloudKeyEntry[] | null> {
+    try {
+      return await this.userCloudKeys.loadEntries(userId);
+    } catch {
+      return null;
+    }
   }
 
   private async getCloudKeyEntries(record: SettingRecord | null): Promise<CloudKeyEntry[]> {

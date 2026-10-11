@@ -19,6 +19,8 @@ export interface AuditEntry {
   request_id?: string;
   /** Virtual API key that made the request; absent for playground and rejected requests. */
   api_key_id?: string;
+  /** Portal user who owns the key that made the request; absent for global keys. */
+  user_id?: string;
 }
 
 export type Backend = "cloud" | "self-hosted";

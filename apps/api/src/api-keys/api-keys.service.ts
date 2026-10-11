@@ -25,6 +25,14 @@ export interface ApiKeyRecord {
   rate_limit_per_minute: number | null;
   /** Requests allowed per calendar month (UTC); null means no quota. */
   monthly_quota: number | null;
+  /** The portal user who owns the key; null for global keys created by the admin. */
+  user_id: string | null;
+  /**
+   * False when the key belongs to a user who is suspended, deleted or missing. Such a
+   * key is still recognised (so callers can reject it rather than treat it as an
+   * anonymous request); global keys are always active.
+   */
+  owner_active: boolean;
 }
 
 /** Optional per-key limits; `null` clears a limit, `undefined` leaves it unchanged. */
@@ -60,6 +68,7 @@ function toKey(key: {
   expiresAt?: Date | null;
   rateLimitPerMinute?: number | null;
   monthlyQuota?: number | null;
+  userId?: string | null;
 }): ApiKeyRecord {
   return {
     id: key.id,
@@ -74,6 +83,8 @@ function toKey(key: {
     expires_at: key.expiresAt?.toISOString() ?? null,
     rate_limit_per_minute: key.rateLimitPerMinute ?? null,
     monthly_quota: key.monthlyQuota ?? null,
+    user_id: key.userId ?? null,
+    owner_active: true,
   };
 }
 
@@ -250,7 +261,15 @@ export class ApiKeysService implements OnModuleDestroy {
     if (existing) return existing;
     const request = this.prisma.apiKey
       .findFirst({ where: { keyHash, revoked: false } })
-      .then((row) => (row ? toKey(row) : null));
+      .then(async (row) => {
+        if (!row) return null;
+        const record = toKey(row);
+        // A portal user's key stops working with its owner. It is flagged rather than
+        // dropped, so an open deployment cannot mistake it for an anonymous request
+        // (global keys have no owner and skip this lookup).
+        if (row.userId) record.owner_active = await this.ownerIsActive(row.userId);
+        return record;
+      });
     this.validationInFlight.set(keyHash, request);
     try {
       const value = await request;
@@ -259,6 +278,14 @@ export class ApiKeysService implements OnModuleDestroy {
     } finally {
       if (this.validationInFlight.get(keyHash) === request) this.validationInFlight.delete(keyHash);
     }
+  }
+
+  private async ownerIsActive(userId: string): Promise<boolean> {
+    const owner = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { status: true, deletedAt: true },
+    });
+    return owner !== null && owner.status === "active" && owner.deletedAt === null;
   }
 
   async touchApiKey(id: string): Promise<void> {
