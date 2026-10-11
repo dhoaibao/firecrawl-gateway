@@ -61,6 +61,14 @@ export const api = {
       body: JSON.stringify(body),
     });
   },
+  patch<T>(url: string, body: unknown, options?: Omit<RequestInit, "method" | "body">): Promise<T> {
+    return request<T>(url, {
+      ...options,
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...(options?.headers || {}) },
+      body: JSON.stringify(body),
+    });
+  },
   delete<T>(
     url: string,
     body?: unknown,

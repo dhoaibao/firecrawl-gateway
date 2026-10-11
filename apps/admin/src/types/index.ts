@@ -48,6 +48,10 @@ export interface ApiKeyData {
   created_at: string;
   updated_at: string;
   last_used_at: string | null;
+  /** ISO time after which the key is rejected; null means it never expires. */
+  expires_at: string | null;
+  /** Requests per minute allowed for this key; null means no per-key limit. */
+  rate_limit_per_minute: number | null;
   key?: string;
 }
 

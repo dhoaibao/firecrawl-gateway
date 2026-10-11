@@ -1,5 +1,16 @@
 import { useState, useEffect, useCallback } from "react";
-import { Plus, Trash2, Key, Copy, Check, RefreshCw, Search, KeyRound, Globe } from "lucide-react";
+import {
+  Plus,
+  Trash2,
+  Key,
+  Copy,
+  Check,
+  RefreshCw,
+  Search,
+  KeyRound,
+  Globe,
+  SlidersHorizontal,
+} from "lucide-react";
 import { useConfirmDialog } from "@/components/ConfirmDialog";
 import {
   Select,
@@ -25,6 +36,44 @@ import { formatLatency } from "@/hooks/useAuditMetrics";
 import { cn } from "@/lib/utils";
 import type { ApiKeyData, ApiKeyUsage } from "@/types";
 
+type KeyState = "active" | "revoked" | "expired";
+
+function keyState(key: ApiKeyData): KeyState {
+  if (key.revoked) return "revoked";
+  if (key.expires_at && Date.parse(key.expires_at) <= Date.now()) return "expired";
+  return "active";
+}
+
+/** `datetime-local` inputs take a local `YYYY-MM-DDTHH:mm` value. */
+function toLocalInput(iso: string | null): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/** Converts the two optional limit inputs; a string result is a user-facing error. */
+function parseLimits(
+  expiresInput: string,
+  rateInput: string,
+): { expires_at: string | null; rate_limit_per_minute: number | null } | string {
+  let expires_at: string | null = null;
+  if (expiresInput) {
+    const date = new Date(expiresInput);
+    if (Number.isNaN(date.getTime())) return "Expiry is not a valid date and time.";
+    if (date.getTime() <= Date.now()) return "Expiry must be in the future.";
+    expires_at = date.toISOString();
+  }
+  let rate_limit_per_minute: number | null = null;
+  if (rateInput.trim()) {
+    const value = Number(rateInput);
+    if (!Number.isInteger(value) || value < 1 || value > 100_000)
+      return "Rate limit must be a whole number between 1 and 100000.";
+    rate_limit_per_minute = value;
+  }
+  return { expires_at, rate_limit_per_minute };
+}
+
 export default function ApiKeys() {
   const gatewayUrl = getGatewayUrl();
   const [keys, setKeys] = useState<ApiKeyData[]>([]);
@@ -37,6 +86,12 @@ export default function ApiKeys() {
   const { confirm: confirmRevoke, dialog: confirmDialog } = useConfirmDialog();
 
   const [newKeyName, setNewKeyName] = useState("");
+  const [newKeyExpiresAt, setNewKeyExpiresAt] = useState("");
+  const [newKeyRateLimit, setNewKeyRateLimit] = useState("");
+  const [editingKey, setEditingKey] = useState<ApiKeyData | null>(null);
+  const [editExpiresAt, setEditExpiresAt] = useState("");
+  const [editRateLimit, setEditRateLimit] = useState("");
+  const [savingLimits, setSavingLimits] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createdKey, setCreatedKey] = useState<ApiKeyData | null>(null);
   const [copied, setCopied] = useState(false);
@@ -45,7 +100,7 @@ export default function ApiKeys() {
 
   // Search & filter state
   const [searchQuery, setSearchQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "revoked">("active");
+  const [statusFilter, setStatusFilter] = useState<"all" | KeyState>("active");
 
   // Pagination state
   const [page, setPage] = useState(1);
@@ -60,8 +115,7 @@ export default function ApiKeys() {
       !searchQuery ||
       k.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       k.key_prefix.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesStatus =
-      statusFilter === "all" || (statusFilter === "active" ? !k.revoked : k.revoked);
+    const matchesStatus = statusFilter === "all" || keyState(k) === statusFilter;
     return matchesSearch && matchesStatus;
   });
 
@@ -120,19 +174,77 @@ export default function ApiKeys() {
 
   async function handleCreate(e: React.SubmitEvent<HTMLFormElement>) {
     e.preventDefault();
+    const limits = parseLimits(newKeyExpiresAt, newKeyRateLimit);
+    if (typeof limits === "string") {
+      addToast(limits, "error");
+      return;
+    }
     setCreating(true);
     try {
       const json = await api.post<{ data: ApiKeyData }>("/admin/api/api-keys", {
         name: newKeyName,
+        // Omitted fields mean "no limit"; the server stores null for them.
+        ...(limits.expires_at ? { expires_at: limits.expires_at } : {}),
+        ...(limits.rate_limit_per_minute
+          ? { rate_limit_per_minute: limits.rate_limit_per_minute }
+          : {}),
       });
       setCreatedKey(json.data);
       setNewKeyName("");
+      setNewKeyExpiresAt("");
+      setNewKeyRateLimit("");
       setShowForm(false);
       await fetchKeys();
     } catch (err) {
       addToast(err instanceof Error ? err.message : "Failed to create virtual API key", "error");
     } finally {
       setCreating(false);
+    }
+  }
+
+  function openLimits(key: ApiKeyData) {
+    setEditingKey(key);
+    setEditExpiresAt(toLocalInput(key.expires_at));
+    setEditRateLimit(key.rate_limit_per_minute ? String(key.rate_limit_per_minute) : "");
+  }
+
+  async function handleSaveLimits(e: React.SubmitEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!editingKey) return;
+    // Only fields the user actually changed are sent. The expiry input has minute
+    // precision, so resending an untouched value would silently shorten it (and an
+    // already-expired key could not have its rate limit edited at all).
+    const initialRateLimit = editingKey.rate_limit_per_minute
+      ? String(editingKey.rate_limit_per_minute)
+      : "";
+    const expiresChanged = editExpiresAt !== toLocalInput(editingKey.expires_at);
+    const rateLimitChanged = editRateLimit.trim() !== initialRateLimit;
+    if (!expiresChanged && !rateLimitChanged) {
+      setEditingKey(null);
+      return;
+    }
+    const limits = parseLimits(
+      expiresChanged ? editExpiresAt : "",
+      rateLimitChanged ? editRateLimit : "",
+    );
+    if (typeof limits === "string") {
+      addToast(limits, "error");
+      return;
+    }
+    setSavingLimits(true);
+    try {
+      // An emptied input is sent as null, which clears that limit.
+      await api.patch(`/admin/api/api-keys/${editingKey.id}`, {
+        ...(expiresChanged ? { expires_at: limits.expires_at } : {}),
+        ...(rateLimitChanged ? { rate_limit_per_minute: limits.rate_limit_per_minute } : {}),
+      });
+      addToast("Key limits updated", "success");
+      setEditingKey(null);
+      await fetchKeys();
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : "Failed to update key limits", "error");
+    } finally {
+      setSavingLimits(false);
     }
   }
 
@@ -264,21 +376,26 @@ export default function ApiKeys() {
         </div>
       </Card>
 
-      <div className="mb-5 grid gap-3 sm:grid-cols-3">
+      <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {[
           {
             label: "Active keys",
-            value: keys.filter((k) => !k.revoked).length,
+            value: keys.filter((k) => keyState(k) === "active").length,
             tone: "text-success-fg",
           },
           {
             label: "Revoked keys",
-            value: keys.filter((k) => k.revoked).length,
+            value: keys.filter((k) => keyState(k) === "revoked").length,
+            tone: "text-danger-fg",
+          },
+          {
+            label: "Expired keys",
+            value: keys.filter((k) => keyState(k) === "expired").length,
             tone: "text-danger-fg",
           },
           {
             label: "Never used",
-            value: keys.filter((k) => !k.last_used_at && !k.revoked).length,
+            value: keys.filter((k) => !k.last_used_at && keyState(k) === "active").length,
             tone: "text-warning-fg",
           },
         ].map((item) => (
@@ -314,7 +431,7 @@ export default function ApiKeys() {
         <Select
           value={statusFilter}
           onValueChange={(v) => {
-            setStatusFilter(v as "all" | "active" | "revoked");
+            setStatusFilter(v as "all" | KeyState);
             setPage(1);
           }}
         >
@@ -325,6 +442,7 @@ export default function ApiKeys() {
             <SelectItem value="all">All statuses</SelectItem>
             <SelectItem value="active">Active</SelectItem>
             <SelectItem value="revoked">Revoked</SelectItem>
+            <SelectItem value="expired">Expired</SelectItem>
           </SelectContent>
         </Select>
         {(searchQuery || statusFilter !== "active") && (
@@ -405,6 +523,107 @@ export default function ApiKeys() {
           <p className="text-xs text-muted-foreground">
             Use a name that describes where this key is used.
           </p>
+          <div className="grid gap-3 pt-2 sm:grid-cols-2">
+            <div className="space-y-2">
+              <label
+                htmlFor="new-api-key-expires"
+                className="block text-sm font-medium text-foreground"
+              >
+                Expires <span className="text-xs text-muted-foreground">(optional)</span>
+              </label>
+              <Input
+                id="new-api-key-expires"
+                type="datetime-local"
+                value={newKeyExpiresAt}
+                onChange={(e) => setNewKeyExpiresAt(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <label
+                htmlFor="new-api-key-rate-limit"
+                className="block text-sm font-medium text-foreground"
+              >
+                Rate limit <span className="text-xs text-muted-foreground">(requests/min)</span>
+              </label>
+              <Input
+                id="new-api-key-rate-limit"
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={100000}
+                step={1}
+                placeholder="No limit"
+                value={newKeyRateLimit}
+                onChange={(e) => setNewKeyRateLimit(e.target.value)}
+              />
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Both are optional. The limit is enforced per key and is approximate across restarts and
+            instances.
+          </p>
+        </form>
+      </FormDialog>
+
+      <FormDialog
+        open={editingKey !== null}
+        title="Edit key limits"
+        description={
+          editingKey
+            ? `Limits for ${editingKey.name} (${editingKey.key_prefix}...). Leave a field empty to remove that limit.`
+            : ""
+        }
+        onClose={() => setEditingKey(null)}
+        footer={
+          <>
+            <Button type="button" variant="outline" size="sm" onClick={() => setEditingKey(null)}>
+              Cancel
+            </Button>
+            <Button type="submit" form="edit-api-key-form" size="sm" disabled={savingLimits}>
+              {savingLimits ? "Saving..." : "Save limits"}
+            </Button>
+          </>
+        }
+      >
+        <form id="edit-api-key-form" onSubmit={handleSaveLimits} className="space-y-2">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-2">
+              <label
+                htmlFor="edit-api-key-expires"
+                className="block text-sm font-medium text-foreground"
+              >
+                Expires
+              </label>
+              <Input
+                id="edit-api-key-expires"
+                type="datetime-local"
+                value={editExpiresAt}
+                onChange={(e) => setEditExpiresAt(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <label
+                htmlFor="edit-api-key-rate-limit"
+                className="block text-sm font-medium text-foreground"
+              >
+                Rate limit <span className="text-xs text-muted-foreground">(requests/min)</span>
+              </label>
+              <Input
+                id="edit-api-key-rate-limit"
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={100000}
+                step={1}
+                placeholder="No limit"
+                value={editRateLimit}
+                onChange={(e) => setEditRateLimit(e.target.value)}
+              />
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Changes apply to the next request. An expired key is rejected with 401.
+          </p>
         </form>
       </FormDialog>
 
@@ -425,16 +644,43 @@ export default function ApiKeys() {
             {
               key: "status",
               header: "Status",
-              render: (k) =>
-                k.revoked ? (
+              render: (k) => {
+                const state = keyState(k);
+                return state === "revoked" ? (
                   <span className="rounded-md bg-danger-muted px-2 py-0.5 text-xs text-danger-fg">
                     Revoked
+                  </span>
+                ) : state === "expired" ? (
+                  <span className="rounded-md bg-warning-muted px-2 py-0.5 text-xs text-warning-fg">
+                    Expired
                   </span>
                 ) : (
                   <span className="rounded-md bg-success-muted px-2 py-0.5 text-xs text-success-fg">
                     Active
                   </span>
-                ),
+                );
+              },
+            },
+            {
+              key: "limits",
+              header: "Limits",
+              render: (k) => (
+                <div className="space-y-0.5 text-xs">
+                  <div
+                    className={cn(
+                      "font-mono tabular-nums",
+                      k.rate_limit_per_minute ? "text-foreground" : "text-muted-foreground",
+                    )}
+                  >
+                    {k.rate_limit_per_minute
+                      ? `${k.rate_limit_per_minute.toLocaleString()}/min`
+                      : "No rate limit"}
+                  </div>
+                  <div className="text-muted-foreground">
+                    {k.expires_at ? `Expires ${formatDate(k.expires_at)}` : "Never expires"}
+                  </div>
+                </div>
+              ),
             },
             {
               key: "created",
@@ -508,6 +754,17 @@ export default function ApiKeys() {
               align: "right",
               render: (k) => (
                 <div className="flex justify-end gap-2">
+                  {!k.revoked && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7"
+                      onClick={() => openLimits(k)}
+                      aria-label={`Edit limits for ${k.name}`}
+                    >
+                      <SlidersHorizontal className="size-3 mr-1" /> Limits
+                    </Button>
+                  )}
                   {!k.revoked && (
                     <Button
                       variant="outline"
