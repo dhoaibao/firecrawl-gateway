@@ -323,12 +323,15 @@ export default function ApiKeys() {
               {copied ? <Check className="size-4 text-success" /> : <Copy className="size-4" />}
             </Button>
           </div>
-          <button
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="text-muted-foreground"
             onClick={() => setCreatedKey(null)}
-            className="text-sm text-muted-foreground hover:text-foreground"
           >
             Dismiss
-          </button>
+          </Button>
         </div>
       )}
 

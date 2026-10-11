@@ -3,7 +3,8 @@ import { cn } from "@/lib/utils";
 function Skeleton({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
-      className={cn("relative overflow-hidden rounded-md bg-[hsl(230_9%_16%)]", className)}
+      data-slot="skeleton"
+      className={cn("relative overflow-hidden rounded-md bg-surface-4", className)}
       {...props}
     >
       <div

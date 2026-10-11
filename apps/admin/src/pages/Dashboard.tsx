@@ -937,13 +937,15 @@ export default function Dashboard() {
                     <X className="size-3" />
                   </Badge>
                 ))}
-                <button
+                <Button
                   type="button"
-                  className="ml-auto text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+                  variant="ghost"
+                  size="sm"
+                  className="ml-auto h-7 text-xs text-muted-foreground"
                   onClick={clearAllFilters}
                 >
                   Clear all
-                </button>
+                </Button>
               </div>
             )}
 
