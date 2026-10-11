@@ -527,4 +527,89 @@ describe("ProxyService", () => {
       402,
     );
   });
+
+  it("ignores client route-mode overrides and does not forward the routeMode query", async () => {
+    const credits = makeCredits();
+    const audit = { appendAudit: vi.fn().mockResolvedValue(undefined) };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await makeService(makeSettings(), audit, credits).handle(
+      makeRequest({
+        raw: { url: "/v1/test?routeMode=cloud-only&x=1" },
+        url: "/v1/test?routeMode=cloud-only&x=1",
+        headers: { "x-firecrawl-route-mode": "cloud-only" },
+      }),
+      makeReply() as never,
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("https://self.test/v1/test?x=1");
+    expect(fetchMock.mock.calls[0][1].headers).not.toHaveProperty("x-firecrawl-route-mode");
+    expect(credits.reserve).not.toHaveBeenCalled();
+    expect(audit.appendAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ route_mode: "self-hosted-only", backend_used: "self-hosted" }),
+    );
+  });
+
+  it("never forwards the admin session cookie upstream and ignores it for fallback", async () => {
+    const key = "fc_cloud_key_1234567890";
+    const encrypted = encryptSettingValue(JSON.stringify([key]), config.firecrawlKeysEncryptionKey);
+    const settings = settingsWith(
+      { firecrawl_api_keys: { key: "firecrawl_api_keys", value: encrypted } },
+      "self-hosted-first",
+    );
+    const credits = makeCredits();
+    credits.reserve.mockResolvedValue({ key, keyId: "opaque-key-id", amount: 1, source: "local" });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const service = new ProxyService(
+      { ...config, authEnabled: true } as never,
+      settings as never,
+      { validateApiKey: vi.fn() } as never,
+      { appendAudit: vi.fn().mockResolvedValue(undefined) } as never,
+      credits as never,
+    );
+
+    await service.handle(
+      makeRequest({
+        admin: { email: "admin@example.com" },
+        headers: { cookie: "firecrawl.sid=session-value", "x-trace": "1" },
+      }),
+      makeReply() as never,
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toBe("https://self.test/v1/test");
+    expect(fetchMock.mock.calls[1][0]).toBe("https://cloud.test/v1/test");
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(init.headers).not.toHaveProperty("cookie");
+      expect(init.headers).toHaveProperty("x-trace", "1");
+    }
+  });
+
+  it("drops client cookies upstream but still treats them as sensitive for fallback", async () => {
+    const key = "fc_cloud_key_1234567890";
+    const encrypted = encryptSettingValue(JSON.stringify([key]), config.firecrawlKeysEncryptionKey);
+    const settings = settingsWith(
+      { firecrawl_api_keys: { key: "firecrawl_api_keys", value: encrypted } },
+      "self-hosted-first",
+    );
+    const credits = makeCredits();
+    credits.reserve.mockResolvedValue({ key, keyId: "opaque-key-id", amount: 1, source: "local" });
+    const fetchMock = vi.fn().mockResolvedValue(new Response("unavailable", { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await makeService(settings, undefined, credits).handle(
+      makeRequest({ headers: { cookie: "a=b" } }),
+      makeReply() as never,
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][1].headers).not.toHaveProperty("cookie");
+    expect(credits.reserve).not.toHaveBeenCalled();
+  });
 });

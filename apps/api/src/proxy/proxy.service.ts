@@ -14,7 +14,6 @@ import {
 import { decryptSettingValue, encryptSettingValue } from "../common/crypto";
 import {
   chooseInitialBackend,
-  getRouteMode,
   hasSensitiveHeaders,
   isCloudQuotaFallbackAllowed,
   isFallbackAllowed,
@@ -53,6 +52,14 @@ const PROXY_SETTING_KEYS = ["default_route_mode", "firecrawl_api_keys"] as const
 const RETRYABLE_CLOUD_STATUS = new Set([401, 402, 403, 429]);
 const CLOUD_CAPACITY_STATUS = new Set([402, 429]);
 
+// `routeMode` was once a client override; it is no longer honored, so do not forward it upstream.
+function withoutRouteModeParam(originalUrl: string, parsedUrl: URL): string {
+  if (!parsedUrl.searchParams.has("routeMode")) return originalUrl;
+  const next = new URL(parsedUrl);
+  next.searchParams.delete("routeMode");
+  return `${next.pathname}${next.search}`;
+}
+
 function isJsonContentType(contentType: string | null): boolean {
   const mediaType = contentType?.split(";", 1)[0].trim().toLowerCase();
   return mediaType === "application/json" || mediaType?.endsWith("+json") === true;
@@ -83,6 +90,7 @@ export class ProxyService {
       reply.code(400).send({ success: false, error: "Invalid request URL" });
       return;
     }
+    const upstreamUrl = withoutRouteModeParam(originalUrl, parsedUrl);
     let primaryTargetUrl = "";
     let routeMode: string = this.configDefaultRouteMode();
     const appendAuditEntry = async (
@@ -129,11 +137,8 @@ export class ProxyService {
       this.settings.getSettings(PROXY_SETTING_KEYS),
       bearerMatch ? this.keys.validateApiKey(bearerMatch[1]) : null,
     ]);
-    routeMode = getRouteMode(
-      originalUrl,
-      request.headers,
-      parseRouteMode(settingRecords.default_route_mode, this.configDefaultRouteMode()),
-    );
+    // Clients cannot choose the route mode; only the admin's default decides it.
+    routeMode = parseRouteMode(settingRecords.default_route_mode, this.configDefaultRouteMode());
 
     if (needsAuth) {
       if (!bearerMatch) {
@@ -222,7 +227,7 @@ export class ProxyService {
         "cloud",
         request,
         bodyBuffer,
-        this.backendUrl("cloud", originalUrl),
+        this.backendUrl("cloud", upstreamUrl),
         reservation.key,
       );
       if (cloudResult.kind === "response" && cloudResult.response) {
@@ -256,7 +261,7 @@ export class ProxyService {
             "self-hosted",
             request,
             bodyBuffer,
-            this.backendUrl("self-hosted", originalUrl),
+            this.backendUrl("self-hosted", upstreamUrl),
           );
         } else {
           await sendEarlyResponse("cloud", 429, false, "No available Firecrawl Cloud credit pool", {
@@ -274,7 +279,7 @@ export class ProxyService {
         initialBackend,
         request,
         bodyBuffer,
-        this.backendUrl(initialBackend, originalUrl),
+        this.backendUrl(initialBackend, upstreamUrl),
       );
       if (
         initialBackend === "self-hosted" &&
@@ -345,7 +350,7 @@ export class ProxyService {
         "self-hosted",
         request,
         bodyBuffer,
-        this.backendUrl("self-hosted", originalUrl),
+        this.backendUrl("self-hosted", upstreamUrl),
       );
     }
     const status = result.kind === "network-error" ? 502 : result.response?.status || 502;
@@ -377,14 +382,19 @@ export class ProxyService {
 
   private privacyHeaders(request: RequestWithContext) {
     if (!this.config.authEnabled) return request.headers;
+    // The gateway's own credentials are not client data: the Bearer key and, for
+    // the playground, the admin session cookie must not restrict fallback.
     return Object.fromEntries(
-      Object.entries(request.headers).filter(([key]) => key.toLowerCase() !== "authorization"),
+      Object.entries(request.headers).filter(([key]) => {
+        const lower = key.toLowerCase();
+        return lower !== "authorization" && !(request.admin && lower === "cookie");
+      }),
     );
   }
 
-  private backendUrl(backend: string, originalUrl: string): string {
+  private backendUrl(backend: string, path: string): string {
     const base = backend === "cloud" ? this.config.cloudBaseUrl : this.config.selfHostedBaseUrl;
-    return `${base}${originalUrl}`;
+    return `${base}${path}`;
   }
 
   private sanitizeHeaders(
@@ -395,7 +405,9 @@ export class ProxyService {
     const next: Record<string, string> = {};
     for (const [key, value] of Object.entries(headers)) {
       const lower = key.toLowerCase();
-      if (hopByHopHeaders.has(lower) || lower === "x-firecrawl-route-mode") continue;
+      // Never forward cookies: the admin session cookie must not reach any upstream.
+      if (hopByHopHeaders.has(lower) || lower === "x-firecrawl-route-mode" || lower === "cookie")
+        continue;
       if (lower === "authorization" && backend !== "cloud" && this.config.authEnabled) continue;
       if (value !== undefined) next[key] = Array.isArray(value) ? value.join(", ") : value;
     }

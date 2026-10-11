@@ -40,6 +40,15 @@ export const configSchema = z
     authEnabled: boolFromEnv.default(true),
     databaseUrl: z.string().min(1, "DATABASE_URL is required"),
     sessionSecret: z.string().default(""),
+    // Unset follows NODE_ENV: the session cookie is Secure only in production.
+    sessionSecure: z.preprocess((value) => {
+      const normalized = String(value ?? "")
+        .trim()
+        .toLowerCase();
+      if (["false", "0", "no", "off"].includes(normalized)) return false;
+      if (["true", "1", "yes", "on"].includes(normalized)) return true;
+      return undefined;
+    }, z.boolean().optional()),
     firecrawlKeysEncryptionKey: z
       .string()
       .regex(/^[0-9a-fA-F]{64}$/, "must be a 64-character hex string"),
@@ -86,6 +95,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     authEnabled: env.AUTH_ENABLED,
     databaseUrl: env.DATABASE_URL,
     sessionSecret: env.SESSION_SECRET,
+    sessionSecure: env.SESSION_SECURE,
     firecrawlKeysEncryptionKey: env.FIRECRAWL_KEYS_ENCRYPTION_KEY,
     adminEmail: env.ADMIN_EMAIL,
     adminPassword: env.ADMIN_PASSWORD,

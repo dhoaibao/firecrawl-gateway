@@ -23,6 +23,13 @@ describe("loadConfig", () => {
     expect(loadConfig(baseEnv).sessionSecret).toBe("session-secret");
   });
 
+  it("reads SESSION_SECURE and leaves it undefined when unset or unrecognized", () => {
+    expect(loadConfig(baseEnv).sessionSecure).toBeUndefined();
+    expect(loadConfig({ ...baseEnv, SESSION_SECURE: "maybe" }).sessionSecure).toBeUndefined();
+    expect(loadConfig({ ...baseEnv, SESSION_SECURE: "true" }).sessionSecure).toBe(true);
+    expect(loadConfig({ ...baseEnv, SESSION_SECURE: "OFF" }).sessionSecure).toBe(false);
+  });
+
   it("accepts an optional Redis TCP URL", () => {
     expect(loadConfig({ ...baseEnv, REDIS_URL: "redis://localhost:6379" }).redisUrl).toBe(
       "redis://localhost:6379",

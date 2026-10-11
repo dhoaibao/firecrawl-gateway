@@ -21,7 +21,7 @@ The gateway calls the self-hosted Firecrawl (this repository's Docker Compose st
 
 ## Routing and operational boundaries
 
-The configured default route mode can be one of:
+The route mode is decided only by the `default_route_mode` admin setting; clients cannot override it per request (the `x-firecrawl-route-mode` header and `?routeMode=` query are ignored). It can be one of:
 
 - `self-hosted-first` — use the self-hosted Firecrawl first and fall back to Cloud for eligible requests.
 - `self-hosted-only` — never send requests to Cloud; Cloud-required requests are rejected.
@@ -33,7 +33,7 @@ Some paths and request options require Cloud-managed behavior, including example
 The API's security and runtime boundaries are deliberate:
 
 - With authentication enabled, clients send a virtual API key as a Bearer token. Plaintext is returned only when a key is created; store it securely.
-- The single administrator is configured with `ADMIN_EMAIL` and `ADMIN_PASSWORD`; those credentials are not stored in PostgreSQL. Admin sessions use signed HTTP-only cookies.
+- The single administrator is configured with `ADMIN_EMAIL` and `ADMIN_PASSWORD`; those credentials are not stored in PostgreSQL. Admin sessions use signed, HTTP-only, `SameSite=Lax` cookies that expire after 30 days and stop being valid when `ADMIN_PASSWORD` or `SESSION_SECRET` changes; the admin and API must therefore share a site (the documented single-origin deployment does). Logging out clears the cookie in that browser only. `SESSION_SECURE` overrides whether the cookie is `Secure` (default: on in production). Request `cookie` headers are never forwarded upstream.
 - `ADMIN_ORIGIN` and `API_ORIGIN` should be exact deployed origins for credentialed CORS; do not use `*` for this setup.
 - Request bodies are inspected and forwarded as UTF-8 JSON. Binary uploads and Latin-1 text can be corrupted in transit, so this gateway is not a general binary proxy.
 - Upstream requests time out after `API_REQUEST_TIMEOUT_MS` (120 seconds by default). The `maintenance` container calls the maintenance endpoint daily; it permanently removes audit entries older than 30 days.

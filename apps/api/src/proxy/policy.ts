@@ -1,13 +1,6 @@
 import type { NeedsCloudResult } from "../common/types";
 import { findObjectsByKey, walk } from "../common/utils";
 
-const validRouteModes = new Set([
-  "self-hosted-first",
-  "self-hosted-only",
-  "cloud-first",
-  "cloud-only",
-]);
-
 const cloudOnlyPathPatterns = [
   /^\/v\d+\/agent(?:\/|$)/,
   /^\/v\d+\/browser(?:\/|$)/,
@@ -20,21 +13,6 @@ const cloudOnlyPathPatterns = [
   /^\/v\d+\/scrape\/[^/]+\/interact(?:\/|$)/,
   /^\/v\d+\/search\/[^/]+\/feedback(?:\/|$)/,
 ];
-
-export function getRouteMode(
-  reqUrl: string,
-  headers: Record<string, string | string[] | undefined>,
-  defaultRouteMode: string,
-): string {
-  const headerMode = String(headers["x-firecrawl-route-mode"] || "").trim();
-  if (validRouteModes.has(headerMode)) return headerMode;
-
-  const parsed = new URL(reqUrl, "http://gateway.local");
-  const queryMode = parsed.searchParams.get("routeMode");
-  if (queryMode && validRouteModes.has(queryMode)) return queryMode;
-
-  return validRouteModes.has(defaultRouteMode) ? defaultRouteMode : "cloud-first";
-}
 
 export function hasSensitiveHeaders(
   headers: Record<string, string | string[] | undefined>,
