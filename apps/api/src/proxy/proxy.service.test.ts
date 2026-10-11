@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RequestWithContext } from "../common/types";
 import * as cryptoModule from "../common/crypto";
 import { encryptSettingValue } from "../common/crypto";
+import { CircuitBreaker } from "./circuit-breaker";
+import { isSelfHostedUnavailable } from "./policy";
 import { ProxyService } from "./proxy.service";
 
 const config = {
@@ -1316,8 +1318,41 @@ describe("ProxyService routing outcomes", () => {
         statusCode: 204,
         durationMs: expect.any(Number),
         fallbackUsed: false,
+        reachedBackend: true,
         path: "/v1/test",
       });
+    });
+
+    it("does not mark a no-credit-pool 429 labelled cloud as having reached a backend", async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const metrics = makeMetrics();
+      const credits = makeCredits();
+      credits.reserve.mockResolvedValue(null);
+      const key = "fc_cloud_key_1234567890";
+      const service = new ProxyService(
+        config as never,
+        settingsWith(
+          {
+            firecrawl_api_keys: {
+              key: "firecrawl_api_keys",
+              value: encryptSettingValue(JSON.stringify([key]), config.firecrawlKeysEncryptionKey),
+            },
+          },
+          "cloud-only",
+        ) as never,
+        { validateApiKey: vi.fn() } as never,
+        { appendAudit: vi.fn().mockResolvedValue(undefined) } as never,
+        credits as never,
+        metrics as never,
+      );
+
+      await service.handle(makeRequest(), makeReply() as never);
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(metrics.observeRequest).toHaveBeenCalledWith(
+        expect.objectContaining({ backend: "cloud", statusCode: 429, reachedBackend: false }),
+      );
     });
 
     it("observes an early rejection as backend none", async () => {
@@ -1327,7 +1362,12 @@ describe("ProxyService routing outcomes", () => {
       await service.handle(req, makeReply() as never);
 
       expect(metrics.observeRequest).toHaveBeenCalledWith(
-        expect.objectContaining({ backend: "none", statusCode: 409, path: "/v1/agent" }),
+        expect.objectContaining({
+          backend: "none",
+          statusCode: 409,
+          path: "/v1/agent",
+          reachedBackend: false,
+        }),
       );
     });
   });
@@ -1390,6 +1430,18 @@ describe("ProxyService routing outcomes", () => {
       expect(reply.code).toHaveBeenCalledWith(502);
       expect(String(reply.send.mock.calls[0][0])).toContain("circuit open");
       expect(metrics.recordCircuitRejected).toHaveBeenCalledTimes(1);
+      // A short-circuited request never reached self-hosted, so it must not feed the
+      // backend-health fallback window even though it is labelled self-hosted.
+      expect(metrics.observeRequest).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          backend: "self-hosted",
+          statusCode: 502,
+          reachedBackend: false,
+        }),
+      );
+      expect(metrics.observeRequest).toHaveBeenCalledWith(
+        expect.objectContaining({ backend: "self-hosted", reachedBackend: true }),
+      );
     });
 
     it.each([502, 503, 504])("counts a %i from self-hosted as unavailable", async (status) => {
@@ -1463,6 +1515,48 @@ describe("ProxyService routing outcomes", () => {
       const entry = audit.appendAudit.mock.calls.at(-1)?.[0];
       expect(entry).toMatchObject({ backend_used: "cloud", fallback_used: true });
       expect(entry.fallback_reason).toContain("circuit open");
+    });
+
+    it("still counts a request whose Cloud attempt was real when the final result is short-circuited", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response("slow down", { status: 429 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const { service, credits, metrics } = makeBreakerService("cloud-first", {
+        withCloudKey: true,
+      });
+      // One real Cloud reservation, then the pool is exhausted so self-hosted is the last resort.
+      credits.reserve
+        .mockResolvedValueOnce({
+          key: CLOUD_KEY,
+          keyId: "opaque-key-id",
+          amount: 1,
+          source: "local",
+        })
+        .mockResolvedValue(null);
+      const breaker = (service as unknown as { selfHostedBreaker: CircuitBreaker })
+        .selfHostedBreaker;
+      for (let i = 0; i < THRESHOLD; i += 1)
+        await breaker.execute(
+          async () => ({ kind: "network-error" }),
+          isSelfHostedUnavailable,
+          () => ({ kind: "network-error" }),
+        );
+      expect(breaker.currentState).toBe("open");
+      metrics.observeRequest.mockClear();
+      const reply = makeReply();
+
+      await service.handle(makeRequest(), reply as never);
+
+      expect(urlsOf(fetchMock)).toEqual(["https://cloud.test/v1/test"]);
+      expect(reply.code).toHaveBeenCalledWith(502);
+      expect(metrics.observeRequest).toHaveBeenCalledTimes(1);
+      expect(metrics.observeRequest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          backend: "self-hosted",
+          statusCode: 502,
+          fallbackUsed: true,
+          reachedBackend: true,
+        }),
+      );
     });
 
     it("never falls back to Cloud for a sensitive request while the circuit is open", async () => {

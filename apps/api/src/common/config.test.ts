@@ -45,6 +45,36 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...baseEnv, METRICS_TOKEN: "short" })).toThrow(/METRICS_TOKEN/);
   });
 
+  it("keeps Telegram alerts off unless the bot token and chat id are both set", () => {
+    const off = loadConfig(baseEnv);
+    expect(off.telegramBotToken).toBe("");
+    expect(off.alertCreditsLowThreshold).toBe(0);
+    expect(off.alertFallbackRatioPercent).toBe(50);
+
+    const token = "123456789:AAH_test-token_0123456789abcdef";
+    const on = loadConfig({
+      ...baseEnv,
+      TELEGRAM_BOT_TOKEN: ` ${token} `,
+      TELEGRAM_CHAT_ID: "-1001234567890",
+      ALERT_CREDITS_LOW_THRESHOLD: "250",
+      ALERT_FALLBACK_RATIO_PERCENT: "0",
+    });
+    expect(on).toMatchObject({
+      telegramBotToken: token,
+      telegramChatId: "-1001234567890",
+      alertCreditsLowThreshold: 250,
+      alertFallbackRatioPercent: 0,
+    });
+
+    expect(() => loadConfig({ ...baseEnv, TELEGRAM_BOT_TOKEN: token })).toThrow(/set together/);
+    expect(() => loadConfig({ ...baseEnv, TELEGRAM_CHAT_ID: "1" })).toThrow(/set together/);
+    expect(() =>
+      loadConfig({ ...baseEnv, TELEGRAM_BOT_TOKEN: "not a token/../x", TELEGRAM_CHAT_ID: "1" }),
+    ).toThrow(/@BotFather/);
+    expect(() => loadConfig({ ...baseEnv, ALERT_FALLBACK_RATIO_PERCENT: "101" })).toThrow();
+    expect(() => loadConfig({ ...baseEnv, ALERT_CREDITS_LOW_THRESHOLD: "-5" })).toThrow();
+  });
+
   it("configures the self-hosted circuit breaker with safe defaults and a disable switch", () => {
     const defaults = loadConfig(baseEnv);
     expect(defaults.selfHostedBreakerFailureThreshold).toBe(5);

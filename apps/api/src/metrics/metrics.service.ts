@@ -33,6 +33,12 @@ export interface RequestObservation {
   statusCode: number;
   durationMs: number;
   fallbackUsed: boolean;
+  /**
+   * Whether an upstream call was actually made. Early rejections (quota, auth,
+   * rate limits) and open-circuit short-circuits are not, so they never count
+   * toward the backend-health fallback window.
+   */
+  reachedBackend: boolean;
   /** Request path as the client sent it; reduced to a known `/v<n>/<endpoint>` label or `other`. */
   path: string;
 }
@@ -49,6 +55,10 @@ export class MetricsService {
   private readonly circuitTransitions: Counter<"to">;
   private readonly circuitRejected: Counter;
   private readonly circuitState: Gauge;
+  private readonly alertsSent: Counter<"rule" | "outcome">;
+  /** Per-minute request/fallback counts for the alerting window, pruned to an hour. */
+  private readonly minuteBuckets = new Map<number, { total: number; fallbacks: number }>();
+  private currentCircuit: "closed" | "half-open" | "open" = "closed";
 
   constructor(credits: CreditRoutingService) {
     collectDefaultMetrics({ register: this.registry });
@@ -85,6 +95,13 @@ export class MetricsService {
     });
     this.circuitState.set(0);
 
+    this.alertsSent = new Counter({
+      name: "gateway_alerts_total",
+      help: "Alert notifications attempted, by rule and outcome (sent or failed).",
+      labelNames: ["rule", "outcome"],
+      registers: [this.registry],
+    });
+
     // Both gauges read process memory only (what routing last learned about the
     // Cloud keys); a scrape never calls Firecrawl Cloud.
     new Gauge({
@@ -108,6 +125,10 @@ export class MetricsService {
   /** Records one finished (or early-rejected) gateway request. Never throws. */
   observeRequest(observation: RequestObservation): void {
     try {
+      // Rejections that never made an upstream call say nothing about backend
+      // health, so only requests that reached a backend feed the fallback window.
+      if (observation.reachedBackend && BACKENDS.has(observation.backend))
+        this.countInWindow(observation.fallbackUsed);
       this.requestDuration.observe(
         {
           backend: BACKENDS.has(observation.backend) ? observation.backend : "none",
@@ -130,8 +151,36 @@ export class MetricsService {
     }
   }
 
+  /** Backend-reaching requests and how many used a fallback over the last `minutes`. */
+  recentFallbackStats(minutes: number, now = Date.now()): { total: number; fallbacks: number } {
+    const newest = Math.floor(now / 60_000);
+    let total = 0;
+    let fallbacks = 0;
+    for (const [minute, bucket] of this.minuteBuckets) {
+      if (minute > newest - minutes && minute <= newest) {
+        total += bucket.total;
+        fallbacks += bucket.fallbacks;
+      }
+    }
+    return { total, fallbacks };
+  }
+
+  /** The self-hosted circuit's current state as last reported by the breaker. */
+  circuitStateNow(): "closed" | "half-open" | "open" {
+    return this.currentCircuit;
+  }
+
+  recordAlert(rule: string, outcome: "sent" | "failed"): void {
+    try {
+      this.alertsSent.inc({ rule, outcome });
+    } catch {
+      // Metrics must never affect alerting or request handling.
+    }
+  }
+
   /** Records the self-hosted circuit entering `state`. Never throws. */
   recordCircuitTransition(state: "closed" | "half-open" | "open"): void {
+    this.currentCircuit = state;
     try {
       this.circuitTransitions.inc({ to: state });
       this.circuitState.set(state === "open" ? 2 : state === "half-open" ? 1 : 0);
@@ -151,7 +200,20 @@ export class MetricsService {
   async render(): Promise<{ contentType: string; body: string }> {
     return { contentType: this.registry.contentType, body: await this.registry.metrics() };
   }
+
+  private countInWindow(fallbackUsed: boolean, now = Date.now()): void {
+    const minute = Math.floor(now / 60_000);
+    const bucket = this.minuteBuckets.get(minute) ?? { total: 0, fallbacks: 0 };
+    bucket.total += 1;
+    if (fallbackUsed) bucket.fallbacks += 1;
+    this.minuteBuckets.set(minute, bucket);
+    for (const key of this.minuteBuckets.keys()) {
+      if (key <= minute - WINDOW_RETENTION_MINUTES) this.minuteBuckets.delete(key);
+    }
+  }
 }
+
+const WINDOW_RETENTION_MINUTES = 60;
 
 function routeLabel(path: string): string {
   const match = /^\/(v[12])\/([A-Za-z0-9_-]{1,40})/.exec(path);

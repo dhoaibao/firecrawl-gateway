@@ -91,6 +91,11 @@ interface RoutePlan {
   fallbackApiKeys: string[];
   /** Set once self-hosted has answered, so a Cloud quota failure never sends the request back. */
   selfHostedAttempted: boolean;
+  /**
+   * Set when any upstream call was really made (Cloud or self-hosted), even if a
+   * later short-circuited result is the one sent back. Feeds the fallback window.
+   */
+  upstreamAttempted: boolean;
   estimatedCredits: number;
   attemptedCloudKeyIds: Set<string>;
 }
@@ -326,6 +331,7 @@ export class ProxyService {
       cloudApiKeys,
       fallbackApiKeys,
       selfHostedAttempted: false,
+      upstreamAttempted: false,
       estimatedCredits: estimateCreditCost(ctx.path, json),
       attemptedCloudKeyIds: new Set<string>(),
     };
@@ -497,6 +503,7 @@ export class ProxyService {
       status,
       fallbackUsed,
       fallbackReason || plan.needsCloud.reason || "",
+      plan.upstreamAttempted,
     ).catch(() => undefined);
     try {
       await this.sendProxyResponse(ctx.reply, result, { fallbackUsed, fallbackReason });
@@ -511,6 +518,8 @@ export class ProxyService {
     statusCode: number,
     fallbackUsed = false,
     fallbackReason = "",
+    // Early rejections (`rejectEarly`) never reached an upstream; `respond` passes the real value.
+    reachedBackend = false,
   ): Promise<void> {
     const entry: AuditEntry = {
       id: cryptoRandomId(),
@@ -533,6 +542,7 @@ export class ProxyService {
       statusCode,
       durationMs: entry.duration_ms,
       fallbackUsed,
+      reachedBackend,
       path: ctx.path,
     });
     await this.audit.appendAudit(entry);
@@ -559,6 +569,7 @@ export class ProxyService {
     );
     if (!reservation) return null;
     plan.attemptedCloudKeyIds.add(reservation.keyId);
+    plan.upstreamAttempted = true;
     const cloudResult = await this.proxyToBackend(
       "cloud",
       ctx.request,
@@ -589,13 +600,15 @@ export class ProxyService {
     // a network error, so the existing fallback policy (and its privacy gates)
     // decides what happens next exactly as for a real connection failure.
     return this.selfHostedBreaker.execute(
-      () =>
-        this.proxyToBackend(
+      () => {
+        plan.upstreamAttempted = true;
+        return this.proxyToBackend(
           "self-hosted",
           ctx.request,
           plan.bodyBuffer,
           this.backendUrl("self-hosted", ctx.upstreamUrl),
-        ),
+        );
+      },
       isSelfHostedUnavailable,
       circuitOpenResult,
     );
