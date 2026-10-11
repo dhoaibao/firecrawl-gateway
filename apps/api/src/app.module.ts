@@ -13,6 +13,7 @@ import { CreditsModule } from "./credits/credits.module";
 import { MetricsModule } from "./metrics/metrics.module";
 import { AlertsModule } from "./alerts/alerts.module";
 import { PortalAuthModule } from "./portal-auth/portal-auth.module";
+import { PortalModule } from "./portal/portal.module";
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { PortalAuthModule } from "./portal-auth/portal-auth.module";
     PrismaModule,
     AuthModule,
     PortalAuthModule,
+    PortalModule,
     ApiKeysModule,
     SettingsModule,
     AuditModule,

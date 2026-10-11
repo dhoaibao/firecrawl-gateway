@@ -217,3 +217,34 @@ describe("credentialed CORS", () => {
     expect(crossed.headers["access-control-allow-origin"]).toBeUndefined();
   });
 });
+
+describe("portal account API", () => {
+  it("requires a portal session for every key route, even with AUTH_ENABLED=false", async () => {
+    for (const [method, url] of [
+      ["GET", "/portal/api/api-keys"],
+      ["POST", "/portal/api/api-keys"],
+      ["DELETE", "/portal/api/api-keys/k1"],
+      ["GET", "/portal/api/cloud-keys"],
+      ["POST", "/portal/api/cloud-keys"],
+      ["PATCH", "/portal/api/cloud-keys/k1"],
+      ["POST", "/portal/api/cloud-keys/k1/verify"],
+      ["DELETE", "/portal/api/cloud-keys/k1"],
+    ] as const) {
+      const response = await app.inject({
+        method,
+        url,
+        headers: { origin: "https://app.example.com" },
+      });
+      expect(response.statusCode, `${method} ${url}`).toBe(401);
+    }
+  });
+
+  it("refuses a portal write from another origin before looking at the session", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/portal/api/api-keys",
+      headers: { origin: "https://evil.example.com", cookie: "fg.portal=anything" },
+    });
+    expect(response.statusCode).toBe(403);
+  });
+});

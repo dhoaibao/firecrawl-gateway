@@ -10,6 +10,8 @@ export interface CreditUsageDetails {
   billingPeriodStart: string | null;
   billingPeriodEnd: string | null;
   error?: string;
+  /** The Cloud HTTP status when the usage request itself was answered with an error. */
+  httpStatus?: number;
 }
 
 export interface CreditReservation {
@@ -22,6 +24,12 @@ export interface CreditReservation {
 
 const CREDIT_USAGE_CACHE_TTL_MS = 30_000;
 const CREDIT_KEY_COOLDOWN_MS = 30_000;
+/** A key that looked unavailable is re-checked against Cloud at most this often (per instance). */
+const RECOVERY_INTERVAL_MS = 60_000;
+/** Keys re-checked per request that found no usable key; bounds the Cloud calls one request can start. */
+const MAX_RECOVERY_REFRESHES = 5;
+const RECOVERY_TRACKER_LIMIT = 10_000;
+const EXHAUSTED_TRACKER_LIMIT = 10_000;
 const REDIS_FAILURE_COOLDOWN_MS = 5_000;
 const MS_PER_DAY = 86_400_000;
 const CREDITS_USED_KEY = "creditsUsed";
@@ -256,6 +264,12 @@ export function observeCreditsUsedStream(
 @Injectable()
 export class CreditRoutingService {
   private readonly creditUsageInFlight = new Map<string, Promise<CreditUsageDetails>>();
+  // Monotonic count of 402 responses. A usage refresh remembers it when it starts, so a 402
+  // that lands while the refresh is in flight can be told apart: that refresh holds a
+  // balance from before the key was found exhausted and must not re-enable it.
+  private creditExhaustedCounter = 0;
+  private readonly creditExhaustedAt = new Map<string, number>();
+  private readonly creditUsageStartedAt = new Map<string, number>();
   private readonly creditUsageCache = new Map<
     string,
     { details: CreditUsageDetails; expiresAt: number }
@@ -336,6 +350,12 @@ export class CreditRoutingService {
     if (status === 402) {
       this.localDisabled.add(reservation.keyId);
       this.localCooldownUntil.delete(reservation.keyId);
+      this.creditExhaustedCounter += 1;
+      if (this.creditExhaustedAt.size >= EXHAUSTED_TRACKER_LIMIT) this.creditExhaustedAt.clear();
+      this.creditExhaustedAt.set(reservation.keyId, this.creditExhaustedCounter);
+      // A usage snapshot taken before this response is now known to be wrong; keeping it
+      // would let the next refresh answer from the cache and never re-enable the key.
+      this.creditUsageCache.delete(reservation.key);
       if (reservation.source === "redis" && reservation.reservationKey) {
         await this.ledger.settle(reservation.keyId, reservation.reservationKey, "disabled");
       }
@@ -385,16 +405,28 @@ export class CreditRoutingService {
     }
   }
 
-  async refreshCreditUsage(apiKey: string): Promise<CreditUsageDetails> {
+  /**
+   * Reads a key's usage from Cloud and reconciles the ledger and local routing state
+   * with it (a key with credits is re-enabled). Results are cached briefly;
+   * `force` skips that cache for an explicit user action.
+   */
+  async refreshCreditUsage(
+    apiKey: string,
+    options: { force?: boolean } = {},
+  ): Promise<CreditUsageDetails> {
     const cached = this.creditUsageCache.get(apiKey);
-    if (cached && cached.expiresAt > Date.now()) return cached.details;
+    if (cached && cached.expiresAt > Date.now() && !options.force) return cached.details;
     if (cached) this.creditUsageCache.delete(apiKey);
 
+    const keyId = this.keyId(apiKey);
     const existing = this.creditUsageInFlight.get(apiKey);
-    if (existing) return existing;
+    // An in-flight refresh that started before this key's latest 402 is not joined: its
+    // answer predates the exhaustion and would be discarded.
+    if (existing && !this.exhaustedSince(keyId, this.creditUsageStartedAt.get(apiKey) ?? 0))
+      return existing;
+    const startedAt = this.creditExhaustedCounter;
 
     const request = (async (): Promise<CreditUsageDetails> => {
-      const keyId = this.keyId(apiKey);
       const snapshot = await this.ledger.capture(keyId);
       try {
         const controller = new AbortController();
@@ -416,6 +448,7 @@ export class CreditRoutingService {
             billingPeriodStart: null,
             billingPeriodEnd: null,
             error: `HTTP ${response.status}: ${(await response.text()) || response.statusText}`,
+            httpStatus: response.status,
           };
         }
 
@@ -442,6 +475,7 @@ export class CreditRoutingService {
         };
         if (details.remainingCredits === null)
           return { ...details, error: "Credit usage response did not include remainingCredits" };
+        if (this.exhaustedSince(keyId, startedAt)) return supersededResult(details);
 
         const parsedRenewal = details.billingPeriodEnd
           ? Date.parse(details.billingPeriodEnd)
@@ -455,6 +489,8 @@ export class CreditRoutingService {
             renewsAt ?? 0,
           );
         }
+        // The ledger call above is a suspension point: a 402 may have landed during it.
+        if (this.exhaustedSince(keyId, startedAt)) return supersededResult(details);
         this.localPools.set(keyId, { renewsAt, credits: details.remainingCredits });
         if (details.remainingCredits > 0) {
           this.localDisabled.delete(keyId);
@@ -463,6 +499,12 @@ export class CreditRoutingService {
         } else {
           this.localDisabled.add(keyId);
         }
+        // Published here, with no await after the last exhaustion check: a 402 can
+        // then only land before it (superseded above) or after it (and delete the entry).
+        this.creditUsageCache.set(apiKey, {
+          details,
+          expiresAt: Date.now() + CREDIT_USAGE_CACHE_TTL_MS,
+        });
         return details;
       } catch (error) {
         return {
@@ -475,17 +517,19 @@ export class CreditRoutingService {
       }
     })();
     this.creditUsageInFlight.set(apiKey, request);
+    this.creditUsageStartedAt.set(apiKey, startedAt);
     try {
-      const details = await request;
-      if (!details.error)
-        this.creditUsageCache.set(apiKey, {
-          details,
-          expiresAt: Date.now() + CREDIT_USAGE_CACHE_TTL_MS,
-        });
-      return details;
+      return await request;
     } finally {
-      if (this.creditUsageInFlight.get(apiKey) === request) this.creditUsageInFlight.delete(apiKey);
+      if (this.creditUsageInFlight.get(apiKey) === request) {
+        this.creditUsageInFlight.delete(apiKey);
+        this.creditUsageStartedAt.delete(apiKey);
+      }
     }
+  }
+
+  private exhaustedSince(keyId: string, counter: number): boolean {
+    return (this.creditExhaustedAt.get(keyId) ?? 0) > counter;
   }
 
   /**
@@ -506,6 +550,30 @@ export class CreditRoutingService {
 
   async refreshCreditUsageForKeys(apiKeys: string[]): Promise<CreditUsageDetails[]> {
     return Promise.all(apiKeys.map((apiKey) => this.refreshCreditUsage(apiKey)));
+  }
+
+  private readonly recoveryAttemptAt = new Map<string, number>();
+
+  /**
+   * Called when a request found none of a pool's keys usable. Starts a background
+   * usage refresh for those keys so a key whose credits came back (a top-up, a new
+   * billing period) is re-enabled without anyone opening a dashboard. Bounded: a key
+   * is re-checked at most once per interval and one call starts at most a handful of
+   * refreshes; the current request is never delayed and never retried by it.
+   */
+  recoverUnavailableKeys(apiKeys: string[]): void {
+    const now = Date.now();
+    let started = 0;
+    for (const apiKey of apiKeys) {
+      if (started >= MAX_RECOVERY_REFRESHES) break;
+      const keyId = this.keyId(apiKey);
+      if ((this.recoveryAttemptAt.get(keyId) ?? 0) + RECOVERY_INTERVAL_MS > now) continue;
+      if (this.recoveryAttemptAt.size >= RECOVERY_TRACKER_LIMIT) this.recoveryAttemptAt.clear();
+      this.recoveryAttemptAt.set(keyId, now);
+      started += 1;
+      // refreshCreditUsage reports failures in its result and never rejects.
+      void this.refreshCreditUsage(apiKey, { force: true });
+    }
   }
 
   /**
@@ -555,6 +623,15 @@ export class CreditRoutingService {
  */
 export function estimateCreditCost(_pathname: string, _body: unknown): number {
   return 1;
+}
+
+/**
+ * The key was found exhausted while a usage request was in flight, so the balance it
+ * read is out of date. Applying or caching it would send traffic back to a key that
+ * just answered 402; the next refresh reads a current one.
+ */
+function supersededResult(details: CreditUsageDetails): CreditUsageDetails {
+  return { ...details, error: "Superseded by a newer credit-exhausted response" };
 }
 
 export function creditKeyPrefix(apiKey: string): string {

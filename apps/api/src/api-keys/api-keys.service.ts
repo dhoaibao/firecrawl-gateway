@@ -109,6 +109,14 @@ function quotaWindow(keyId: string, now = new Date()): { counterKey: string; res
   };
 }
 
+/** The user already holds the maximum number of active virtual API keys. */
+export class UserApiKeyLimitError extends Error {
+  constructor(readonly limit: number) {
+    super(`api key limit reached (${limit})`);
+    this.name = "UserApiKeyLimitError";
+  }
+}
+
 @Injectable()
 export class ApiKeysService implements OnModuleDestroy {
   private readonly lastTouchById = new Map<string, number>();
@@ -153,6 +161,57 @@ export class ApiKeysService implements OnModuleDestroy {
     });
     const { key_value: _keyValue, ...keyData } = toKey(row);
     return { ...keyData, key };
+  }
+
+  /**
+   * Creates a virtual key owned by a portal user. Only a hash is stored (no recoverable
+   * `key_value`), so the plaintext in the result is the only time it can be seen.
+   * The cap on active keys is enforced under a per-user lock so concurrent creates
+   * cannot exceed it.
+   */
+  async createUserApiKey(
+    userId: string,
+    name: string,
+    options: { maxKeys: number; rateLimitPerMinute: number; expiresAt?: Date | null },
+  ) {
+    const key = `fc_${crypto.randomBytes(32).toString("base64url")}`;
+    const row = await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`user-api-keys:${userId}`}))`;
+      const active = await tx.apiKey.count({ where: { userId, revoked: false } });
+      if (active >= options.maxKeys) throw new UserApiKeyLimitError(options.maxKeys);
+      return tx.apiKey.create({
+        data: {
+          id: crypto.randomUUID(),
+          name,
+          keyHash: this.hashApiKey(key),
+          keyValue: null,
+          keyPrefix: key.slice(0, 8),
+          userId,
+          rateLimitPerMinute: options.rateLimitPerMinute,
+          ...(options.expiresAt ? { expiresAt: options.expiresAt } : {}),
+        },
+      });
+    });
+    const { key_value: _keyValue, key_hash: _keyHash, ...record } = toKey(row);
+    return { ...record, key };
+  }
+
+  /** The user's active keys, newest first. */
+  async listUserApiKeys(userId: string): Promise<ApiKeyRecord[]> {
+    const rows = await this.prisma.apiKey.findMany({
+      where: { userId, revoked: false },
+      orderBy: { createdAt: "desc" },
+    });
+    return rows.map(toKey);
+  }
+
+  /** Revokes one of the user's own keys; null when the key is not theirs or is already gone. */
+  async revokeUserApiKey(userId: string, id: string): Promise<ApiKeyRecord | null> {
+    const existing = await this.prisma.apiKey.findFirst({
+      where: { id, userId, revoked: false },
+    });
+    if (!existing) return null;
+    return this.revokeApiKey(existing.id);
   }
 
   /** Changes a key's limits; null when the key does not exist. Takes effect immediately. */

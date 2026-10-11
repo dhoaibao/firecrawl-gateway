@@ -198,7 +198,7 @@ export class SettingsController {
       return [];
     }
     const details = await this.credits.refreshCreditUsageForKeys(keys);
-    return details.map((item, index) => ({
+    return details.map(({ httpStatus: _httpStatus, ...item }, index) => ({
       keyIndex: index,
       keyPrefix: creditKeyPrefix(keys[index]),
       ...item,

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiKeysService } from "./api-keys.service";
+import { ApiKeysService, UserApiKeyLimitError } from "./api-keys.service";
 
 const encryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -416,5 +416,89 @@ describe("ApiKeysService", () => {
 
     await expect(service.validateApiKey(key)).resolves.toBeNull();
     expect(prisma.apiKey.findFirst).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("ApiKeysService user keys", () => {
+  function userService(options: { active?: number } = {}) {
+    const create = vi.fn(async ({ data }: { data: Record<string, unknown> }) =>
+      row({ ...data, keyValue: data.keyValue ?? null }),
+    );
+    const tx = {
+      $executeRaw: vi.fn().mockResolvedValue(1),
+      apiKey: { count: vi.fn().mockResolvedValue(options.active ?? 0), create },
+    };
+    const prisma = {
+      $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(tx)),
+      apiKey: {
+        findMany: vi.fn().mockResolvedValue([]),
+        findFirst: vi.fn(),
+        update: vi.fn(),
+      },
+    };
+    const service = new ApiKeysService(
+      prisma as never,
+      { firecrawlKeysEncryptionKey: encryptionKey } as never,
+    );
+    return { service, prisma, tx, create };
+  }
+
+  it("creates a hash-only key owned by the user with the portal limit", async () => {
+    const { service, create, tx } = userService();
+
+    const created = await service.createUserApiKey("user-1", "CI", {
+      maxKeys: 10,
+      rateLimitPerMinute: 120,
+    });
+
+    const data = create.mock.calls[0][0].data;
+    expect(data).toMatchObject({
+      userId: "user-1",
+      name: "CI",
+      keyValue: null,
+      rateLimitPerMinute: 120,
+    });
+    expect(data.keyHash).toBe(service.hashApiKey(created.key));
+    // The plaintext appears once, in the result, and nowhere that is stored.
+    expect(JSON.stringify(data)).not.toContain(created.key);
+    expect(created.key).toMatch(/^fc_/);
+    expect(created).not.toHaveProperty("key_hash");
+    expect(created).not.toHaveProperty("key_value");
+    expect(tx.$executeRaw).toHaveBeenCalledOnce();
+  });
+
+  it("refuses a key beyond the per-user cap and counts only active keys", async () => {
+    const { service, tx, create } = userService({ active: 10 });
+
+    await expect(
+      service.createUserApiKey("user-1", "one too many", { maxKeys: 10, rateLimitPerMinute: 120 }),
+    ).rejects.toBeInstanceOf(UserApiKeyLimitError);
+    expect(tx.apiKey.count).toHaveBeenCalledWith({ where: { userId: "user-1", revoked: false } });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("lists and revokes only the user's own keys", async () => {
+    const { service, prisma } = userService();
+    await service.listUserApiKeys("user-1");
+    expect(prisma.apiKey.findMany).toHaveBeenCalledWith({
+      where: { userId: "user-1", revoked: false },
+      orderBy: { createdAt: "desc" },
+    });
+
+    prisma.apiKey.findFirst.mockResolvedValueOnce(null);
+    await expect(service.revokeUserApiKey("user-1", "someone-elses")).resolves.toBeNull();
+    expect(prisma.apiKey.findFirst).toHaveBeenCalledWith({
+      where: { id: "someone-elses", userId: "user-1", revoked: false },
+    });
+    expect(prisma.apiKey.update).not.toHaveBeenCalled();
+
+    prisma.apiKey.findFirst.mockResolvedValueOnce(row({ id: "mine", userId: "user-1" }));
+    prisma.apiKey.update.mockResolvedValueOnce(
+      row({ id: "mine", userId: "user-1", revoked: true }),
+    );
+    await expect(service.revokeUserApiKey("user-1", "mine")).resolves.toMatchObject({
+      id: "mine",
+      revoked: true,
+    });
   });
 });

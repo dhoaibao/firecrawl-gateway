@@ -423,3 +423,152 @@ describe("CreditRoutingService", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("CreditRoutingService recovery of exhausted keys", () => {
+  const KEY = "fc-user-own-key-aaaaaaaa";
+  const usageResponse = (remaining: number) =>
+    new Response(
+      JSON.stringify({
+        data: { remainingCredits: remaining, planCredits: 1000, billingPeriodEnd: null },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+
+  it("routes to a key again after a 402 once its credits are back, despite a fresh cached snapshot", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(usageResponse(5))
+      .mockResolvedValueOnce(usageResponse(500));
+    vi.stubGlobal("fetch", fetchMock);
+    const service = new CreditRoutingService(config as never, makeLedger() as never);
+
+    // A usage snapshot is taken (and cached) while the key still has credits.
+    await service.refreshCreditUsage(KEY);
+    const reservation = await service.reserve([KEY], 1);
+    expect(reservation).not.toBeNull();
+
+    // Cloud answers 402: the key is out of credits and must not be offered again...
+    await service.recordResponse(reservation!, 402);
+    expect(await service.reserve([KEY], 1)).toBeNull();
+
+    // ...until the next refresh. It must reach Cloud rather than answer from the
+    // snapshot taken before the 402, otherwise the key would stay disabled.
+    const refreshed = await service.refreshCreditUsage(KEY);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(refreshed.remainingCredits).toBe(500);
+    expect(await service.reserve([KEY], 1)).not.toBeNull();
+  });
+
+  it("keeps a key disabled while Cloud still reports no credits", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(usageResponse(0)));
+    const service = new CreditRoutingService(config as never, makeLedger() as never);
+    const reservation = await service.reserve([KEY], 1);
+    await service.recordResponse(reservation!, 402);
+
+    await service.refreshCreditUsage(KEY, { force: true });
+
+    expect(await service.reserve([KEY], 1)).toBeNull();
+  });
+
+  it("re-checks exhausted keys in the background, bounded per key and per call", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const fetchMock = vi.fn().mockImplementation(async () => usageResponse(300));
+    vi.stubGlobal("fetch", fetchMock);
+    const service = new CreditRoutingService(config as never, makeLedger() as never);
+    const reservation = await service.reserve([KEY], 1);
+    await service.recordResponse(reservation!, 402);
+    expect(await service.reserve([KEY], 1)).toBeNull();
+
+    service.recoverUnavailableKeys([KEY]);
+    await vi.waitFor(async () => expect(await service.reserve([KEY], 1)).not.toBeNull());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Throttled: the same key is not re-checked again within the interval.
+    service.recoverUnavailableKeys([KEY]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(Date.now() + 61_000);
+    service.recoverUnavailableKeys([KEY]);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    // One call starts at most five refreshes, however many keys the pool has.
+    fetchMock.mockClear();
+    service.recoverUnavailableKeys(
+      Array.from({ length: 9 }, (_, i) => `fc-other-key-${i}-aaaaaaaa`),
+    );
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
+  });
+
+  it("does not let a refresh that began before a 402 re-enable the exhausted key", async () => {
+    let finishStale!: (response: Response) => void;
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => (finishStale = resolve)))
+      .mockResolvedValue(usageResponse(300));
+    vi.stubGlobal("fetch", fetchMock);
+    const service = new CreditRoutingService(config as never, makeLedger() as never);
+    const reservation = await service.reserve([KEY], 1);
+
+    // A usage request is on its way when a proxied request finds the key exhausted.
+    const stale = service.refreshCreditUsage(KEY, { force: true });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await service.recordResponse(reservation!, 402);
+    finishStale(usageResponse(50));
+
+    // Its balance predates the 402: it is not applied (nor cached) and the key stays out.
+    expect((await stale).error).toMatch(/superseded/i);
+    expect(await service.reserve([KEY], 1)).toBeNull();
+
+    // A refresh made after the 402 does not join the stale request and does re-enable it.
+    const fresh = await service.refreshCreditUsage(KEY, { force: true });
+    expect(fresh.remainingCredits).toBe(300);
+    expect(await service.reserve([KEY], 1)).not.toBeNull();
+  });
+
+  it("also holds when the 402 arrives while the Redis ledger is being reconciled", async () => {
+    let finishReconcile!: (ok: boolean) => void;
+    const ledger = makeLedger({
+      capture: vi.fn().mockResolvedValue({ available: true, sequence: 3 }),
+      reconcile: vi.fn(() => new Promise<boolean>((resolve) => (finishReconcile = resolve))),
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(usageResponse(50)));
+    const service = new CreditRoutingService(config as never, ledger as never);
+    const reservation = await service.reserve([KEY], 1);
+
+    const refresh = service.refreshCreditUsage(KEY, { force: true });
+    await vi.waitFor(() => expect(ledger.reconcile).toHaveBeenCalledTimes(1));
+    await service.recordResponse(reservation!, 402);
+    finishReconcile(false);
+
+    expect((await refresh).error).toMatch(/superseded/i);
+    expect(await service.reserve([KEY], 1)).toBeNull();
+    // Not cached either: the next call reaches Cloud again.
+    await service.refreshCreditUsage(KEY);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not cache a balance when the 402 lands right after the refresh completes", async () => {
+    let finishReconcile!: (ok: boolean) => void;
+    const ledger = makeLedger({
+      capture: vi.fn().mockResolvedValue({ available: true, sequence: 3 }),
+      reconcile: vi.fn(() => new Promise<boolean>((resolve) => (finishReconcile = resolve))),
+    });
+    const fetchMock = vi.fn().mockResolvedValue(usageResponse(50));
+    vi.stubGlobal("fetch", fetchMock);
+    const service = new CreditRoutingService(config as never, ledger as never);
+    const reservation = await service.reserve([KEY], 1);
+
+    const refresh = service.refreshCreditUsage(KEY, { force: true });
+    await vi.waitFor(() => expect(ledger.reconcile).toHaveBeenCalledTimes(1));
+    // The 402 is queued right behind the reconciliation's completion, so it runs
+    // between the refresh finishing its own work and its caller resuming.
+    finishReconcile(true);
+    queueMicrotask(() => void service.recordResponse(reservation!, 402));
+    await refresh;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(await service.reserve([KEY], 1)).toBeNull();
+    // A stale snapshot must not answer: the next refresh reaches Cloud.
+    await service.refreshCreditUsage(KEY);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});

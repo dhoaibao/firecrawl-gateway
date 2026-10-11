@@ -82,6 +82,7 @@ function makeCredits() {
   return {
     reserve: vi.fn(),
     recordResponse: vi.fn().mockResolvedValue(undefined),
+    recoverUnavailableKeys: vi.fn(),
   };
 }
 
@@ -1847,6 +1848,31 @@ describe("ProxyService routing outcomes", () => {
       makeRequest({ headers: { authorization: "Bearer fc_portal_user" }, ...overrides });
     const urlsOf = (fetchMock: ReturnType<typeof vi.fn>) =>
       fetchMock.mock.calls.map(([url]) => String(url));
+
+    it("starts a background re-check of the user's keys when none is usable", async () => {
+      const { service, credits } = makeUserService("cloud-only", {
+        userKeys: [
+          { key: USER_KEY, role: "cloud" },
+          { key: "fc_user_second_key_1234567890", role: "fallback" },
+        ],
+      });
+      credits.reserve.mockResolvedValue(null);
+
+      await service.handle(authed(), makeReply() as never);
+
+      expect(credits.recoverUnavailableKeys).toHaveBeenCalled();
+      const rechecked = credits.recoverUnavailableKeys.mock.calls.flatMap(([keys]) => keys);
+      expect(rechecked).toContain(USER_KEY);
+      expect(rechecked).not.toContain(GLOBAL_KEY);
+    });
+
+    it("does not re-check anything when the user's key was usable", async () => {
+      const { service, credits } = makeUserService("cloud-only");
+
+      await service.handle(authed(), makeReply() as never);
+
+      expect(credits.recoverUnavailableKeys).not.toHaveBeenCalled();
+    });
 
     it.each([...MODES])(
       "sends a user's request to Cloud with the user's own key under global mode %s",

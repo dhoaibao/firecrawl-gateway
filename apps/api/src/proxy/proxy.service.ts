@@ -784,7 +784,13 @@ export class ProxyService {
       plan.estimatedCredits,
       plan.attemptedCloudKeyIds,
     );
-    if (!reservation) return null;
+    if (!reservation) {
+      // A user's own keys are not covered by the maintenance refresh. When nothing was
+      // even attempted, re-check them in the background so exhausted keys come back.
+      if (ctx.userId && plan.attemptedCloudKeyIds.size === 0)
+        this.credits.recoverUnavailableKeys(plan.cloudApiKeys);
+      return null;
+    }
     plan.attemptedCloudKeyIds.add(reservation.keyId);
     plan.upstreamAttempted = true;
     const cloudResult = await this.proxyToBackend(
