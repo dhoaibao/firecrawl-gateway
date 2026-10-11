@@ -494,7 +494,9 @@ export class ProxyService {
     const headers: Record<string, string> = {};
     result.response?.headers.forEach((value, key) => {
       const lower = key.toLowerCase();
-      if (hopByHopHeaders.has(lower) || (!result.stream && lower === "content-encoding")) return;
+      // fetch has already decoded the body, buffered or streamed, so the upstream
+      // content-encoding would mislabel the bytes sent to the client.
+      if (hopByHopHeaders.has(lower) || lower === "content-encoding") return;
       headers[key] = value;
     });
     headers["x-hybrid-firecrawl-backend"] = result.backend;

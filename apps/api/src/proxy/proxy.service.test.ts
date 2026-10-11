@@ -591,6 +591,34 @@ describe("ProxyService", () => {
     }
   });
 
+  it("drops content-encoding from streamed and buffered responses because fetch already decoded them", async () => {
+    for (const [status, init] of [
+      [200, "streamed"],
+      [404, "buffered"],
+    ] as const) {
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response('{"success":true}', {
+          status,
+          headers: {
+            "content-type": "application/json",
+            "content-encoding": "gzip",
+            "x-upstream": init,
+          },
+        }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const reply = makeReply();
+
+      await makeService().handle(makeRequest(), reply as never);
+
+      const headers = (reply.raw.writeHead.mock.calls[0]?.[1] ??
+        reply.headers.mock.calls[0]?.[0]) as Record<string, string>;
+      expect(headers).toBeDefined();
+      expect(headers).toHaveProperty("x-upstream", init);
+      expect(headers).not.toHaveProperty("content-encoding");
+    }
+  });
+
   it("drops client cookies upstream but still treats them as sensitive for fallback", async () => {
     const key = "fc_cloud_key_1234567890";
     const encrypted = encryptSettingValue(JSON.stringify([key]), config.firecrawlKeysEncryptionKey);
