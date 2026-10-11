@@ -39,7 +39,7 @@ The readiness endpoint is a heartbeat only; the scrape call is the real check. T
 Pushes to `main` run `.github/workflows/docker-publish.yml`: it builds the `api` and `web` images from the root `Dockerfile`, pushes them to `ghcr.io/<owner>/<repo>-api` and `-web` (tags `sha-<7 hex>` and `latest`), then deploys over SSH using `deploy/gateway/docker-compose.yml`. Images contain no secrets; configuration is written to the server's `.env` at deploy time.
 
 - `gateway`: the NestJS API (Node server, `PORT` 8080, internal only).
-- `web`: nginx serving the admin SPA and proxying `/admin/api`, `/v1`, `/v2`, `/health`, and `/ready` to `gateway`. One public origin serves both, so the admin needs no `VITE_API_BASE_URL` and there is no CORS: set `API_ORIGIN` and `ADMIN_ORIGIN` to the same HTTPS origin and `TRUST_PROXY=true`. It binds to `127.0.0.1:${WEB_PORT:-8080}` only.
+- `web`: nginx serving the admin SPA and proxying `/admin/api`, `/portal/api`, `/v1`, `/v2`, `/health`, and `/ready` to `gateway`. One public origin serves both, so the admin needs no `VITE_API_BASE_URL` and there is no CORS: set `API_ORIGIN` and `ADMIN_ORIGIN` to the same HTTPS origin and `TRUST_PROXY=true`. It binds to `127.0.0.1:${WEB_PORT:-8080}` only.
 - `maintenance`: calls `GET /api/cron/maintenance` with `CRON_SECRET` at start and every 24 hours, so no host cron is needed. The job permanently deletes audit entries older than 30 days; deletion is batched, so a large backlog drains over several runs. The 30-day window is fixed in code.
 - `migrate` (profile `tools`): `prisma migrate deploy`.
 

@@ -4,6 +4,15 @@ export interface AdminIdentity {
   email: string;
 }
 
+/** The signed-in portal user attached to a request by `UserGuard`. */
+export interface PortalUserIdentity {
+  id: string;
+  email: string;
+  name: string | null;
+  avatarUrl: string | null;
+  role: string;
+}
+
 export interface AuditEntry {
   id: string;
   created_at: string;
@@ -47,6 +56,7 @@ export interface ProxyResult {
 export interface RequestWithContext extends FastifyRequest {
   requestId: string;
   admin?: AdminIdentity;
+  user?: PortalUserIdentity;
   rawBody?: Buffer | string;
 }
 

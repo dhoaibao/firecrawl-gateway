@@ -30,6 +30,9 @@ const savedEnv = vi.hoisted(() => {
     FIRECRAWL_KEYS_ENCRYPTION_KEY:
       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     AUTH_ENABLED: "false",
+    ADMIN_ORIGIN: "https://admin.example.com",
+    API_ORIGIN: "https://api.example.com",
+    PORTAL_ORIGIN: "https://app.example.com",
     LOG_LEVEL: "silent",
     METRICS_TOKEN: "test-metrics-token-0123456789",
   });
@@ -170,5 +173,47 @@ describe("graceful shutdown", () => {
     }
 
     expect(order.slice(0, 2)).toEqual(["http", "modules"]);
+  });
+});
+
+describe("portal auth endpoints", () => {
+  it("is wired into the app, disabled without OAuth clients, and session-guarded", async () => {
+    const providers = await app.inject({ method: "GET", url: "/portal/api/auth/providers" });
+    expect(providers.statusCode).toBe(200);
+    expect(JSON.parse(providers.body)).toEqual({ data: { providers: [] } });
+
+    const login = await app.inject({ method: "GET", url: "/portal/api/auth/login/google" });
+    expect(login.statusCode).toBe(404);
+
+    // Even with AUTH_ENABLED=false the portal never trusts an anonymous caller.
+    const me = await app.inject({ method: "GET", url: "/portal/api/auth/me" });
+    expect(me.statusCode).toBe(401);
+  });
+});
+
+describe("credentialed CORS", () => {
+  const preflight = (url: string, origin: string) =>
+    app.inject({
+      method: "OPTIONS",
+      url,
+      headers: { origin, "access-control-request-method": "POST" },
+    });
+
+  it("allows the portal origin on the portal API only", async () => {
+    const portal = await preflight("/portal/api/auth/logout", "https://app.example.com");
+    expect(portal.headers["access-control-allow-origin"]).toBe("https://app.example.com");
+    expect(portal.headers["access-control-allow-credentials"]).toBe("true");
+
+    for (const url of ["/admin/api/auth/me", "/admin/api/keys", "/v1/scrape"]) {
+      const response = await preflight(url, "https://app.example.com");
+      expect(response.headers["access-control-allow-origin"]).toBeUndefined();
+    }
+  });
+
+  it("keeps the admin origin working and denies it the portal API", async () => {
+    const admin = await preflight("/admin/api/keys", "https://admin.example.com");
+    expect(admin.headers["access-control-allow-origin"]).toBe("https://admin.example.com");
+    const crossed = await preflight("/portal/api/auth/logout", "https://admin.example.com");
+    expect(crossed.headers["access-control-allow-origin"]).toBeUndefined();
   });
 });

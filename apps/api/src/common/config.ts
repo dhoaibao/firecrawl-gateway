@@ -62,6 +62,14 @@ export const configSchema = z
     adminPassword: z.string().default(""),
     adminOrigin: optionalOrigin,
     apiOrigin: optionalOrigin,
+    // Origin of the user portal: where sign-in returns to and the only origin allowed to
+    // call the portal API with credentials.
+    portalOrigin: optionalOrigin,
+    // OAuth sign-in for portal users. A provider is enabled when BOTH its id and secret are set.
+    googleClientId: z.string().trim().default(""),
+    googleClientSecret: z.string().trim().default(""),
+    githubClientId: z.string().trim().default(""),
+    githubClientSecret: z.string().trim().default(""),
     trustProxy: z.union([z.boolean(), z.string()]).default(false),
     logLevel: z.string().default("info"),
     cronSecret: z.string().default(""),
@@ -78,6 +86,34 @@ export const configSchema = z
     redisUrl: optionalRedisUrl,
   })
   .superRefine((value, context) => {
+    const providers = [
+      { name: "GOOGLE", id: value.googleClientId, secret: value.googleClientSecret },
+      { name: "GITHUB", id: value.githubClientId, secret: value.githubClientSecret },
+    ];
+    for (const provider of providers) {
+      if (Boolean(provider.id) !== Boolean(provider.secret))
+        context.addIssue({
+          code: "custom",
+          path: [`${provider.name.toLowerCase()}ClientId`],
+          message: `${provider.name}_CLIENT_ID and ${provider.name}_CLIENT_SECRET must be set together`,
+        });
+    }
+    if (providers.some((provider) => provider.id && provider.secret)) {
+      // The callback URL is built from API_ORIGIN, the browser returns to PORTAL_ORIGIN,
+      // and the sign-in state is signed with SESSION_SECRET.
+      for (const [field, name] of [
+        [value.apiOrigin, "API_ORIGIN"],
+        [value.portalOrigin, "PORTAL_ORIGIN"],
+        [value.sessionSecret.trim(), "SESSION_SECRET"],
+      ] as const) {
+        if (!field)
+          context.addIssue({
+            code: "custom",
+            path: [name],
+            message: `${name} is required when an OAuth provider is configured`,
+          });
+      }
+    }
     if (value.metricsToken && value.metricsToken.length < MIN_METRICS_TOKEN_LENGTH)
       context.addIssue({
         code: "custom",
@@ -125,6 +161,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     adminPassword: env.ADMIN_PASSWORD,
     adminOrigin: env.ADMIN_ORIGIN,
     apiOrigin: env.API_ORIGIN,
+    portalOrigin: env.PORTAL_ORIGIN,
+    googleClientId: env.GOOGLE_CLIENT_ID,
+    googleClientSecret: env.GOOGLE_CLIENT_SECRET,
+    githubClientId: env.GITHUB_CLIENT_ID,
+    githubClientSecret: env.GITHUB_CLIENT_SECRET,
     trustProxy: env.TRUST_PROXY,
     logLevel: env.LOG_LEVEL,
     cronSecret: env.CRON_SECRET,
