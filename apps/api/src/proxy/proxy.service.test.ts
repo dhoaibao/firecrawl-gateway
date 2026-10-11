@@ -11,6 +11,8 @@ const config = {
   selfHostedBaseUrl: "https://self.test",
   requestTimeoutMs: 1_000,
   maxBodyBytes: 1_024 * 1_024,
+  selfHostedBreakerFailureThreshold: 3,
+  selfHostedBreakerCooldownMs: 30_000,
   authEnabled: false,
   firecrawlKeysEncryptionKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 };
@@ -81,7 +83,12 @@ function makeCredits() {
 }
 
 function makeMetrics() {
-  return { observeRequest: vi.fn(), recordRateLimited: vi.fn() };
+  return {
+    observeRequest: vi.fn(),
+    recordRateLimited: vi.fn(),
+    recordCircuitTransition: vi.fn(),
+    recordCircuitRejected: vi.fn(),
+  };
 }
 
 function makeService(
@@ -1213,6 +1220,173 @@ describe("ProxyService routing outcomes", () => {
       expect(metrics.observeRequest).toHaveBeenCalledWith(
         expect.objectContaining({ backend: "none", statusCode: 409, path: "/v1/agent" }),
       );
+    });
+  });
+
+  describe("self-hosted circuit breaker", () => {
+    const CLOUD_KEY = "fc_cloud_key_1234567890";
+    const THRESHOLD = config.selfHostedBreakerFailureThreshold;
+
+    function makeBreakerService(
+      routeMode: string,
+      options: { withCloudKey?: boolean; breakerConfig?: Record<string, unknown> } = {},
+    ) {
+      const records: Record<string, { key: string; value: string }> = {};
+      if (options.withCloudKey)
+        records.firecrawl_api_keys = {
+          key: "firecrawl_api_keys",
+          value: encryptSettingValue(
+            JSON.stringify([CLOUD_KEY]),
+            config.firecrawlKeysEncryptionKey,
+          ),
+        };
+      const credits = makeCredits();
+      credits.reserve.mockResolvedValue({
+        key: CLOUD_KEY,
+        keyId: "opaque-key-id",
+        amount: 1,
+        source: "local",
+      });
+      const audit = { appendAudit: vi.fn().mockResolvedValue(undefined) };
+      const metrics = makeMetrics();
+      const service = new ProxyService(
+        { ...config, ...options.breakerConfig } as never,
+        settingsWith(records, routeMode) as never,
+        { validateApiKey: vi.fn() } as never,
+        audit as never,
+        credits as never,
+        metrics as never,
+      );
+      return { service, credits, audit, metrics };
+    }
+
+    function urlsOf(fetchMock: ReturnType<typeof vi.fn>): string[] {
+      return fetchMock.mock.calls.map(([url]) => String(url));
+    }
+
+    it("stops calling self-hosted after consecutive connection failures and fails fast with 502", async () => {
+      const fetchMock = vi.fn().mockRejectedValue(new Error("connect ECONNREFUSED"));
+      vi.stubGlobal("fetch", fetchMock);
+      const { service, metrics } = makeBreakerService("self-hosted-only");
+
+      for (let i = 0; i < THRESHOLD; i += 1)
+        await service.handle(makeRequest(), makeReply() as never);
+      expect(fetchMock).toHaveBeenCalledTimes(THRESHOLD);
+      expect(metrics.recordCircuitTransition).toHaveBeenCalledWith("open");
+
+      const reply = makeReply();
+      await service.handle(makeRequest(), reply as never);
+
+      expect(fetchMock).toHaveBeenCalledTimes(THRESHOLD);
+      expect(reply.code).toHaveBeenCalledWith(502);
+      expect(String(reply.send.mock.calls[0][0])).toContain("circuit open");
+      expect(metrics.recordCircuitRejected).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([502, 503, 504])("counts a %i from self-hosted as unavailable", async (status) => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response("down", { status }));
+      vi.stubGlobal("fetch", fetchMock);
+      const { service } = makeBreakerService("self-hosted-only");
+
+      for (let i = 0; i < THRESHOLD + 2; i += 1)
+        await service.handle(makeRequest(), makeReply() as never);
+
+      expect(fetchMock).toHaveBeenCalledTimes(THRESHOLD);
+    });
+
+    it("does not count request-specific failures (generic 500, unsupported-feature 4xx)", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockImplementation(async () => new Response("boom", { status: 500 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const { service, metrics } = makeBreakerService("self-hosted-only");
+
+      for (let i = 0; i < THRESHOLD + 3; i += 1)
+        await service.handle(makeRequest(), makeReply() as never);
+      fetchMock.mockImplementation(
+        async () => new Response("actions are not supported", { status: 400 }),
+      );
+      for (let i = 0; i < THRESHOLD + 3; i += 1)
+        await service.handle(makeRequest(), makeReply() as never);
+
+      expect(fetchMock).toHaveBeenCalledTimes((THRESHOLD + 3) * 2);
+      expect(metrics.recordCircuitTransition).not.toHaveBeenCalled();
+    });
+
+    it("recovers through a half-open probe once the cooldown elapses", async () => {
+      vi.useFakeTimers();
+      const fetchMock = vi.fn().mockRejectedValue(new Error("connect ECONNREFUSED"));
+      vi.stubGlobal("fetch", fetchMock);
+      const { service, metrics } = makeBreakerService("self-hosted-only");
+      for (let i = 0; i < THRESHOLD; i += 1)
+        await service.handle(makeRequest(), makeReply() as never);
+
+      vi.advanceTimersByTime(config.selfHostedBreakerCooldownMs);
+      fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+      const reply = makeReply();
+      await service.handle(makeRequest(), reply as never);
+
+      expect(fetchMock).toHaveBeenCalledTimes(THRESHOLD + 1);
+      expect(metrics.recordCircuitTransition.mock.calls.map(([state]) => state)).toEqual([
+        "open",
+        "half-open",
+        "closed",
+      ]);
+      await service.handle(makeRequest(), makeReply() as never);
+      expect(fetchMock).toHaveBeenCalledTimes(THRESHOLD + 2);
+    });
+
+    it("lets the existing fallback policy send traffic to Cloud while the circuit is open", async () => {
+      const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+        if (String(url).startsWith("https://self.test")) throw new Error("connect ECONNREFUSED");
+        return new Response("ok", { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const { service, audit } = makeBreakerService("self-hosted-first", { withCloudKey: true });
+      for (let i = 0; i < THRESHOLD; i += 1)
+        await service.handle(makeRequest(), makeReply() as never);
+      fetchMock.mockClear();
+
+      const reply = makeReply();
+      await service.handle(makeRequest(), reply as never);
+
+      expect(urlsOf(fetchMock)).toEqual(["https://cloud.test/v1/test"]);
+      const entry = audit.appendAudit.mock.calls.at(-1)?.[0];
+      expect(entry).toMatchObject({ backend_used: "cloud", fallback_used: true });
+      expect(entry.fallback_reason).toContain("circuit open");
+    });
+
+    it("never falls back to Cloud for a sensitive request while the circuit is open", async () => {
+      const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+        if (String(url).startsWith("https://self.test")) throw new Error("connect ECONNREFUSED");
+        return new Response("ok", { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const { service, credits } = makeBreakerService("self-hosted-first", { withCloudKey: true });
+      const sensitive = () => makeRequest({ headers: { cookie: "session=private" } });
+      for (let i = 0; i < THRESHOLD; i += 1)
+        await service.handle(sensitive(), makeReply() as never);
+      fetchMock.mockClear();
+
+      const reply = makeReply();
+      await service.handle(sensitive(), reply as never);
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(credits.reserve).not.toHaveBeenCalled();
+      expect(reply.code).toHaveBeenCalledWith(502);
+    });
+
+    it("does not trip when the threshold is 0", async () => {
+      const fetchMock = vi.fn().mockRejectedValue(new Error("connect ECONNREFUSED"));
+      vi.stubGlobal("fetch", fetchMock);
+      const { service, metrics } = makeBreakerService("self-hosted-only", {
+        breakerConfig: { selfHostedBreakerFailureThreshold: 0 },
+      });
+
+      for (let i = 0; i < 10; i += 1) await service.handle(makeRequest(), makeReply() as never);
+
+      expect(fetchMock).toHaveBeenCalledTimes(10);
+      expect(metrics.recordCircuitTransition).not.toHaveBeenCalled();
     });
   });
 });

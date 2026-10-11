@@ -25,6 +25,7 @@ import {
   isCloudQuotaFallbackAllowed,
   isFallbackAllowed,
   isFallbackEligible,
+  isSelfHostedUnavailable,
   mayUseCloudKeys,
   requestNeedsCloud,
   selectKeyPools,
@@ -36,6 +37,7 @@ import { loadCloudKeyEntries } from "../settings/cloud-keys";
 import { ApiKeysService } from "../api-keys/api-keys.service";
 import { AuditService } from "../audit/audit.service";
 import { MetricsService } from "../metrics/metrics.service";
+import { CircuitBreaker } from "./circuit-breaker";
 import {
   CreditRoutingService,
   estimateCreditCost,
@@ -118,11 +120,23 @@ function isJsonContentType(contentType: string | null): boolean {
   return mediaType === "application/json" || mediaType?.endsWith("+json") === true;
 }
 
+function circuitOpenResult(): ProxyResult {
+  const message = "Self-hosted Firecrawl is temporarily unavailable (circuit open)";
+  return {
+    kind: "network-error",
+    backend: "self-hosted",
+    error: new Error(message),
+    body: Buffer.from(JSON.stringify({ success: false, error: message })),
+    durationMs: 0,
+  };
+}
+
 @Injectable()
 export class ProxyService {
   private readonly logger = new Logger(ProxyService.name);
   private cloudKeysCache: { value: string; entries: CloudKeyEntry[] } | null = null;
   private lastCloudKeysFailure: string | null = null;
+  private readonly selfHostedBreaker: CircuitBreaker;
 
   constructor(
     @Inject(API_CONFIG) private readonly config: ApiConfig,
@@ -131,7 +145,17 @@ export class ProxyService {
     private readonly audit: AuditService,
     private readonly credits: CreditRoutingService,
     private readonly metrics: MetricsService,
-  ) {}
+  ) {
+    this.selfHostedBreaker = new CircuitBreaker({
+      failureThreshold: config.selfHostedBreakerFailureThreshold,
+      cooldownMs: config.selfHostedBreakerCooldownMs,
+      onTransition: (from, to) => {
+        this.metrics.recordCircuitTransition(to);
+        this.logger.warn(`Self-hosted circuit breaker ${from} -> ${to}`);
+      },
+      onReject: () => this.metrics.recordCircuitRejected(),
+    });
+  }
 
   async handle(
     request: RequestWithContext,
@@ -537,11 +561,19 @@ export class ProxyService {
 
   private proxySelfHosted(ctx: ProxyContext, plan: RoutePlan): Promise<ProxyResult> {
     plan.selfHostedAttempted = true;
-    return this.proxyToBackend(
-      "self-hosted",
-      ctx.request,
-      plan.bodyBuffer,
-      this.backendUrl("self-hosted", ctx.upstreamUrl),
+    // While the circuit is open the call never reaches upstream and surfaces as
+    // a network error, so the existing fallback policy (and its privacy gates)
+    // decides what happens next exactly as for a real connection failure.
+    return this.selfHostedBreaker.execute(
+      () =>
+        this.proxyToBackend(
+          "self-hosted",
+          ctx.request,
+          plan.bodyBuffer,
+          this.backendUrl("self-hosted", ctx.upstreamUrl),
+        ),
+      isSelfHostedUnavailable,
+      circuitOpenResult,
     );
   }
 

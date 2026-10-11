@@ -139,6 +139,26 @@ describe("MetricsService", () => {
     expect(await scrape(service)).toMatch(/^gateway_rate_limited_total 2$/m);
   });
 
+  it("exposes the self-hosted circuit state, transitions, and fail-fast count", async () => {
+    const { service } = makeService();
+    expect(await scrape(service)).toMatch(/^gateway_self_hosted_circuit_state 0$/m);
+
+    service.recordCircuitTransition("open");
+    service.recordCircuitRejected();
+    service.recordCircuitRejected();
+    let body = await scrape(service);
+    expect(body).toMatch(/^gateway_self_hosted_circuit_state 2$/m);
+    expect(body).toContain('gateway_self_hosted_circuit_transitions_total{to="open"} 1');
+    expect(body).toMatch(/^gateway_self_hosted_circuit_rejected_total 2$/m);
+
+    service.recordCircuitTransition("half-open");
+    expect(await scrape(service)).toMatch(/^gateway_self_hosted_circuit_state 1$/m);
+    service.recordCircuitTransition("closed");
+    body = await scrape(service);
+    expect(body).toMatch(/^gateway_self_hosted_circuit_state 0$/m);
+    expect(body).toContain('gateway_self_hosted_circuit_transitions_total{to="closed"} 1');
+  });
+
   it("reads the credit gauges from routing memory on each scrape", async () => {
     const { service, routing } = makeService({ keys: 2, credits: 1250 });
 

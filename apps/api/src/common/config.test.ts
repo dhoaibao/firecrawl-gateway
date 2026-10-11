@@ -45,6 +45,23 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...baseEnv, METRICS_TOKEN: "short" })).toThrow(/METRICS_TOKEN/);
   });
 
+  it("configures the self-hosted circuit breaker with safe defaults and a disable switch", () => {
+    const defaults = loadConfig(baseEnv);
+    expect(defaults.selfHostedBreakerFailureThreshold).toBe(5);
+    expect(defaults.selfHostedBreakerCooldownMs).toBe(30_000);
+
+    const custom = loadConfig({
+      ...baseEnv,
+      SELF_HOSTED_BREAKER_FAILURE_THRESHOLD: "0",
+      SELF_HOSTED_BREAKER_COOLDOWN_MS: "5000",
+    });
+    expect(custom.selfHostedBreakerFailureThreshold).toBe(0);
+    expect(custom.selfHostedBreakerCooldownMs).toBe(5000);
+
+    expect(() => loadConfig({ ...baseEnv, SELF_HOSTED_BREAKER_FAILURE_THRESHOLD: "-1" })).toThrow();
+    expect(() => loadConfig({ ...baseEnv, SELF_HOSTED_BREAKER_COOLDOWN_MS: "0" })).toThrow();
+  });
+
   it("defaults the self-hosted Firecrawl to the Compose stack and trims trailing slashes", () => {
     expect(loadConfig(baseEnv).selfHostedBaseUrl).toBe("http://127.0.0.1:3002");
     expect(

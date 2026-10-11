@@ -184,6 +184,19 @@ export function isFallbackEligible(result: {
   );
 }
 
+/**
+ * Whether a self-hosted result says the backend itself is unavailable (no
+ * answer, or a gateway/availability status). Deliberately narrower than
+ * `isFallbackEligible`: a request-specific 4xx ("not supported", "actions") or a
+ * generic 500 for one bad target page is not evidence the backend is down, and
+ * must not trip the circuit breaker for every other request.
+ */
+export function isSelfHostedUnavailable(result: { kind: string; response?: Response }): boolean {
+  if (result.kind === "network-error") return true;
+  const status = result.response?.status;
+  return status === 502 || status === 503 || status === 504;
+}
+
 export function isCloudQuotaFallbackAllowed(
   routeMode: RouteMode,
   needsCloud: NeedsCloudResult,

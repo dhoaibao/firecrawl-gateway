@@ -38,6 +38,10 @@ export const configSchema = z
       .default("http://127.0.0.1:3002")
       .transform((value) => value.replace(/\/+$/, "")),
     requestTimeoutMs: z.coerce.number().int().positive().default(120_000),
+    // Consecutive self-hosted failures (network error, 502/503/504) that open the
+    // circuit breaker; 0 disables it. The circuit stays open for the cooldown.
+    selfHostedBreakerFailureThreshold: z.coerce.number().int().min(0).default(5),
+    selfHostedBreakerCooldownMs: z.coerce.number().int().positive().default(30_000),
     maxBodyBytes: z.coerce.number().int().positive().default(5_242_880),
     authEnabled: boolFromEnv.default(true),
     databaseUrl: z.string().min(1, "DATABASE_URL is required"),
@@ -101,6 +105,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     cloudBaseUrl: env.FIRECRAWL_CLOUD_BASE_URL,
     selfHostedBaseUrl: env.FIRECRAWL_SELF_HOSTED_URL,
     requestTimeoutMs: env.API_REQUEST_TIMEOUT_MS ?? env.GATEWAY_REQUEST_TIMEOUT_MS,
+    selfHostedBreakerFailureThreshold: env.SELF_HOSTED_BREAKER_FAILURE_THRESHOLD,
+    selfHostedBreakerCooldownMs: env.SELF_HOSTED_BREAKER_COOLDOWN_MS,
     maxBodyBytes: env.API_MAX_BODY_BYTES ?? env.GATEWAY_MAX_BODY_BYTES,
     authEnabled: env.AUTH_ENABLED,
     databaseUrl: env.DATABASE_URL,

@@ -46,6 +46,9 @@ export class MetricsService {
   private readonly registry = new Registry();
   private readonly requestDuration: Histogram<"backend" | "status_class" | "fallback" | "route">;
   private readonly rateLimited: Counter;
+  private readonly circuitTransitions: Counter<"to">;
+  private readonly circuitRejected: Counter;
+  private readonly circuitState: Gauge;
 
   constructor(credits: CreditRoutingService) {
     collectDefaultMetrics({ register: this.registry });
@@ -63,6 +66,24 @@ export class MetricsService {
       help: "Requests rejected by the per-IP rate limiter.",
       registers: [this.registry],
     });
+
+    this.circuitTransitions = new Counter({
+      name: "gateway_self_hosted_circuit_transitions_total",
+      help: "Self-hosted circuit breaker state changes, by the state entered.",
+      labelNames: ["to"],
+      registers: [this.registry],
+    });
+    this.circuitRejected = new Counter({
+      name: "gateway_self_hosted_circuit_rejected_total",
+      help: "Self-hosted calls failed fast because the circuit was open or probing.",
+      registers: [this.registry],
+    });
+    this.circuitState = new Gauge({
+      name: "gateway_self_hosted_circuit_state",
+      help: "Self-hosted circuit breaker state: 0 closed, 1 half-open, 2 open.",
+      registers: [this.registry],
+    });
+    this.circuitState.set(0);
 
     // Both gauges read process memory only (what routing last learned about the
     // Cloud keys); a scrape never calls Firecrawl Cloud.
@@ -104,6 +125,24 @@ export class MetricsService {
   recordRateLimited(): void {
     try {
       this.rateLimited.inc();
+    } catch {
+      // Metrics must never affect request handling.
+    }
+  }
+
+  /** Records the self-hosted circuit entering `state`. Never throws. */
+  recordCircuitTransition(state: "closed" | "half-open" | "open"): void {
+    try {
+      this.circuitTransitions.inc({ to: state });
+      this.circuitState.set(state === "open" ? 2 : state === "half-open" ? 1 : 0);
+    } catch {
+      // Metrics must never affect request handling.
+    }
+  }
+
+  recordCircuitRejected(): void {
+    try {
+      this.circuitRejected.inc();
     } catch {
       // Metrics must never affect request handling.
     }
