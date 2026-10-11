@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { SlidersHorizontal, Code } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { cn } from "@/lib/utils";
+import { Button } from "@firecrawl-gateway/ui/components/button";
+import { Card } from "@firecrawl-gateway/ui/components/card";
+import { cn } from "@firecrawl-gateway/ui/lib/utils";
 
 interface PlaygroundCardProps {
   inputSection: React.ReactNode;

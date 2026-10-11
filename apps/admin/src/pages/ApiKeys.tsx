@@ -18,10 +18,10 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Card } from "@/components/ui/card";
+} from "@firecrawl-gateway/ui/components/select";
+import { Button } from "@firecrawl-gateway/ui/components/button";
+import { Input } from "@firecrawl-gateway/ui/components/input";
+import { Card } from "@firecrawl-gateway/ui/components/card";
 import { FormDialog } from "@/components/FormDialog";
 import { ExpiryPicker } from "@/components/ExpiryPicker";
 import { useToast } from "@/hooks/useToast";
@@ -34,7 +34,7 @@ import { api } from "@/lib/api";
 import { formatDate } from "@/lib/date";
 import { getGatewayUrl } from "@/lib/gateway";
 import { formatLatency } from "@/hooks/useAuditMetrics";
-import { cn } from "@/lib/utils";
+import { cn } from "@firecrawl-gateway/ui/lib/utils";
 import type { ApiKeyData, ApiKeyUsage } from "@/types";
 
 type KeyState = "active" | "revoked" | "expired";

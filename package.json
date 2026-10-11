@@ -3,7 +3,8 @@
   "private": true,
   "packageManager": "bun@1.3.14",
   "workspaces": [
-    "apps/*"
+    "apps/*",
+    "packages/*"
   ],
   "scripts": {
     "build": "turbo run build",
@@ -20,7 +21,9 @@
   "lint-staged": {
     "**/*.{cjs,css,html,js,jsx,json,jsonc,md,mdx,mjs,ts,tsx,yaml,yml}": "prettier --write",
     "apps/api/**/*.{cjs,js,mjs,ts}": "./apps/api/node_modules/.bin/eslint --config apps/api/eslint.config.mjs --no-warn-ignored",
-    "apps/admin/**/*.{cjs,js,jsx,mjs,ts,tsx}": "./apps/admin/node_modules/.bin/eslint --config apps/admin/eslint.config.js --no-warn-ignored"
+    "apps/admin/**/*.{cjs,js,jsx,mjs,ts,tsx}": "./apps/admin/node_modules/.bin/eslint --config apps/admin/eslint.config.js --no-warn-ignored",
+    "packages/ui/**/*.{cjs,js,jsx,mjs,ts,tsx}": "./apps/admin/node_modules/.bin/eslint --config packages/ui/eslint.config.js --no-warn-ignored",
+    "packages/api-client/**/*.{cjs,js,jsx,mjs,ts,tsx}": "./apps/admin/node_modules/.bin/eslint --config packages/api-client/eslint.config.js --no-warn-ignored"
   },
   "devDependencies": {
     "husky": "^9.1.7",

@@ -15,8 +15,11 @@ RUN npm install -g bun@1.3.14
 COPY package.json bun.lock ./
 COPY apps/api/package.json apps/api/
 COPY apps/admin/package.json apps/admin/
+COPY packages/ui/package.json packages/ui/
+COPY packages/api-client/package.json packages/api-client/
 RUN bun install --frozen-lockfile
 COPY apps ./apps
+COPY packages ./packages
 # The admin calls the API on its own origin (relative URLs), so no
 # VITE_API_BASE_URL is baked into the bundle.
 RUN cd apps/api && bun run build \

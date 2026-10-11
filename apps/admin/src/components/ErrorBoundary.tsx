@@ -1,6 +1,6 @@
 import { Component, type ReactNode } from "react";
 import { AlertCircle, RefreshCw } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@firecrawl-gateway/ui/components/button";
 
 interface Props {
   children: ReactNode;

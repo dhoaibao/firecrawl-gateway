@@ -11,6 +11,7 @@ This Bun-workspace Turborepo ships an independently deployable NestJS/Fastify ga
 ### Architecture and change map
 
 - `apps/api/src/main.ts` and `apps/api/src/app.module.ts` bootstrap the long-running Node API. Gateway route handling and fallback policy belong in `apps/api/src/proxy/` and `apps/api/src/proxy/policy.ts`.
+- Frontend code shared by the apps lives in `packages/ui` (shadcn primitives, the `cn` helper, and the design tokens in `src/theme.css`) and `packages/api-client` (the fetch wrapper). Both are consumed as TypeScript source by Vite with no build step; `apps/admin` imports them as `@firecrawl-gateway/ui/...` and `@firecrawl-gateway/api-client`.
 - API administration is split across `apps/api/src/auth/`, `api-keys/`, `settings/`, `audit/`, `credits/`, and `cron/`; shared runtime configuration is in `apps/api/src/common/config.ts`.
 - Estimated-credit routing lives in `apps/api/src/credits/`; the optional `REDIS_URL` ledger store shares reservations across instances, otherwise key rotation is per-instance.
 - PostgreSQL schema and migration history are canonical in `apps/api/prisma/schema.prisma` and `apps/api/prisma/migrations/`. Prisma manages global API keys, settings, audit logs, and rate-limit records.
@@ -19,7 +20,7 @@ This Bun-workspace Turborepo ships an independently deployable NestJS/Fastify ga
 
 ### Canonical sources and required flows
 
-- Root `package.json` and `turbo.json` own workspace scripts and task orchestration; the only workspace glob is `apps/*`. Edit source rather than generated Prisma clients or build outputs (`dist/`). A new environment variable must also be added to `turbo.json` `globalPassThroughEnv` and `.env.example`.
+- Root `package.json` and `turbo.json` own workspace scripts and task orchestration; the workspace globs are `apps/*` and `packages/*`, and a new workspace's `package.json` must also be copied in the root `Dockerfile` before `bun install`. Edit source rather than generated Prisma clients or build outputs (`dist/`). A new environment variable must also be added to `turbo.json` `globalPassThroughEnv` and `.env.example`.
 - The `.husky/pre-commit` hook runs `lint-staged` (Prettier on all supported files, ESLint on staged API/admin sources).
 - Keep configuration examples in `.env.example`; runtime configuration is validated by `apps/api/src/common/config.ts`.
 - After changing Prisma schema, generate the client with `bun run db:generate`. Apply migrations with `bun run db:migrate` only as an approved operational cutover; migrations are not applied during API startup.

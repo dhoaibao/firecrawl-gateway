@@ -73,7 +73,7 @@ A dark-themed, data-dense administrative dashboard for operating a hybrid Firecr
 
 ## Color System
 
-Source of truth is `apps/admin/src/index.css` using Tailwind CSS v4 `@theme`.
+Source of truth is `packages/ui/src/theme.css` using Tailwind CSS v4 `@theme`; each app imports it from its own `index.css`.
 
 ### Base surfaces
 
@@ -111,7 +111,7 @@ Use muted/foreground pairs for badges, pills, alerts, toasts, and status indicat
 
 ## Shadow Tokens
 
-Defined in `index.css` and referenced via `shadow-[var(--shadow-*)]`:
+Defined in `packages/ui/src/theme.css` and referenced via `shadow-[var(--shadow-*)]`:
 
 | Token                 | Value                                                                | Usage                      |
 | --------------------- | -------------------------------------------------------------------- | -------------------------- |
@@ -130,7 +130,7 @@ Defined in `index.css` and referenced via `shadow-[var(--shadow-*)]`:
 | `--animate-slide-up`   | slide-up   | 0.25s    | Modals, metric grids             |
 | `--animate-shake`      | shake      | 0.5s     | Form errors (login)              |
 
-Respect `prefers-reduced-motion: reduce` in `index.css`; do not add unbounded animations.
+Respect `prefers-reduced-motion: reduce` in `packages/ui/src/theme.css`; do not add unbounded animations.
 
 ## Typography
 
@@ -163,7 +163,7 @@ Respect `prefers-reduced-motion: reduce` in `index.css`; do not add unbounded an
 
 ### Primitive source
 
-Use the components in `apps/admin/src/components/ui/`. Do not introduce new third-party UI libraries without explicit approval.
+Use the components in `packages/ui/src/components/` (imported as `@firecrawl-gateway/ui/components/<name>`). Inside that package use relative imports, because a package cannot import itself by name under Vite; after `shadcn add`, rewrite the generated alias imports to relative paths. Do not introduce new third-party UI libraries without explicit approval.
 
 - **Button** (`button.tsx`): CVA-based with variants `default | destructive | outline | secondary | ghost | link` and sizes `default | sm | lg | icon`. Includes `active:translate-y-px`, focus ring, and `[&_svg]:size-4` defaults.
 - **Card** (`card.tsx`): `Card`, `CardHeader`, `CardTitle`, `CardDescription`, `CardContent`. Default card has `gap-6`, `rounded-lg`, `border`, `py-6`, and `shadow-[var(--shadow-card)]` with hover shadow.
@@ -196,7 +196,7 @@ Use the components in `apps/admin/src/components/ui/`. Do not introduce new thir
 ### Dependencies to respect
 
 - `@radix-ui/react-select` and `@radix-ui/react-slot` back the Select and Button `asChild` behavior.
-- `react-day-picker` backs the shadcn Calendar; reuse `components/ui/calendar.tsx` rather than adding another date library.
+- `react-day-picker` backs the shadcn Calendar; reuse `packages/ui/src/components/calendar.tsx` rather than adding another date library.
 - `@dnd-kit/core`, `@dnd-kit/sortable`, and `@dnd-kit/utilities` support drag-to-reorder in the Configure page. Prefer these existing packages for future sortable UIs.
 
 ## Interaction States
@@ -233,8 +233,8 @@ Use the components in `apps/admin/src/components/ui/`. Do not introduce new thir
 
 ## Implementation Rules
 
-1. **Use Tailwind CSS v4 `@theme` tokens** in `index.css` for all new colors, shadows, and animations. Avoid hard-coding one-off HSL values in components.
-2. **Prefer `cn()` from `@/lib/utils`** for conditional class composition.
+1. **Use Tailwind CSS v4 `@theme` tokens** in `packages/ui/src/theme.css` for all new colors, shadows, and animations. Avoid hard-coding one-off HSL values in components.
+2. **Prefer `cn()` from `@firecrawl-gateway/ui/lib/utils`** for conditional class composition.
 3. **Use the `components/ui/*` primitives** for buttons, cards, tables, badges, selects, and skeletons. Extend them rather than duplicating styles.
 4. **Custom form inputs are acceptable** when they follow the established pattern: `h-10`–`h-11`, `rounded-lg`, `bg-surface-1`/`bg-surface-3`, `border-white/[0.08]`, placeholder `text-muted-foreground`, hover/focus transitions.
 5. **Page layout must use `PageLayout`** for consistent title/action/header spacing.
@@ -251,7 +251,7 @@ Use the components in `apps/admin/src/components/ui/`. Do not introduce new thir
 Before considering Admin UI work complete:
 
 - [ ] New page uses `PageLayout` and matches existing title/icon/count/action pattern.
-- [ ] New components use `cn()` and Tailwind tokens from `index.css`.
+- [ ] New components use `cn()` and Tailwind tokens from `packages/ui/src/theme.css`.
 - [ ] All buttons use the `Button` primitive (or justified exception documented).
 - [ ] Tables use `DataTable` or `Table` primitives and include an `EmptyState`.
 - [ ] Loading states are handled with `PageSkeleton`, `Skeleton`, or inline spinners.
@@ -264,12 +264,12 @@ Before considering Admin UI work complete:
 
 ## Source Evidence
 
-- Color/theme/animation/shadow definitions: `apps/admin/src/index.css`.
+- Color/theme/animation/shadow definitions: `packages/ui/src/theme.css` (imported by `apps/admin/src/index.css`).
 - App shell, root routing, and protected layouts: `apps/admin/src/App.tsx`.
-- UI primitives: `apps/admin/src/components/ui/{button,card,table,badge,select,skeleton,dialog,alert-dialog,sheet,pagination,toggle,toggle-group,sonner}.tsx`.
+- UI primitives: `packages/ui/src/components/*.tsx` (button, card, table, badge, select, skeleton, dialog, alert-dialog, sheet, pagination, toggle, toggle-group, sonner, popover, calendar, checkbox, input).
 - Layout components: `apps/admin/src/components/Sidebar.tsx`, `apps/admin/src/components/PageLayout.tsx`.
 - Page implementations: `apps/admin/src/pages/{Dashboard,ApiKeys,CloudKeys,Configure,Account,Login}.tsx`.
-- Shared helpers: `apps/admin/src/lib/utils.ts`, `apps/admin/src/lib/routing.ts`, and `apps/admin/src/lib/api.ts`.
+- Shared helpers: `packages/ui/src/lib/utils.ts`, `packages/api-client/src/index.ts`, `apps/admin/src/lib/routing.ts`, and `apps/admin/src/lib/api.ts` (binds the API client to `VITE_API_BASE_URL`).
 - Feedback components: `apps/admin/src/contexts/ToastContext.tsx`, `apps/admin/src/components/ConfirmDialog.tsx`.
 - Data display: `apps/admin/src/components/DataTable.tsx`, `apps/admin/src/components/MetricCard.tsx`, `apps/admin/src/components/MetricsGrid.tsx`.
 

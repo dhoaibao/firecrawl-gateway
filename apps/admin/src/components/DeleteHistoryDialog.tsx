@@ -1,6 +1,6 @@
 import { Trash2 } from "lucide-react";
 import { useReturnFocus } from "@/hooks/useReturnFocus";
-import { Button } from "@/components/ui/button";
+import { Button } from "@firecrawl-gateway/ui/components/button";
 import {
   Dialog,
   DialogContent,
@@ -8,8 +8,8 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+} from "@firecrawl-gateway/ui/components/dialog";
+import { ToggleGroup, ToggleGroupItem } from "@firecrawl-gateway/ui/components/toggle-group";
 
 type DeleteFilter = "today" | "week" | "month" | "all";
 

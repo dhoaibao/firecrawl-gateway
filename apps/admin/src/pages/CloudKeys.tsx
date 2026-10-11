@@ -1,21 +1,21 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Save, RotateCcw, Plus, Trash2, CreditCard, RefreshCw } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Card, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@firecrawl-gateway/ui/components/button";
+import { Input } from "@firecrawl-gateway/ui/components/input";
+import { Card, CardHeader, CardTitle } from "@firecrawl-gateway/ui/components/card";
 import { useToast } from "@/hooks/useToast";
 import { useConfirmDialog } from "@/components/ConfirmDialog";
 import PageLayout from "@/components/PageLayout";
 import { api } from "@/lib/api";
 import { creditKeyPrefix, nextUpPrefixes } from "@/lib/credits";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@firecrawl-gateway/ui/components/badge";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@firecrawl-gateway/ui/components/select";
 import type { SettingsData, CreditUsageItem, CloudKeyEntry, CloudKeyRole } from "@/types";
 
 interface ApiKeyRow {

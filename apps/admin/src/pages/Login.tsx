@@ -1,8 +1,8 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Shield, AlertCircle, Eye, EyeOff } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Button } from "@firecrawl-gateway/ui/components/button";
+import { Input } from "@firecrawl-gateway/ui/components/input";
 import { useAuth } from "@/contexts/AuthContext";
 
 export default function Login() {

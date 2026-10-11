@@ -1,8 +1,8 @@
 import React from "react";
-import { Badge } from "@/components/ui/badge";
-import { Checkbox } from "@/components/ui/checkbox";
-import { TableCell, TableRow } from "@/components/ui/table";
-import { cn } from "@/lib/utils";
+import { Badge } from "@firecrawl-gateway/ui/components/badge";
+import { Checkbox } from "@firecrawl-gateway/ui/components/checkbox";
+import { TableCell, TableRow } from "@firecrawl-gateway/ui/components/table";
+import { cn } from "@firecrawl-gateway/ui/lib/utils";
 import type { AuditEntry } from "@/types";
 
 type BadgeVariant =

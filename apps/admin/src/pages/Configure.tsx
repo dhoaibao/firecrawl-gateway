@@ -1,15 +1,15 @@
 import { useState, useEffect, useCallback } from "react";
 import { Settings, Save, RotateCcw, Shield, Route, Database, Bell } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Card, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@firecrawl-gateway/ui/components/button";
+import { Input } from "@firecrawl-gateway/ui/components/input";
+import { Card, CardHeader, CardTitle } from "@firecrawl-gateway/ui/components/card";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@firecrawl-gateway/ui/components/select";
 import { DEFAULT_ROUTE_MODE, ROUTE_MODES } from "@/lib/routing";
 import { useToast } from "@/hooks/useToast";
 import { useConfirmDialog } from "@/components/ConfirmDialog";

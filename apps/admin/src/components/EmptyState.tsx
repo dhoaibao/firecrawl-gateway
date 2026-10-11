@@ -1,7 +1,7 @@
-import { cn } from "@/lib/utils";
+import { cn } from "@firecrawl-gateway/ui/lib/utils";
 import type { LucideIcon } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
+import { Button } from "@firecrawl-gateway/ui/components/button";
 
 interface EmptyStateProps {
   icon: LucideIcon;

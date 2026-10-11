@@ -1,5 +1,5 @@
 import { type ReactNode } from "react";
-import { cn } from "@/lib/utils";
+import { cn } from "@firecrawl-gateway/ui/lib/utils";
 
 import {
   Table,
@@ -8,7 +8,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@/components/ui/table";
+} from "@firecrawl-gateway/ui/components/table";
 
 export interface Column<T> {
   key: string;

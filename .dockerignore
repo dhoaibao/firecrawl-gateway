@@ -11,7 +11,6 @@
 .codegraph
 .serena
 .playwright-mcp
-packages
 deploy
 !deploy/gateway
 *.md

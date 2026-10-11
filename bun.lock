@@ -15,16 +15,13 @@
       "name": "@firecrawl-gateway/admin",
       "version": "2.0.0",
       "dependencies": {
-        "class-variance-authority": "^0.7.1",
-        "clsx": "^2.1.1",
+        "@firecrawl-gateway/api-client": "workspace:*",
+        "@firecrawl-gateway/ui": "workspace:*",
         "lucide-react": "^1.17.0",
-        "radix-ui": "^1.6.7",
         "react": "^19.2.6",
-        "react-day-picker": "^10.0.2",
         "react-dom": "^19.2.6",
         "react-router-dom": "^7.0.0",
         "sonner": "^2.0.8",
-        "tailwind-merge": "^3.6.0",
       },
       "devDependencies": {
         "@eslint/js": "^10.0.1",
@@ -72,6 +69,39 @@
         "prisma": "^6.19.0",
         "typescript": "^5.7.3",
         "vitest": "^4.1.8",
+      },
+    },
+    "packages/api-client": {
+      "name": "@firecrawl-gateway/api-client",
+      "version": "2.0.0",
+      "devDependencies": {
+        "eslint": "^10.3.0",
+        "typescript": "~6.0.2",
+      },
+    },
+    "packages/ui": {
+      "name": "@firecrawl-gateway/ui",
+      "version": "2.0.0",
+      "dependencies": {
+        "class-variance-authority": "^0.7.1",
+        "clsx": "^2.1.1",
+        "lucide-react": "^1.17.0",
+        "radix-ui": "^1.6.7",
+        "react-day-picker": "^10.0.2",
+        "sonner": "^2.0.8",
+        "tailwind-merge": "^3.6.0",
+      },
+      "devDependencies": {
+        "@types/react": "^19.2.14",
+        "@types/react-dom": "^19.2.3",
+        "eslint": "^10.3.0",
+        "react": "^19.2.6",
+        "react-dom": "^19.2.6",
+        "typescript": "~6.0.2",
+      },
+      "peerDependencies": {
+        "react": "^19.2.6",
+        "react-dom": "^19.2.6",
       },
     },
   },
@@ -153,6 +183,10 @@
     "@firecrawl-gateway/admin": ["@firecrawl-gateway/admin@workspace:apps/admin"],
 
     "@firecrawl-gateway/api": ["@firecrawl-gateway/api@workspace:apps/api"],
+
+    "@firecrawl-gateway/api-client": ["@firecrawl-gateway/api-client@workspace:packages/api-client"],
+
+    "@firecrawl-gateway/ui": ["@firecrawl-gateway/ui@workspace:packages/ui"],
 
     "@floating-ui/core": ["@floating-ui/core@1.8.0", "", { "dependencies": { "@floating-ui/utils": "^0.2.12" } }, "sha512-0CIZ5itps/8x7BG8dEIhs53BvCUH2PCoogtakwRTut+Arm58sJooJ0AuZhLw2HJYIR5cMLNPBSS728sPho2khQ=="],
 

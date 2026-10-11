@@ -10,11 +10,16 @@ import {
   KeyRound,
   CreditCard,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn } from "@firecrawl-gateway/ui/lib/utils";
 import { useReturnFocus } from "@/hooks/useReturnFocus";
 import { useAuth } from "@/contexts/AuthContext";
-import { Button } from "@/components/ui/button";
-import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
+import { Button } from "@firecrawl-gateway/ui/components/button";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetTitle,
+} from "@firecrawl-gateway/ui/components/sheet";
 
 const navItems = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard },

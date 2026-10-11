@@ -1,19 +1,19 @@
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@firecrawl-gateway/ui/components/button";
 import {
   Pagination as PaginationNav,
   PaginationContent,
   PaginationEllipsis,
   PaginationItem,
-} from "@/components/ui/pagination";
+} from "@firecrawl-gateway/ui/components/pagination";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
-import { cn } from "@/lib/utils";
+} from "@firecrawl-gateway/ui/components/select";
+import { cn } from "@firecrawl-gateway/ui/lib/utils";
 
 interface PaginationProps {
   currentPage: number;
