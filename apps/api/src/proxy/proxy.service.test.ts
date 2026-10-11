@@ -119,7 +119,8 @@ describe("ProxyService", () => {
     const reply = makeReply(events);
 
     const handled = service.handle(makeRequest(), reply as never);
-    for (let i = 0; i < 10 && events.length < 2; i++) await Promise.resolve();
+    // Poll rather than count microtask ticks, which shifts with every internal await.
+    await vi.waitFor(() => expect(events.length).toBeGreaterThanOrEqual(2));
 
     expect(events).toEqual(["audit-started", "reply-sent"]);
     let returned = false;
@@ -162,7 +163,7 @@ describe("ProxyService", () => {
     const req = makeRequest({ raw: { url: "/v1/agent" }, url: "/v1/agent" });
 
     const handled = service.handle(req, reply as never);
-    for (let i = 0; i < 10 && events.length < 1; i++) await Promise.resolve();
+    await vi.waitFor(() => expect(events.length).toBeGreaterThanOrEqual(1));
 
     expect(events).toEqual(["audit-started"]);
     expect(reply.send).not.toHaveBeenCalled();
@@ -198,7 +199,7 @@ describe("ProxyService", () => {
     const req = makeRequest({ headers: {} });
 
     const handled = service.handle(req, reply as never);
-    for (let i = 0; i < 10 && events.length < 1; i++) await Promise.resolve();
+    await vi.waitFor(() => expect(events.length).toBeGreaterThanOrEqual(1));
 
     expect(events).toEqual(["audit-started"]);
     expect(reply.send).not.toHaveBeenCalled();
