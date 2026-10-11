@@ -15,6 +15,9 @@ services:
     image: *api-image
     env_file: .env
     restart: unless-stopped
+    # On stop the gateway drains in-flight requests, which can run up to
+    # API_REQUEST_TIMEOUT_MS (120s by default); keep this above that.
+    stop_grace_period: 130s
     networks:
       - default
       - firecrawl

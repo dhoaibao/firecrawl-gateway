@@ -55,10 +55,30 @@ export async function createApp(): Promise<NestFastifyApplication> {
   return app;
 }
 
+// Nest's close() destroys modules (Prisma, Redis) before it closes the HTTP server, so
+// drain in-flight proxied requests first and only then tear the modules down.
+export async function drainAndClose(app: NestFastifyApplication): Promise<void> {
+  await app.getHttpAdapter().close();
+  await app.close();
+}
+
 async function bootstrap(): Promise<void> {
   const config = loadConfig();
   const app = await createApp();
   await app.listen(config.port, "0.0.0.0");
+  let stopping = false;
+  const stop = () => {
+    if (stopping) return;
+    stopping = true;
+    // Exit before the container runtime's SIGKILL (stop_grace_period in deploy/gateway).
+    setTimeout(() => process.exit(1), config.requestTimeoutMs + 5_000).unref();
+    drainAndClose(app).then(
+      () => process.exit(0),
+      () => process.exit(1),
+    );
+  };
+  process.once("SIGTERM", stop);
+  process.once("SIGINT", stop);
 }
 
 if (require.main === module) void bootstrap();

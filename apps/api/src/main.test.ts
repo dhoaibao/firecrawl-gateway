@@ -35,7 +35,8 @@ const savedEnv = vi.hoisted(() => {
   return saved;
 });
 
-import { createApp } from "./main";
+import { createApp, drainAndClose } from "./main";
+import { PrismaService } from "./prisma/prisma.service";
 
 let app: Awaited<ReturnType<typeof createApp>>;
 
@@ -71,5 +72,34 @@ describe("raw request body handling", () => {
       statusCode: 400,
       message: "Body is not valid JSON but content-type is set to 'application/json'",
     });
+  });
+});
+
+describe("graceful shutdown", () => {
+  it("drains the HTTP server before destroying modules and tolerates the second close", async () => {
+    const stopping = await createApp();
+    const order: string[] = [];
+    const adapter = stopping.getHttpAdapter();
+    const closeHttp = adapter.close.bind(adapter);
+    vi.spyOn(adapter, "close").mockImplementation(async () => {
+      order.push("http");
+      await closeHttp();
+    });
+    // PrismaService is destroyed with the other modules in Nest's close().
+    const destroyPrisma = PrismaService.prototype.onModuleDestroy;
+    vi.spyOn(PrismaService.prototype, "onModuleDestroy").mockImplementation(async function (
+      this: PrismaService,
+    ) {
+      order.push("modules");
+      await destroyPrisma.call(this);
+    });
+
+    try {
+      await expect(drainAndClose(stopping)).resolves.toBeUndefined();
+    } finally {
+      vi.restoreAllMocks();
+    }
+
+    expect(order.slice(0, 2)).toEqual(["http", "modules"]);
   });
 });
