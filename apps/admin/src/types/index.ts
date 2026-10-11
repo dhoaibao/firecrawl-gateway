@@ -79,6 +79,15 @@ export interface SettingsData {
   firecrawl_api_keys?: CloudKeyEntry[];
   api_key_inactivity_revoke_days?: number;
   default_route_mode?: RouteMode;
+  /** Seconds a successful Cloud scrape stays cached; 0 turns the response cache off. */
+  response_cache_ttl_seconds?: number;
+  /** Alert when estimated remaining Cloud credits fall below this; 0 disables the rule. */
+  alert_credits_low_threshold?: number;
+  /** Alert when this percent of recent requests used a fallback; 0 disables the rule. */
+  alert_fallback_ratio_percent?: number;
+  telegram_chat_id?: string;
+  /** Read-only masked form (`<bot id>:••••`); the real token is write-only. */
+  telegram_bot_token?: string;
 }
 
 export interface CreditUsageItem {

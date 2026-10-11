@@ -7,8 +7,17 @@ import {
 } from "@nestjs/common";
 import { API_CONFIG } from "../common/config.provider";
 import type { ApiConfig } from "../common/config";
+import { decryptSettingValue } from "../common/crypto";
 import { CreditRoutingService } from "../credits/credit-routing.service";
 import { MetricsService } from "../metrics/metrics.service";
+import {
+  ALERT_SETTING_KEYS,
+  DEFAULT_ALERT_FALLBACK_RATIO_PERCENT,
+  TELEGRAM_BOT_TOKEN_PATTERN,
+  TELEGRAM_CHAT_ID_PATTERN,
+  integerSetting,
+} from "../settings/runtime-settings";
+import { SettingsService } from "../settings/settings.service";
 
 const CHECK_INTERVAL_MS = 60_000;
 const FALLBACK_WINDOW_MINUTES = 10;
@@ -29,6 +38,14 @@ interface RuleState {
   cleanChecks: number;
 }
 
+/** What one evaluation reads from the Configure settings. */
+interface AlertSettings {
+  botToken: string;
+  chatId: string;
+  creditsThreshold: number;
+  ratioThreshold: number;
+}
+
 interface RuleCheck {
   rule: RuleName;
   active: boolean;
@@ -38,9 +55,11 @@ interface RuleCheck {
 
 /**
  * Sends Telegram notifications when the gateway needs attention: low estimated
- * Cloud credits, a high fallback ratio, or an open self-hosted circuit. It is
- * off unless a bot token and chat id are configured. Messages carry only
- * aggregate numbers: never API keys, key ids, target URLs, or client data.
+ * Cloud credits, a high fallback ratio, or an open self-hosted circuit. Its
+ * settings come from the admin Configure page and are re-read on every check, so
+ * changes apply within a minute without a restart; it stays idle until a bot
+ * token and chat id are saved. Messages carry only aggregate numbers: never API
+ * keys, key ids, target URLs, or client data.
  */
 @Injectable()
 export class AlertService implements OnModuleInit, OnModuleDestroy {
@@ -48,19 +67,17 @@ export class AlertService implements OnModuleInit, OnModuleDestroy {
   private readonly states = new Map<RuleName, RuleState>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private evaluating = false;
+  /** Identifies the saved token + chat the incident state belongs to. */
+  private destination = "";
 
   constructor(
     @Inject(API_CONFIG) private readonly config: ApiConfig,
     private readonly metrics: MetricsService,
     private readonly credits: CreditRoutingService,
+    private readonly settings: SettingsService,
   ) {}
 
-  get enabled(): boolean {
-    return Boolean(this.config.telegramBotToken && this.config.telegramChatId);
-  }
-
   onModuleInit(): void {
-    if (!this.enabled) return;
     this.timer = setInterval(() => void this.evaluate(), CHECK_INTERVAL_MS);
     // Alerting must never keep the process alive on shutdown.
     this.timer.unref();
@@ -73,10 +90,31 @@ export class AlertService implements OnModuleInit, OnModuleDestroy {
 
   /** Runs every rule once. Safe to call concurrently: overlapping runs are skipped. */
   async evaluate(now = Date.now()): Promise<void> {
-    if (!this.enabled || this.evaluating) return;
+    if (this.evaluating) return;
     this.evaluating = true;
     try {
-      for (const check of this.collectChecks(now)) await this.apply(check, now);
+      const settings = await this.loadSettings();
+      if (!settings) {
+        // Not configured (or just removed): forget incident state so a later
+        // re-configuration starts clean instead of staying "already alerted".
+        this.states.clear();
+        this.destination = "";
+        return;
+      }
+      // A different bot or chat is a different audience: it must get its own initial
+      // alert, and must not receive the "resolved" of an incident it never heard of.
+      const destination = `${settings.chatId}\n${settings.botToken}`;
+      if (destination !== this.destination) {
+        this.states.clear();
+        this.destination = destination;
+      }
+      const checks = this.collectChecks(settings, now);
+      // A rule that was switched off forgets its incident, so switching it back on
+      // announces a current problem instead of treating it as already notified.
+      for (const rule of [...this.states.keys()]) {
+        if (!checks.some((check) => check.rule === rule)) this.states.delete(rule);
+      }
+      for (const check of checks) await this.apply(check, settings, now);
     } catch (error) {
       this.logger.warn(`Alert evaluation failed: ${(error as Error).message}`);
     } finally {
@@ -84,10 +122,39 @@ export class AlertService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private collectChecks(now: number): RuleCheck[] {
+  /** The saved settings, or null while alerting is not (validly) configured. */
+  private async loadSettings(): Promise<AlertSettings | null> {
+    const stored = await this.settings.getSettings(ALERT_SETTING_KEYS);
+    const chatId = stored.telegram_chat_id?.value.trim() ?? "";
+    const encryptedToken = stored.telegram_bot_token?.value ?? "";
+    if (!chatId || !encryptedToken || !TELEGRAM_CHAT_ID_PATTERN.test(chatId)) return null;
+    let botToken: string;
+    try {
+      botToken = decryptSettingValue(encryptedToken, this.config.firecrawlKeysEncryptionKey).value;
+    } catch (error) {
+      // Only the error class is logged: it must never carry stored secret material.
+      this.logger.warn(
+        `Could not read the stored Telegram bot token (${(error as Error).name}); ` +
+          "check FIRECRAWL_KEYS_ENCRYPTION_KEY and save the token again",
+      );
+      return null;
+    }
+    if (!TELEGRAM_BOT_TOKEN_PATTERN.test(botToken)) return null;
+    return {
+      botToken,
+      chatId,
+      creditsThreshold: integerSetting(stored.alert_credits_low_threshold, 0),
+      ratioThreshold: integerSetting(
+        stored.alert_fallback_ratio_percent,
+        DEFAULT_ALERT_FALLBACK_RATIO_PERCENT,
+      ),
+    };
+  }
+
+  private collectChecks(settings: AlertSettings, now: number): RuleCheck[] {
     const checks: RuleCheck[] = [];
 
-    const creditsThreshold = this.config.alertCreditsLowThreshold;
+    const creditsThreshold = settings.creditsThreshold;
     if (creditsThreshold > 0) {
       const { keys, credits } = this.credits.estimatedRemainingCredits();
       checks.push({
@@ -98,7 +165,7 @@ export class AlertService implements OnModuleInit, OnModuleDestroy {
       });
     }
 
-    const ratioThreshold = this.config.alertFallbackRatioPercent;
+    const ratioThreshold = settings.ratioThreshold;
     if (ratioThreshold > 0) {
       const { total, fallbacks } = this.metrics.recentFallbackStats(FALLBACK_WINDOW_MINUTES, now);
       const percent = total > 0 ? Math.round((fallbacks / total) * 100) : 0;
@@ -121,7 +188,7 @@ export class AlertService implements OnModuleInit, OnModuleDestroy {
     return checks;
   }
 
-  private async apply(check: RuleCheck, now: number): Promise<void> {
+  private async apply(check: RuleCheck, settings: AlertSettings, now: number): Promise<void> {
     const state = this.states.get(check.rule) ?? {
       firing: false,
       lastNotifiedAt: 0,
@@ -133,12 +200,18 @@ export class AlertService implements OnModuleInit, OnModuleDestroy {
       state.cleanChecks = 0;
       if (!state.firing) {
         // Only a delivered alert counts as firing, so a failed send is retried next check.
-        if (await this.send(check.rule, `${MESSAGE_PREFIX} ALERT: ${check.firingText}`)) {
+        if (await this.send(settings, check.rule, `${MESSAGE_PREFIX} ALERT: ${check.firingText}`)) {
           state.firing = true;
           state.lastNotifiedAt = now;
         }
       } else if (now - state.lastNotifiedAt >= REMINDER_MS) {
-        if (await this.send(check.rule, `${MESSAGE_PREFIX} STILL FIRING: ${check.firingText}`))
+        if (
+          await this.send(
+            settings,
+            check.rule,
+            `${MESSAGE_PREFIX} STILL FIRING: ${check.firingText}`,
+          )
+        )
           state.lastNotifiedAt = now;
       }
       return;
@@ -147,30 +220,29 @@ export class AlertService implements OnModuleInit, OnModuleDestroy {
     if (!state.firing) return;
     state.cleanChecks += 1;
     if (state.cleanChecks < RESOLVE_AFTER_CLEAN_CHECKS) return;
-    if (await this.send(check.rule, `${MESSAGE_PREFIX} RESOLVED: ${check.resolvedText}`)) {
+    if (
+      await this.send(settings, check.rule, `${MESSAGE_PREFIX} RESOLVED: ${check.resolvedText}`)
+    ) {
       state.firing = false;
       state.cleanChecks = 0;
     }
   }
 
   /** Delivers one message; failures are logged (never with the token) and reported as false. */
-  private async send(rule: RuleName, text: string): Promise<boolean> {
+  private async send(settings: AlertSettings, rule: RuleName, text: string): Promise<boolean> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
     try {
-      const response = await fetch(
-        `https://api.telegram.org/bot${this.config.telegramBotToken}/sendMessage`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            chat_id: this.config.telegramChatId,
-            text,
-            disable_web_page_preview: true,
-          }),
-          signal: controller.signal,
-        },
-      );
+      const response = await fetch(`https://api.telegram.org/bot${settings.botToken}/sendMessage`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          chat_id: settings.chatId,
+          text,
+          disable_web_page_preview: true,
+        }),
+        signal: controller.signal,
+      });
       if (!response.ok) {
         this.logger.warn(`Telegram rejected the ${rule} alert with HTTP ${response.status}`);
         this.metrics.recordAlert(rule, "failed");

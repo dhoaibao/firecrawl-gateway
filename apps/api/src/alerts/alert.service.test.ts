@@ -1,17 +1,39 @@
 import { Logger } from "@nestjs/common";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { encryptSettingValue } from "../common/crypto";
+import { ALERT_SETTING_KEYS } from "../settings/runtime-settings";
 import { AlertService } from "./alert.service";
 
+const ENCRYPTION_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const TOKEN = "123456789:AAH_test-token_0123456789abcdef";
 const CHAT_ID = "-1001234567890";
 
 type Circuit = "closed" | "half-open" | "open";
+type SettingValues = Record<(typeof ALERT_SETTING_KEYS)[number], string | null>;
 
-function makeAlerts(configOverrides: Record<string, unknown> = {}) {
+function makeAlerts(overrides: Partial<SettingValues> = {}) {
   const state = {
     credits: { keys: 2, credits: 10_000 },
     fallback: { total: 0, fallbacks: 0 },
     circuit: "closed" as Circuit,
+  };
+  // What the admin saved on the Configure page; the bot token is stored encrypted.
+  const stored: SettingValues = {
+    telegram_bot_token: encryptSettingValue(TOKEN, ENCRYPTION_KEY),
+    telegram_chat_id: CHAT_ID,
+    alert_credits_low_threshold: "500",
+    alert_fallback_ratio_percent: "50",
+    ...overrides,
+  };
+  const settings = {
+    getSettings: vi.fn(async () =>
+      Object.fromEntries(
+        ALERT_SETTING_KEYS.map((key) => [
+          key,
+          stored[key] === null ? null : { key, value: stored[key], updated_at: "" },
+        ]),
+      ),
+    ),
   };
   const metrics = {
     recentFallbackStats: vi.fn(() => state.fallback),
@@ -20,17 +42,12 @@ function makeAlerts(configOverrides: Record<string, unknown> = {}) {
   };
   const credits = { estimatedRemainingCredits: vi.fn(() => state.credits) };
   const service = new AlertService(
-    {
-      telegramBotToken: TOKEN,
-      telegramChatId: CHAT_ID,
-      alertCreditsLowThreshold: 500,
-      alertFallbackRatioPercent: 50,
-      ...configOverrides,
-    } as never,
+    { firecrawlKeysEncryptionKey: ENCRYPTION_KEY } as never,
     metrics as never,
     credits as never,
+    settings as never,
   );
-  return { service, state, metrics, credits };
+  return { service, state, stored, settings, metrics, credits };
 }
 
 function sentTexts(fetchMock: ReturnType<typeof vi.fn>): string[] {
@@ -52,18 +69,27 @@ afterEach(() => {
 });
 
 describe("AlertService", () => {
-  it("is off, sends nothing, and starts no timer without a bot token and chat id", async () => {
-    vi.useFakeTimers();
-    const { service, state } = makeAlerts({ telegramBotToken: "", telegramChatId: "" });
+  it("stays silent until both a bot token and a chat id are saved", async () => {
+    const { service, state, stored } = makeAlerts({
+      telegram_bot_token: null,
+      telegram_chat_id: null,
+    });
     state.circuit = "open";
 
-    service.onModuleInit();
-    await service.evaluate();
-    vi.advanceTimersByTime(10 * MINUTE);
+    await service.evaluate(0);
+    stored.telegram_chat_id = CHAT_ID; // chat id alone is still not enough
+    await service.evaluate(MINUTE);
 
-    expect(service.enabled).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("ignores a chat id that is not a numeric id or @channelname", async () => {
+    const { service, state } = makeAlerts({ telegram_chat_id: "my chat; DROP" });
+    state.circuit = "open";
+
+    await service.evaluate(0);
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("evaluates on a one-minute interval and stops on shutdown", async () => {
@@ -78,6 +104,94 @@ describe("AlertService", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     service.onModuleDestroy();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("picks up changed settings on the next check without a restart", async () => {
+    const { service, state, stored } = makeAlerts({ alert_credits_low_threshold: "0" });
+    state.credits = { keys: 1, credits: 100 };
+
+    await service.evaluate(0);
+    expect(fetchMock).not.toHaveBeenCalled(); // credits rule disabled
+
+    stored.alert_credits_low_threshold = "500"; // saved on the Configure page
+    await service.evaluate(MINUTE);
+
+    expect(sentTexts(fetchMock)).toEqual([expect.stringContaining("threshold 500")]);
+  });
+
+  it("uses the default fallback threshold until one is saved", async () => {
+    const { service, state } = makeAlerts({ alert_fallback_ratio_percent: null });
+    state.fallback = { total: 20, fallbacks: 10 };
+
+    await service.evaluate(0);
+
+    expect(sentTexts(fetchMock)).toEqual([expect.stringContaining("50% of requests")]);
+  });
+
+  it("forgets incident state when alerting is switched off so re-enabling starts clean", async () => {
+    const { service, state, stored } = makeAlerts();
+    state.circuit = "open";
+    await service.evaluate(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    stored.telegram_bot_token = null;
+    await service.evaluate(MINUTE);
+    stored.telegram_bot_token = encryptSettingValue(TOKEN, ENCRYPTION_KEY);
+    await service.evaluate(2 * MINUTE);
+
+    // The incident is announced again rather than treated as already notified.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-announces a rule that was switched off and on again while the problem persisted", async () => {
+    const { service, state, stored } = makeAlerts();
+    state.credits = { keys: 1, credits: 100 };
+    await service.evaluate(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    stored.alert_credits_low_threshold = "0"; // rule disabled
+    await service.evaluate(MINUTE);
+    stored.alert_credits_low_threshold = "500"; // and enabled again, still low
+    await service.evaluate(2 * MINUTE);
+
+    expect(sentTexts(fetchMock)).toHaveLength(2);
+    expect(sentTexts(fetchMock)[1]).toContain("ALERT");
+  });
+
+  it("announces an ongoing incident to a new chat and never sends it a resolution first", async () => {
+    const { service, state, stored } = makeAlerts();
+    state.circuit = "open";
+    await service.evaluate(0);
+
+    stored.telegram_chat_id = "@new_alert_channel";
+    await service.evaluate(MINUTE);
+    state.circuit = "closed";
+    await service.evaluate(2 * MINUTE);
+    await service.evaluate(3 * MINUTE);
+    await service.evaluate(4 * MINUTE);
+
+    const calls = fetchMock.mock.calls.map(([, init]) => JSON.parse(init.body as string));
+    expect(calls.map((body) => [body.chat_id, body.text.includes("ALERT")])).toEqual([
+      [CHAT_ID, true],
+      ["@new_alert_channel", true],
+      ["@new_alert_channel", false],
+    ]);
+    expect(calls[2].text).toContain("RESOLVED");
+  });
+
+  it("treats a replaced bot token as a new destination too", async () => {
+    const { service, state, stored } = makeAlerts();
+    state.circuit = "open";
+    await service.evaluate(0);
+
+    stored.telegram_bot_token = encryptSettingValue(
+      "987654321:BBH_other-token_0123456789abcdef",
+      ENCRYPTION_KEY,
+    );
+    await service.evaluate(MINUTE);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][0]).toContain("bot987654321:");
   });
 
   it("posts one Telegram message with only aggregate numbers", async () => {
@@ -152,7 +266,7 @@ describe("AlertService", () => {
   });
 
   it("ignores the credits rule when disabled or when no key's credits are known", async () => {
-    const disabled = makeAlerts({ alertCreditsLowThreshold: 0 });
+    const disabled = makeAlerts({ alert_credits_low_threshold: "0" });
     disabled.state.credits = { keys: 1, credits: 0 };
     await disabled.service.evaluate(0);
 
@@ -180,7 +294,7 @@ describe("AlertService", () => {
   });
 
   it("disables the fallback rule at 0%", async () => {
-    const { service, state } = makeAlerts({ alertFallbackRatioPercent: 0 });
+    const { service, state } = makeAlerts({ alert_fallback_ratio_percent: "0" });
     state.fallback = { total: 100, fallbacks: 100 };
 
     await service.evaluate(0);
@@ -235,6 +349,34 @@ describe("AlertService", () => {
 
     expect(warn).toHaveBeenCalled();
     for (const [message] of warn.mock.calls) expect(String(message)).not.toContain(TOKEN);
+  });
+
+  it("stays off, logging only the error class, when the stored token cannot be decrypted", async () => {
+    const warn = vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    const wrongKey = "f".repeat(64);
+    const { service, state } = makeAlerts({
+      telegram_bot_token: encryptSettingValue(TOKEN, wrongKey),
+    });
+    state.circuit = "open";
+
+    await service.evaluate(0);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).not.toContain(TOKEN);
+  });
+
+  it("survives a settings read failure and tries again on the next check", async () => {
+    vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    const { service, state, settings } = makeAlerts();
+    state.circuit = "open";
+    settings.getSettings.mockRejectedValueOnce(new Error("db down"));
+
+    await expect(service.evaluate(0)).resolves.toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+    await service.evaluate(MINUTE);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("skips an evaluation that overlaps a slow delivery", async () => {

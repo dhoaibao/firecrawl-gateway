@@ -45,52 +45,23 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...baseEnv, METRICS_TOKEN: "short" })).toThrow(/METRICS_TOKEN/);
   });
 
-  it("keeps the response cache off by default and bounds its settings", () => {
-    const off = loadConfig(baseEnv);
-    expect(off.responseCacheTtlSeconds).toBe(0);
-    expect(off.responseCacheMaxBytes).toBe(67_108_864);
+  it("bounds the response cache memory and no longer reads moved settings from env", () => {
+    expect(loadConfig(baseEnv).responseCacheMaxBytes).toBe(67_108_864);
+    expect(
+      loadConfig({ ...baseEnv, RESPONSE_CACHE_MAX_BYTES: "10485760" }).responseCacheMaxBytes,
+    ).toBe(10_485_760);
+    expect(() => loadConfig({ ...baseEnv, RESPONSE_CACHE_MAX_BYTES: "1000" })).toThrow();
 
-    const on = loadConfig({
+    // The TTL and the alert settings live on the Configure page now, so env values are ignored.
+    const config = loadConfig({
       ...baseEnv,
       RESPONSE_CACHE_TTL_SECONDS: "900",
-      RESPONSE_CACHE_MAX_BYTES: "10485760",
-    });
-    expect(on.responseCacheTtlSeconds).toBe(900);
-    expect(on.responseCacheMaxBytes).toBe(10_485_760);
-
-    expect(() => loadConfig({ ...baseEnv, RESPONSE_CACHE_TTL_SECONDS: "-1" })).toThrow();
-    expect(() => loadConfig({ ...baseEnv, RESPONSE_CACHE_TTL_SECONDS: "86401" })).toThrow();
-    expect(() => loadConfig({ ...baseEnv, RESPONSE_CACHE_MAX_BYTES: "1000" })).toThrow();
-  });
-
-  it("keeps Telegram alerts off unless the bot token and chat id are both set", () => {
-    const off = loadConfig(baseEnv);
-    expect(off.telegramBotToken).toBe("");
-    expect(off.alertCreditsLowThreshold).toBe(0);
-    expect(off.alertFallbackRatioPercent).toBe(50);
-
-    const token = "123456789:AAH_test-token_0123456789abcdef";
-    const on = loadConfig({
-      ...baseEnv,
-      TELEGRAM_BOT_TOKEN: ` ${token} `,
-      TELEGRAM_CHAT_ID: "-1001234567890",
+      TELEGRAM_BOT_TOKEN: "not even validated",
       ALERT_CREDITS_LOW_THRESHOLD: "250",
-      ALERT_FALLBACK_RATIO_PERCENT: "0",
-    });
-    expect(on).toMatchObject({
-      telegramBotToken: token,
-      telegramChatId: "-1001234567890",
-      alertCreditsLowThreshold: 250,
-      alertFallbackRatioPercent: 0,
-    });
-
-    expect(() => loadConfig({ ...baseEnv, TELEGRAM_BOT_TOKEN: token })).toThrow(/set together/);
-    expect(() => loadConfig({ ...baseEnv, TELEGRAM_CHAT_ID: "1" })).toThrow(/set together/);
-    expect(() =>
-      loadConfig({ ...baseEnv, TELEGRAM_BOT_TOKEN: "not a token/../x", TELEGRAM_CHAT_ID: "1" }),
-    ).toThrow(/@BotFather/);
-    expect(() => loadConfig({ ...baseEnv, ALERT_FALLBACK_RATIO_PERCENT: "101" })).toThrow();
-    expect(() => loadConfig({ ...baseEnv, ALERT_CREDITS_LOW_THRESHOLD: "-5" })).toThrow();
+    }) as Record<string, unknown>;
+    expect(config).not.toHaveProperty("responseCacheTtlSeconds");
+    expect(config).not.toHaveProperty("telegramBotToken");
+    expect(config).not.toHaveProperty("alertCreditsLowThreshold");
   });
 
   it("configures the self-hosted circuit breaker with safe defaults and a disable switch", () => {

@@ -37,6 +37,7 @@ import { loadCloudKeyEntries } from "../settings/cloud-keys";
 import { ApiKeysService, isApiKeyExpired } from "../api-keys/api-keys.service";
 import { AuditService } from "../audit/audit.service";
 import { MetricsService } from "../metrics/metrics.service";
+import { MAX_RESPONSE_CACHE_TTL_SECONDS, integerSetting } from "../settings/runtime-settings";
 import { CircuitBreaker } from "./circuit-breaker";
 import {
   MAX_CACHED_ENTRY_BYTES,
@@ -64,7 +65,11 @@ const hopByHopHeaders = new Set([
   "host",
   "content-length",
 ]);
-const PROXY_SETTING_KEYS = ["default_route_mode", "firecrawl_api_keys"] as const;
+const PROXY_SETTING_KEYS = [
+  "default_route_mode",
+  "firecrawl_api_keys",
+  "response_cache_ttl_seconds",
+] as const;
 const RETRYABLE_CLOUD_STATUS = new Set([401, 402, 403, 429]);
 const CLOUD_CAPACITY_STATUS = new Set([402, 429]);
 
@@ -169,8 +174,9 @@ export class ProxyService {
       },
       onReject: () => this.metrics.recordCircuitRejected(),
     });
+    // The TTL comes from the Configure settings and is applied per request.
     this.responseCache = new ResponseCache({
-      ttlMs: (config.responseCacheTtlSeconds || 0) * 1000,
+      ttlMs: 0,
       maxBytes: config.responseCacheMaxBytes || 0,
     });
   }
@@ -186,6 +192,12 @@ export class ProxyService {
     if (!settings) return;
     const plan = await this.buildPlan(ctx, settings);
     if (!plan) return;
+    this.responseCache.setTtlMs(
+      Math.min(
+        integerSetting(settings.response_cache_ttl_seconds, 0),
+        MAX_RESPONSE_CACHE_TTL_SECONDS,
+      ) * 1000,
+    );
     const cacheLookup = this.responseCache.enabled
       ? cacheLookupFor({
           method: ctx.request.method,

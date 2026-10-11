@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
+import { SettingsModule } from "../settings/settings.module";
 import { AlertService } from "./alert.service";
 
-// MetricsModule and CreditsModule are global, so only the service is provided here.
-@Module({ providers: [AlertService] })
+// MetricsModule and CreditsModule are global; the alert settings come from SettingsModule.
+@Module({ imports: [SettingsModule], providers: [AlertService] })
 export class AlertsModule {}

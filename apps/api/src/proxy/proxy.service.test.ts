@@ -277,7 +277,11 @@ describe("ProxyService", () => {
     await Promise.resolve();
 
     expect(settings.getSettings).toHaveBeenCalledTimes(1);
-    expect(settings.getSettings).toHaveBeenCalledWith(["default_route_mode", "firecrawl_api_keys"]);
+    expect(settings.getSettings).toHaveBeenCalledWith([
+      "default_route_mode",
+      "firecrawl_api_keys",
+      "response_cache_ttl_seconds",
+    ]);
     expect(keys.validateApiKey).toHaveBeenCalledWith("gw_key");
 
     resolveKey({ id: "key-1" });
@@ -1485,31 +1489,42 @@ describe("ProxyService routing outcomes", () => {
           }),
       );
       vi.stubGlobal("fetch", fetchMock);
+      // The TTL is the `response_cache_ttl_seconds` setting (the admin Configure page).
+      const ttl = { seconds: options.ttl ?? 600 };
+      const settings = settingsWith(
+        {
+          firecrawl_api_keys: {
+            key: "firecrawl_api_keys",
+            value: encryptSettingValue(
+              JSON.stringify([CLOUD_KEY]),
+              config.firecrawlKeysEncryptionKey,
+            ),
+          },
+        },
+        "cloud-only",
+      );
+      const base = settings.getSettings.getMockImplementation()!;
+      settings.getSettings.mockImplementation(async (...args: unknown[]) => ({
+        ...(await base(...args)),
+        response_cache_ttl_seconds: {
+          key: "response_cache_ttl_seconds",
+          value: String(ttl.seconds),
+          updated_at: "2026-01-01T00:00:00.000Z",
+        },
+      }));
       const service = new ProxyService(
         {
           ...config,
           authEnabled: true,
-          responseCacheTtlSeconds: options.ttl ?? 600,
           responseCacheMaxBytes: 10 * 1024 * 1024,
         } as never,
-        settingsWith(
-          {
-            firecrawl_api_keys: {
-              key: "firecrawl_api_keys",
-              value: encryptSettingValue(
-                JSON.stringify([CLOUD_KEY]),
-                config.firecrawlKeysEncryptionKey,
-              ),
-            },
-          },
-          "cloud-only",
-        ) as never,
+        settings as never,
         keys as never,
         audit as never,
         credits as never,
         metrics as never,
       );
-      return { service, fetchMock, credits, audit, metrics, keyId };
+      return { service, fetchMock, credits, audit, metrics, keyId, ttl };
     }
 
     async function stored(metrics: ReturnType<typeof makeMetrics>, count = 1) {
@@ -1702,6 +1717,23 @@ describe("ProxyService routing outcomes", () => {
         makeReply() as never,
       );
 
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it("applies a TTL change from the Configure setting on the next request", async () => {
+      const { service, fetchMock, metrics, ttl } = makeCacheService();
+      await service.handle(scrapeRequest(), makeReply() as never);
+      await stored(metrics);
+      await service.handle(scrapeRequest(), makeReply() as never);
+      expect(fetchMock).toHaveBeenCalledTimes(1); // served from the cache
+
+      ttl.seconds = 0; // the admin switches the cache off
+      await service.handle(scrapeRequest(), makeReply() as never);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      // Switching it back on must not resurrect what was cached before it was disabled.
+      ttl.seconds = 600;
+      await service.handle(scrapeRequest(), makeReply() as never);
       expect(fetchMock).toHaveBeenCalledTimes(3);
     });
 

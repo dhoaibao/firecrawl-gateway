@@ -9,16 +9,39 @@ import { SettingsService } from "./settings.service";
 import type { CloudKeyEntry } from "../common/types";
 import { loadCloudApiKeys, parseCloudKeyEntries, serializeCloudKeyEntries } from "./cloud-keys";
 import { creditKeyPrefix, CreditRoutingService } from "../credits/credit-routing.service";
+import {
+  MAX_ALERT_CREDITS_THRESHOLD,
+  MAX_RESPONSE_CACHE_TTL_SECONDS,
+  TELEGRAM_BOT_TOKEN_PATTERN,
+  TELEGRAM_CHAT_ID_PATTERN,
+  maskBotToken,
+} from "./runtime-settings";
 
 const VALID_SETTINGS = [
   "firecrawl_api_keys",
   "api_key_inactivity_revoke_days",
   "default_route_mode",
+  "response_cache_ttl_seconds",
+  "alert_credits_low_threshold",
+  "alert_fallback_ratio_percent",
+  "telegram_chat_id",
+  "telegram_bot_token",
 ] as const;
 const SETTING_TYPES: Record<string, "string" | "number" | "json"> = {
   firecrawl_api_keys: "json",
   api_key_inactivity_revoke_days: "number",
   default_route_mode: "string",
+  response_cache_ttl_seconds: "number",
+  alert_credits_low_threshold: "number",
+  alert_fallback_ratio_percent: "number",
+  telegram_chat_id: "string",
+  telegram_bot_token: "string",
+};
+/** Whole-number settings with an inclusive upper bound; the lower bound is 0 (which disables). */
+const INTEGER_LIMITS: Record<string, number> = {
+  response_cache_ttl_seconds: MAX_RESPONSE_CACHE_TTL_SECONDS,
+  alert_credits_low_threshold: MAX_ALERT_CREDITS_THRESHOLD,
+  alert_fallback_ratio_percent: 100,
 };
 const MAX_CLOUD_API_KEYS = 10;
 const MIN_API_KEY_LENGTH = 8;
@@ -53,6 +76,11 @@ export class SettingsController {
     const rows = await this.settings.listSettings();
     const data: Record<string, unknown> = {};
     for (const row of rows) {
+      if (row.key === "telegram_bot_token") {
+        // The secret is never returned: only a masked form so the UI can show it is set.
+        data[row.key] = this.maskedTelegramToken(row.value);
+        continue;
+      }
       const value =
         row.key === "firecrawl_api_keys"
           ? decryptSettingValue(row.value, this.config.firecrawlKeysEncryptionKey)
@@ -75,7 +103,9 @@ export class SettingsController {
   async update(@Body() updates: unknown) {
     if (!updates || typeof updates !== "object" || Array.isArray(updates))
       apiError(400, "Expected JSON object with settings");
-    const result: Record<string, unknown> = {};
+    // Validate and normalize every field first and only then write, so a rejected
+    // field never leaves the fields before it half-saved.
+    const staged: Array<{ key: string; value: string; type: string; echoed?: unknown }> = [];
     for (const [key, rawValue] of Object.entries(updates as Record<string, unknown>)) {
       if (!VALID_SETTINGS.includes(key as (typeof VALID_SETTINGS)[number]))
         apiError(400, `Invalid setting key: ${key}`);
@@ -105,16 +135,52 @@ export class SettingsController {
         );
         // The stored value is encrypted, so echo the normalized entries instead.
         echoed = entries;
+      } else if (key === "telegram_bot_token") {
+        // An empty string removes the token; anything else must be a real BotFather token.
+        if (typeof rawValue !== "string") apiError(400, `${key} must be a string`);
+        const token = rawValue.trim();
+        if (token !== "" && !TELEGRAM_BOT_TOKEN_PATTERN.test(token))
+          apiError(400, `${key} must look like <bot id>:<secret> from @BotFather`);
+        value =
+          token === "" ? "" : encryptSettingValue(token, this.config.firecrawlKeysEncryptionKey);
+        echoed = token === "" ? "" : maskBotToken(token);
+      } else if (key === "telegram_chat_id") {
+        if (typeof rawValue !== "string") apiError(400, `${key} must be a string`);
+        const chatId = rawValue.trim();
+        if (chatId !== "" && !TELEGRAM_CHAT_ID_PATTERN.test(chatId))
+          apiError(400, `${key} must be a numeric chat id or an @channelname`);
+        value = chatId;
+      } else if (key in INTEGER_LIMITS) {
+        const limit = INTEGER_LIMITS[key];
+        const number = strictNumber(rawValue);
+        if (!Number.isInteger(number) || number < 0 || number > limit)
+          apiError(400, `${key} must be a whole number between 0 and ${limit}`);
+        value = String(number);
       } else if (type === "number") {
-        const number = Number(rawValue);
+        const number = strictNumber(rawValue);
         if (!Number.isFinite(number) || number < 0)
           apiError(400, `${key} must be a non-negative number`);
         value = String(number);
       } else value = String(rawValue);
+      staged.push({ key, value, type, echoed });
+    }
+    const result: Record<string, unknown> = {};
+    for (const { key, value, type, echoed } of staged) {
       await this.settings.setSetting(key, value);
       result[key] = echoed ?? parseValue(value, type);
     }
     return { data: result };
+  }
+
+  /** The masked form of a stored (encrypted) bot token; empty when unset or unreadable. */
+  private maskedTelegramToken(stored: string): string {
+    if (!stored) return "";
+    try {
+      const { value } = decryptSettingValue(stored, this.config.firecrawlKeysEncryptionKey);
+      return TELEGRAM_BOT_TOKEN_PATTERN.test(value) ? maskBotToken(value) : "";
+    } catch {
+      return "";
+    }
   }
 
   private async fetchCreditUsage(): Promise<CreditUsageItem[]> {
@@ -160,6 +226,16 @@ function keyEntriesOrRaw(value: string): unknown {
   } catch {
     return value;
   }
+}
+
+/**
+ * A JSON number or a plain decimal string. Everything else (null, booleans,
+ * arrays, objects, "") is NaN: `Number()` would silently turn those into 0 or 1.
+ */
+function strictNumber(raw: unknown): number {
+  if (typeof raw === "number") return raw;
+  if (typeof raw === "string" && /^\s*\d+(\.\d+)?\s*$/.test(raw)) return Number(raw);
+  return NaN;
 }
 
 function parseValue(value: string, type: string): unknown {

@@ -171,3 +171,168 @@ describe("SettingsController list legacy migration", () => {
     expect(settings.setSetting).not.toHaveBeenCalled();
   });
 });
+
+describe("SettingsController runtime settings", () => {
+  const TOKEN = "123456789:AAH_test-token_0123456789abcdef";
+
+  function makeController(rows: Array<{ key: string; value: string }> = []) {
+    const settings = {
+      setSetting: vi.fn().mockResolvedValue(undefined),
+      listSettings: vi.fn().mockResolvedValue(rows),
+    };
+    const controller = new SettingsController(settings as never, config as never, {} as never);
+    return { controller, settings };
+  }
+
+  it("stores the response cache TTL and alert thresholds as validated whole numbers", async () => {
+    const { controller, settings } = makeController();
+
+    const result = await controller.update({
+      response_cache_ttl_seconds: 900,
+      alert_credits_low_threshold: "250",
+      alert_fallback_ratio_percent: 0,
+    });
+
+    expect(settings.setSetting).toHaveBeenCalledWith("response_cache_ttl_seconds", "900");
+    expect(settings.setSetting).toHaveBeenCalledWith("alert_credits_low_threshold", "250");
+    expect(settings.setSetting).toHaveBeenCalledWith("alert_fallback_ratio_percent", "0");
+    expect(result.data).toEqual({
+      response_cache_ttl_seconds: 900,
+      alert_credits_low_threshold: 250,
+      alert_fallback_ratio_percent: 0,
+    });
+  });
+
+  it.each([
+    ["response_cache_ttl_seconds", 86_401],
+    ["response_cache_ttl_seconds", -1],
+    ["response_cache_ttl_seconds", 1.5],
+    ["alert_fallback_ratio_percent", 101],
+    ["alert_credits_low_threshold", "abc"],
+    ["alert_credits_low_threshold", ""],
+    ["alert_credits_low_threshold", 1_000_000_001],
+  ])("rejects %s = %j", async (key, value) => {
+    const { controller, settings } = makeController();
+
+    await expect(controller.update({ [key]: value })).rejects.toMatchObject({ status: 400 });
+    expect(settings.setSetting).not.toHaveBeenCalled();
+  });
+
+  it("encrypts the Telegram bot token at rest and never echoes it back", async () => {
+    const { controller, settings } = makeController();
+
+    const result = await controller.update({ telegram_bot_token: ` ${TOKEN} ` });
+
+    const [key, stored] = settings.setSetting.mock.calls[0] as [string, string];
+    expect(key).toBe("telegram_bot_token");
+    expect(stored).not.toContain(TOKEN);
+    expect(decryptSettingValue(stored, encryptionKey).value).toBe(TOKEN);
+    expect(result.data.telegram_bot_token).toBe("123456789:••••••••");
+    expect(JSON.stringify(result)).not.toContain("AAH_test");
+  });
+
+  it("clears the token and the chat id with an empty string", async () => {
+    const { controller, settings } = makeController();
+
+    const result = await controller.update({ telegram_bot_token: "", telegram_chat_id: "  " });
+
+    expect(settings.setSetting).toHaveBeenCalledWith("telegram_bot_token", "");
+    expect(settings.setSetting).toHaveBeenCalledWith("telegram_chat_id", "");
+    expect(result.data).toEqual({ telegram_bot_token: "", telegram_chat_id: "" });
+  });
+
+  it.each([
+    ["telegram_bot_token", "not-a-token"],
+    ["telegram_bot_token", "123456789:••••••••"],
+    ["telegram_bot_token", 12345],
+    ["telegram_chat_id", "my chat; DROP"],
+    ["telegram_chat_id", "@x"],
+    ["telegram_chat_id", 42],
+  ])("rejects %s = %j", async (key, value) => {
+    const { controller, settings } = makeController();
+
+    await expect(controller.update({ [key]: value })).rejects.toMatchObject({ status: 400 });
+    expect(settings.setSetting).not.toHaveBeenCalled();
+  });
+
+  it("writes nothing when a later field in the same payload is invalid", async () => {
+    const { controller, settings } = makeController();
+
+    await expect(
+      controller.update({
+        default_route_mode: "cloud-first",
+        response_cache_ttl_seconds: 900,
+        telegram_chat_id: "-100123",
+        telegram_bot_token: "definitely not a token",
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+
+    expect(settings.setSetting).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["response_cache_ttl_seconds", null],
+    ["response_cache_ttl_seconds", false],
+    ["response_cache_ttl_seconds", true],
+    ["response_cache_ttl_seconds", []],
+    ["response_cache_ttl_seconds", [50]],
+    ["response_cache_ttl_seconds", {}],
+    ["alert_credits_low_threshold", null],
+    ["alert_credits_low_threshold", [5]],
+    ["alert_fallback_ratio_percent", false],
+    ["alert_fallback_ratio_percent", true],
+    ["api_key_inactivity_revoke_days", null],
+    ["api_key_inactivity_revoke_days", false],
+    ["api_key_inactivity_revoke_days", [7]],
+  ])("rejects non-number JSON for %s = %j instead of coercing it", async (key, value) => {
+    const { controller, settings } = makeController();
+
+    await expect(controller.update({ [key]: value })).rejects.toMatchObject({ status: 400 });
+    expect(settings.setSetting).not.toHaveBeenCalled();
+  });
+
+  it("still accepts plain numeric strings and numbers", async () => {
+    const { controller, settings } = makeController();
+
+    await controller.update({
+      response_cache_ttl_seconds: "900",
+      api_key_inactivity_revoke_days: 30,
+    });
+
+    expect(settings.setSetting).toHaveBeenCalledWith("response_cache_ttl_seconds", "900");
+    expect(settings.setSetting).toHaveBeenCalledWith("api_key_inactivity_revoke_days", "30");
+  });
+
+  it("accepts a numeric or @channel chat id", async () => {
+    const { controller, settings } = makeController();
+
+    await controller.update({ telegram_chat_id: "-1001234567890" });
+    await controller.update({ telegram_chat_id: "@my_alert_channel" });
+
+    expect(settings.setSetting).toHaveBeenNthCalledWith(1, "telegram_chat_id", "-1001234567890");
+    expect(settings.setSetting).toHaveBeenNthCalledWith(2, "telegram_chat_id", "@my_alert_channel");
+  });
+
+  it("lists the bot token masked, and empty when unset or unreadable", async () => {
+    const { controller } = makeController([
+      { key: "telegram_bot_token", value: encryptSettingValue(TOKEN, encryptionKey) },
+      { key: "telegram_chat_id", value: "-100123" },
+      { key: "response_cache_ttl_seconds", value: "600" },
+    ]);
+    const unreadable = makeController([
+      { key: "telegram_bot_token", value: encryptSettingValue(TOKEN, "f".repeat(64)) },
+    ]);
+    const unset = makeController([{ key: "telegram_bot_token", value: "" }]);
+
+    const listed = await controller.list();
+
+    expect(listed.data).toEqual({
+      telegram_bot_token: "123456789:••••••••",
+      telegram_chat_id: "-100123",
+      response_cache_ttl_seconds: 600,
+    });
+    expect(JSON.stringify(listed)).not.toContain("AAH_test");
+    expect((await unreadable.controller.list()).data.telegram_bot_token).toBe("");
+    expect((await unset.controller.list()).data.telegram_bot_token).toBe("");
+  });
+});

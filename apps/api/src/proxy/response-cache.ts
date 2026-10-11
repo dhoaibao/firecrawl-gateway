@@ -106,7 +106,7 @@ export function cacheLookupFor(input: CacheEligibilityInput): CacheLookup | null
 }
 
 export interface ResponseCacheOptions {
-  /** Entry lifetime in ms; 0 disables the cache. */
+  /** Entry lifetime in ms; 0 disables the cache. Can be changed at runtime with `setTtlMs`. */
   ttlMs: number;
   /** Total size bound over all bodies; the least recently used entries are evicted first. */
   maxBytes: number;
@@ -120,14 +120,29 @@ export interface ResponseCacheOptions {
 export class ResponseCache {
   private readonly entries = new Map<string, CachedResponse>();
   private totalBytes = 0;
+  private ttlMs: number;
   private readonly now: () => number;
 
   constructor(private readonly options: ResponseCacheOptions) {
+    this.ttlMs = options.ttlMs;
     this.now = options.now ?? Date.now;
   }
 
   get enabled(): boolean {
-    return this.options.ttlMs > 0 && this.options.maxBytes > 0;
+    return this.ttlMs > 0 && this.options.maxBytes > 0;
+  }
+
+  /**
+   * Applies a new entry lifetime (the admin changed the setting). Turning the cache
+   * off drops every entry so nothing stale is served if it is later turned back on.
+   */
+  setTtlMs(ttlMs: number): void {
+    if (ttlMs === this.ttlMs) return;
+    this.ttlMs = ttlMs;
+    if (ttlMs <= 0) {
+      this.entries.clear();
+      this.totalBytes = 0;
+    }
   }
 
   /** Returns a live entry no older than `maxAgeMs` (when given), refreshing its recency. */
@@ -135,7 +150,7 @@ export class ResponseCache {
     const entry = this.entries.get(key);
     if (!entry) return null;
     const age = this.now() - entry.storedAt;
-    if (age >= this.options.ttlMs) {
+    if (age >= this.ttlMs) {
       this.remove(key, entry);
       return null;
     }

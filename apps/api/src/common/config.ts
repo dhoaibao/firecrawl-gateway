@@ -67,37 +67,17 @@ export const configSchema = z
     cronSecret: z.string().default(""),
     // Bearer token for GET /admin/api/metrics; unset disables the endpoint (404).
     metricsToken: z.string().default(""),
-    // In-memory cache of successful Cloud scrape responses; 0 (default) disables it.
-    responseCacheTtlSeconds: z.coerce.number().int().min(0).max(86_400).default(0),
+    // Memory bound of the response cache. Its TTL (and whether it is on at all) is the
+    // `response_cache_ttl_seconds` setting on the admin Configure page.
     responseCacheMaxBytes: z.coerce
       .number()
       .int()
       .min(1_048_576)
       .max(2_147_483_647)
       .default(67_108_864),
-    // Telegram alerts are enabled only when both the bot token and chat id are set.
-    telegramBotToken: z.string().trim().default(""),
-    telegramChatId: z.string().trim().default(""),
-    // Alert when the estimated remaining Cloud credits fall below this; 0 disables the rule.
-    alertCreditsLowThreshold: z.coerce.number().int().min(0).default(0),
-    // Alert when this share of recent requests used a fallback; 0 disables the rule.
-    alertFallbackRatioPercent: z.coerce.number().int().min(0).max(100).default(50),
     redisUrl: optionalRedisUrl,
   })
   .superRefine((value, context) => {
-    if (Boolean(value.telegramBotToken) !== Boolean(value.telegramChatId))
-      context.addIssue({
-        code: "custom",
-        path: ["telegramBotToken"],
-        message: "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set together",
-      });
-    // The token is interpolated into the Bot API URL path, so only the documented shape is accepted.
-    if (value.telegramBotToken && !/^\d+:[A-Za-z0-9_-]{20,}$/.test(value.telegramBotToken))
-      context.addIssue({
-        code: "custom",
-        path: ["telegramBotToken"],
-        message: "TELEGRAM_BOT_TOKEN must look like <bot id>:<secret> from @BotFather",
-      });
     if (value.metricsToken && value.metricsToken.length < MIN_METRICS_TOKEN_LENGTH)
       context.addIssue({
         code: "custom",
@@ -149,12 +129,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     logLevel: env.LOG_LEVEL,
     cronSecret: env.CRON_SECRET,
     metricsToken: env.METRICS_TOKEN,
-    responseCacheTtlSeconds: env.RESPONSE_CACHE_TTL_SECONDS,
     responseCacheMaxBytes: env.RESPONSE_CACHE_MAX_BYTES,
-    telegramBotToken: env.TELEGRAM_BOT_TOKEN,
-    telegramChatId: env.TELEGRAM_CHAT_ID,
-    alertCreditsLowThreshold: env.ALERT_CREDITS_LOW_THRESHOLD,
-    alertFallbackRatioPercent: env.ALERT_FALLBACK_RATIO_PERCENT,
     redisUrl: env.REDIS_URL,
   });
 }
