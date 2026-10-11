@@ -1078,4 +1078,89 @@ describe("ProxyService routing outcomes", () => {
     expect(String(warn.mock.calls[0][0])).not.toContain(secret);
     expect(String(warn.mock.calls[0][0])).toContain("FIRECRAWL_KEYS_ENCRYPTION_KEY");
   });
+
+  describe("audit attribution", () => {
+    function makeAuthService(
+      validateApiKey: ReturnType<typeof vi.fn>,
+      audit: { appendAudit: ReturnType<typeof vi.fn> },
+    ) {
+      return new ProxyService(
+        { ...config, authEnabled: true } as never,
+        makeSettings() as never,
+        { validateApiKey, touchApiKey: vi.fn().mockResolvedValue(undefined) } as never,
+        audit as never,
+        makeCredits() as never,
+      );
+    }
+
+    it("records the virtual API key id on a proxied request", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+      const audit = { appendAudit: vi.fn().mockResolvedValue(undefined) };
+      const service = makeAuthService(vi.fn().mockResolvedValue({ id: "key-1" }), audit);
+
+      await service.handle(
+        makeRequest({ headers: { authorization: "Bearer fc_valid" } }),
+        makeReply() as never,
+      );
+
+      expect(audit.appendAudit).toHaveBeenCalledTimes(1);
+      expect(audit.appendAudit).toHaveBeenCalledWith(
+        expect.objectContaining({ api_key_id: "key-1", status_code: 204 }),
+      );
+    });
+
+    it("records the key id when a later stage rejects an authenticated request", async () => {
+      const audit = { appendAudit: vi.fn().mockResolvedValue(undefined) };
+      const service = makeAuthService(vi.fn().mockResolvedValue({ id: "key-1" }), audit);
+      const req = makeRequest({
+        raw: { url: "/v1/agent" },
+        url: "/v1/agent",
+        headers: { authorization: "Bearer fc_valid" },
+      });
+      const reply = makeReply();
+
+      await service.handle(req, reply as never);
+
+      expect(reply.code).toHaveBeenCalledWith(409);
+      expect(audit.appendAudit).toHaveBeenCalledWith(
+        expect.objectContaining({ api_key_id: "key-1", status_code: 409 }),
+      );
+    });
+
+    it("leaves the key id empty for a missing, invalid, or revoked key", async () => {
+      const audit = { appendAudit: vi.fn().mockResolvedValue(undefined) };
+      const service = makeAuthService(vi.fn().mockResolvedValue(null), audit);
+
+      await service.handle(makeRequest({ headers: {} }), makeReply() as never);
+      await service.handle(
+        makeRequest({ headers: { authorization: "Bearer fc_revoked" } }),
+        makeReply() as never,
+      );
+
+      expect(audit.appendAudit).toHaveBeenCalledTimes(2);
+      for (const [entry] of audit.appendAudit.mock.calls) {
+        expect(entry).toMatchObject({ status_code: 401 });
+        expect(entry.api_key_id).toBeUndefined();
+      }
+    });
+
+    it("leaves the key id empty for admin playground and auth-disabled requests", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+      const audit = { appendAudit: vi.fn().mockResolvedValue(undefined) };
+      const validateApiKey = vi.fn();
+      const authed = makeAuthService(validateApiKey, audit);
+
+      await authed.handle(
+        makeRequest({ admin: { email: "admin@example.test" } }),
+        makeReply() as never,
+      );
+      await makeService(makeSettings(), audit).handle(makeRequest(), makeReply() as never);
+
+      expect(validateApiKey).not.toHaveBeenCalled();
+      expect(audit.appendAudit).toHaveBeenCalledTimes(2);
+      for (const [entry] of audit.appendAudit.mock.calls) {
+        expect(entry.api_key_id).toBeUndefined();
+      }
+    });
+  });
 });

@@ -10,6 +10,26 @@ export interface AuditStats {
   avg_duration_ms: number;
 }
 
+/** Request counts for one virtual API key; `api_key_id` is null for unattributed rows. */
+export interface ApiKeyUsage {
+  api_key_id: string | null;
+  total: number;
+  error_count: number;
+  fallbacks: number;
+  avg_duration_ms: number;
+  last_request_at: string | null;
+}
+
+/** Raw row shape returned by `apiKeyUsageQuery`. */
+export interface ApiKeyUsageRow {
+  api_key_id: string | null;
+  total: number | bigint;
+  error_count: number | bigint;
+  fallbacks: number | bigint;
+  avg_duration_ms: number | bigint | null;
+  last_request_at: Date | string | null;
+}
+
 export type StatsRange = "all" | "today" | "week" | "month" | "custom";
 
 /** Mirrors the dashboard filters so cards can be aggregated over the whole log. */
@@ -19,6 +39,8 @@ export interface AuditStatsFilter {
   fallbackOnly?: boolean;
   slowOnly?: boolean;
   search?: string;
+  /** Restrict to one virtual API key (`audit_logs.api_key_id`). */
+  apiKeyId?: string;
   range?: StatsRange;
   day?: number;
   month?: number;
@@ -47,6 +69,7 @@ export function buildStatsWhere(filter: AuditStatsFilter): Prisma.Sql {
   if (filter.status === "5xx") conds.push(Prisma.sql`status_code >= 500 AND status_code < 600`);
   if (filter.fallbackOnly) conds.push(Prisma.sql`fallback_used = true`);
   if (filter.slowOnly) conds.push(Prisma.sql`duration_ms >= 1000`);
+  if (filter.apiKeyId) conds.push(Prisma.sql`api_key_id = ${filter.apiKeyId}`);
 
   const search = filter.search?.trim().toLowerCase();
   if (search) {
@@ -101,4 +124,19 @@ export function statsQuery(where: Prisma.Sql): Prisma.Sql {
       coalesce(round(avg(duration_ms)), 0)::int AS avg_duration_ms
     FROM audit_logs
     ${where}`;
+}
+
+export function apiKeyUsageQuery(where: Prisma.Sql): Prisma.Sql {
+  return Prisma.sql`
+    SELECT
+      api_key_id,
+      count(*)::int AS total,
+      (count(*) FILTER (WHERE status_code >= 400))::int AS error_count,
+      (count(*) FILTER (WHERE fallback_used))::int AS fallbacks,
+      coalesce(round(avg(duration_ms)), 0)::int AS avg_duration_ms,
+      max(created_at) AS last_request_at
+    FROM audit_logs
+    ${where}
+    GROUP BY api_key_id
+    ORDER BY total DESC`;
 }

@@ -11,6 +11,7 @@ function makeAuditMock() {
     deleteAuditEntriesByIds: vi.fn().mockResolvedValue(0),
     deleteAuditEntries: vi.fn().mockResolvedValue(0),
     readAuditStats: vi.fn().mockResolvedValue({}),
+    readApiKeyUsage: vi.fn().mockResolvedValue([]),
   };
 }
 
@@ -28,6 +29,7 @@ function makeRow(id: string, createdAt: Date) {
     durationMs: 120,
     targetUrl: "https://firecrawl.dev",
     requestId: null,
+    apiKeyId: null,
   };
 }
 
@@ -213,6 +215,121 @@ describe("AuditService readAuditStats", () => {
     await expect(controller.stats({ backend: "nope" })).rejects.toBeDefined();
     await expect(controller.stats({ day: "40" })).rejects.toBeDefined();
     await expect(controller.stats({ tz: "Not/AZone; DROP" })).rejects.toBeDefined();
+    await expect(controller.stats({ api_key_id: "x'; DROP TABLE" })).rejects.toBeDefined();
+    await expect(controller.stats({ api_key_id: "a".repeat(65) })).rejects.toBeDefined();
     expect(audit.readAuditStats).not.toHaveBeenCalled();
+  });
+
+  it("filters stats by API key as a parameterised condition", async () => {
+    const queryRaw = vi.fn().mockResolvedValue([]);
+    const service = new AuditService({ $queryRaw: queryRaw } as unknown as PrismaService);
+
+    await service.readAuditStats({ apiKeyId: "0b1e7c1a-5a53-4d41-9a39-3d5f6d1f5a10" });
+
+    const q = queryRaw.mock.calls[0][0] as { sql: string; values: unknown[] };
+    expect(q.sql).toContain("api_key_id = ?");
+    expect(q.values).toContain("0b1e7c1a-5a53-4d41-9a39-3d5f6d1f5a10");
+  });
+});
+
+describe("AuditService API key attribution", () => {
+  it("persists the key id, or null when the request had none", async () => {
+    const create = vi.fn().mockResolvedValue(undefined);
+    const service = new AuditService({ auditLog: { create } } as unknown as PrismaService);
+    const base = {
+      id: "a",
+      created_at: "2026-08-22T00:00:00.000Z",
+      method: "POST",
+      path: "/v1/scrape",
+      route_mode: "cloud-first",
+      backend_used: "cloud",
+      fallback_used: false,
+      fallback_reason: "",
+      status_code: 200,
+      duration_ms: 12,
+      target_url: "",
+    };
+
+    await service.appendAudit({ ...base, api_key_id: "key-1" });
+    await service.appendAudit({ ...base, id: "b" });
+
+    expect(create.mock.calls[0][0].data.apiKeyId).toBe("key-1");
+    expect(create.mock.calls[1][0].data.apiKeyId).toBeNull();
+  });
+
+  it("exposes the key id on read entries", async () => {
+    const rows = [
+      { ...makeRow("a", new Date("2026-08-22T00:00:00.000Z")), apiKeyId: "key-1" },
+      makeRow("b", new Date("2026-08-22T00:00:01.000Z")),
+    ];
+    const findMany = vi.fn().mockResolvedValue(rows);
+    const service = new AuditService({ auditLog: { findMany } } as unknown as PrismaService);
+
+    const entries = await service.readAuditEntries(500);
+
+    expect(entries[0].api_key_id).toBe("key-1");
+    expect(entries[1].api_key_id).toBeUndefined();
+  });
+});
+
+describe("AuditService readApiKeyUsage", () => {
+  it("groups by key, keeps the unattributed bucket, and normalises numbers", async () => {
+    const queryRaw = vi.fn().mockResolvedValue([
+      {
+        api_key_id: "key-1",
+        total: 10,
+        error_count: 2,
+        fallbacks: 1,
+        avg_duration_ms: 150,
+        last_request_at: new Date("2026-08-22T10:00:00.000Z"),
+      },
+      {
+        api_key_id: null,
+        total: 3n,
+        error_count: 3n,
+        fallbacks: 0n,
+        avg_duration_ms: null,
+        last_request_at: null,
+      },
+    ]);
+    const service = new AuditService({ $queryRaw: queryRaw } as unknown as PrismaService);
+
+    const usage = await service.readApiKeyUsage({ range: "week", timeZone: "UTC" });
+
+    expect(usage).toEqual([
+      {
+        api_key_id: "key-1",
+        total: 10,
+        error_count: 2,
+        fallbacks: 1,
+        avg_duration_ms: 150,
+        last_request_at: "2026-08-22T10:00:00.000Z",
+      },
+      {
+        api_key_id: null,
+        total: 3,
+        error_count: 3,
+        fallbacks: 0,
+        avg_duration_ms: 0,
+        last_request_at: null,
+      },
+    ]);
+    const q = queryRaw.mock.calls[0][0] as { sql: string };
+    expect(q.sql).toContain("GROUP BY api_key_id");
+    expect(q.sql).toContain("168 hours");
+  });
+
+  it("exposes usage through the controller with parsed filters", async () => {
+    const audit = makeAuditMock();
+    audit.readApiKeyUsage.mockResolvedValue([{ api_key_id: "key-1", total: 1 }]);
+    const controller = new AuditController(audit as unknown as AuditService);
+
+    await expect(controller.apiKeyUsage({ range: "month", tz: "UTC" })).resolves.toEqual({
+      data: [{ api_key_id: "key-1", total: 1 }],
+    });
+    expect(audit.readApiKeyUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ range: "month", timeZone: "UTC" }),
+    );
+    await expect(controller.apiKeyUsage({ range: "decade" })).rejects.toBeDefined();
   });
 });

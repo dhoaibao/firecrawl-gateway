@@ -38,8 +38,13 @@ model AuditLog {
   durationMs     Int      @map("duration_ms")
   targetUrl      String   @default("") @map("target_url")
   requestId      String?  @map("request_id")
+  // The virtual API key that made the request; null for admin playground,
+  // rejected or unauthenticated requests, and rows written before attribution.
+  // Deliberately not a foreign key so revoking a key never touches audit rows.
+  apiKeyId       String?  @map("api_key_id")
 
   @@index([createdAt(sort: Desc)])
+  @@index([apiKeyId, createdAt(sort: Desc)])
   @@map("audit_logs")
 }
 

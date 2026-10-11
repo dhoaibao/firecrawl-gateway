@@ -17,6 +17,8 @@ export interface AuditEntry {
   duration_ms: number;
   target_url: string;
   request_id?: string;
+  /** Virtual API key that made the request; absent for playground and rejected requests. */
+  api_key_id?: string;
 }
 
 export type Backend = "cloud" | "self-hosted";

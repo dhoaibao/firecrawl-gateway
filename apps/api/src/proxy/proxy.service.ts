@@ -72,6 +72,8 @@ interface ProxyContext {
   upstreamUrl: string;
   routeMode: RouteMode;
   primaryTargetUrl: string;
+  /** Set once the virtual API key validates; stays null for playground and rejected requests. */
+  apiKeyId: string | null;
 }
 
 /** What a request needs once it passed validation and the routing decision. */
@@ -169,6 +171,7 @@ export class ProxyService {
       upstreamUrl: withoutRouteModeParam(originalUrl, parsedUrl),
       routeMode: DEFAULT_ROUTE_MODE,
       primaryTargetUrl: "",
+      apiKeyId: null,
     };
   }
 
@@ -205,6 +208,7 @@ export class ProxyService {
       });
       return null;
     }
+    ctx.apiKeyId = authenticated.id;
     void this.keys.touchApiKey(authenticated.id).catch(() => undefined);
     return settings;
   }
@@ -471,6 +475,7 @@ export class ProxyService {
       duration_ms: Date.now() - ctx.started,
       target_url: ctx.primaryTargetUrl,
       request_id: ctx.request.requestId,
+      api_key_id: ctx.apiKeyId ?? undefined,
     };
     await this.audit.appendAudit(entry);
   }

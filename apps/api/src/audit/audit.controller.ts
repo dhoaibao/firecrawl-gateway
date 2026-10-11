@@ -24,12 +24,17 @@ export function parseStatsFilter(query: Record<string, string | undefined>): Aud
   if (search !== undefined && search.length > 200) apiError(400, "search is too long");
   const tz = query.tz === undefined || query.tz === "" ? undefined : query.tz;
   if (tz !== undefined && !isValidTimeZone(tz)) apiError(400, "tz is invalid");
+  const apiKeyId =
+    query.api_key_id === undefined || query.api_key_id === "" ? undefined : query.api_key_id;
+  if (apiKeyId !== undefined && !/^[A-Za-z0-9_-]{1,64}$/.test(apiKeyId))
+    apiError(400, "api_key_id is invalid");
   return {
     backend: oneOf(query.backend, "backend", ["self-hosted", "cloud"] as const),
     status: oneOf(query.status, "status", ["2xx", "4xx", "5xx"] as const),
     fallbackOnly: query.fallback === "true",
     slowOnly: query.slow === "true",
     search,
+    apiKeyId,
     range: oneOf<StatsRange>(query.range, "range", ["all", "today", "week", "month", "custom"]),
     day: intParam(query.day, "day", 1, 31),
     month: intParam(query.month, "month", 1, 12),
@@ -72,6 +77,11 @@ export class AuditController {
   @Get("stats")
   async stats(@Query() query: Record<string, string | undefined> = {}) {
     return { data: await this.audit.readAuditStats(parseStatsFilter(query)) };
+  }
+
+  @Get("usage/api-keys")
+  async apiKeyUsage(@Query() query: Record<string, string | undefined> = {}) {
+    return { data: await this.audit.readApiKeyUsage(parseStatsFilter(query)) };
   }
 
   @Get("data")

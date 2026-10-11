@@ -2,9 +2,17 @@ import { Injectable } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import type { AuditEntry } from "../common/types";
-import { buildStatsWhere, statsQuery, type AuditStats, type AuditStatsFilter } from "./audit-stats";
+import {
+  apiKeyUsageQuery,
+  buildStatsWhere,
+  statsQuery,
+  type ApiKeyUsage,
+  type ApiKeyUsageRow,
+  type AuditStats,
+  type AuditStatsFilter,
+} from "./audit-stats";
 
-export type { AuditStats, AuditStatsFilter };
+export type { ApiKeyUsage, AuditStats, AuditStatsFilter };
 
 export type DeleteFilter = "today" | "week" | "month" | "all";
 
@@ -21,6 +29,7 @@ function toEntry(entry: {
   durationMs: number;
   targetUrl: string;
   requestId: string | null;
+  apiKeyId: string | null;
 }): AuditEntry {
   return {
     id: entry.id,
@@ -35,6 +44,7 @@ function toEntry(entry: {
     duration_ms: entry.durationMs,
     target_url: entry.targetUrl,
     request_id: entry.requestId ?? undefined,
+    api_key_id: entry.apiKeyId ?? undefined,
   };
 }
 
@@ -58,6 +68,7 @@ export class AuditService {
           durationMs: entry.duration_ms,
           targetUrl: entry.target_url,
           requestId: entry.request_id ?? null,
+          apiKeyId: entry.api_key_id ?? null,
         },
       });
     } catch (error) {
@@ -88,6 +99,26 @@ export class AuditService {
       error_count: Number(row?.error_count ?? 0),
       avg_duration_ms: Number(row?.avg_duration_ms ?? 0),
     };
+  }
+
+  /**
+   * Per-key request counts over the (filtered) audit log. Rows without a key
+   * (playground, rejected requests, entries from before attribution) are grouped
+   * under `api_key_id: null`. Counts come from the audit log, so they shrink when
+   * entries are deleted or purged by the 30-day maintenance job.
+   */
+  async readApiKeyUsage(filter: AuditStatsFilter = {}): Promise<ApiKeyUsage[]> {
+    const rows = await this.prisma.$queryRaw<ApiKeyUsageRow[]>(
+      apiKeyUsageQuery(buildStatsWhere(filter)),
+    );
+    return rows.map((row) => ({
+      api_key_id: row.api_key_id ?? null,
+      total: Number(row.total ?? 0),
+      error_count: Number(row.error_count ?? 0),
+      fallbacks: Number(row.fallbacks ?? 0),
+      avg_duration_ms: Number(row.avg_duration_ms ?? 0),
+      last_request_at: row.last_request_at ? new Date(row.last_request_at).toISOString() : null,
+    }));
   }
 
   async deleteAuditEntry(id: string): Promise<boolean> {
