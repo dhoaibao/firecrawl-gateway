@@ -7,7 +7,7 @@ Thanks for helping improve Firecrawl Gateway. The repository contains two indepe
 - `apps/api` is the gateway API. It proxies `/v1/*` and `/v2/*`, serves health/readiness endpoints, and exposes authenticated administration routes under `/admin/api/*`.
 - `apps/admin` is the root-hosted operator dashboard. It talks to the API through `VITE_API_BASE_URL`.
 - Firecrawl Cloud and PostgreSQL are external deployment prerequisites, not services maintained by this repository. Self-hosted Firecrawl is provided by the Docker Compose stack in `deploy/firecrawl`.
-- GitHub Actions runs typecheck CI (`deploy.yml`) and, on pushes to `main`, `docker-publish.yml`, which publishes images to GHCR and deploys them over SSH to the `production` environment. A green check is not a deployment confirmation.
+- GitHub Actions runs CI (`deploy.yml`) on pull requests and, on pushes to `main`, `docker-publish.yml`, which runs the same checks and then publishes images to GHCR and deploys them over SSH to the `production` environment. A green check is not a deployment confirmation.
 
 ## Before you start
 
@@ -31,21 +31,17 @@ Keep `.env` and all credentials local. Do not paste API keys, passwords, session
 
 ## Validation
 
-The repository workflow runs the following required check on pull requests and pushes to `main`:
+CI runs the following checks on pull requests and on pushes to `main`, and a push to `main` is not built or deployed unless they pass:
 
 ```bash
 bun run typecheck
-```
-
-Before opening a pull request, run the other relevant checks locally when your change affects them:
-
-```bash
-bun run build
 bun run lint
+bun run format:check
 bun run test
+bun run build
 ```
 
-For admin-only changes, also run the checks from `apps/admin` as appropriate. Record the exact commands and outcomes in the pull request. CI does not run build, lint, test, database, or deployment jobs.
+Run them locally before opening a pull request. For admin-only changes, also run the checks from `apps/admin` as appropriate. Record the exact commands and outcomes in the pull request. CI does not run database or deployment jobs.
 
 ## Pull requests and review
 

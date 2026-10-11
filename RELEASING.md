@@ -5,7 +5,7 @@ This document is a lightweight checklist for an authorized maintainer preparing 
 ## Release boundary
 
 - The repository contains two independently deployable apps: `apps/api` (Node server) and `apps/admin` (static SPA).
-- `deploy.yml` runs typecheck-only CI for pull requests and pushes to `main`. `docker-publish.yml` builds and publishes the images to GHCR and deploys them over SSH on pushes to `main`, running `prisma migrate deploy` on each deploy. Neither publishes GitHub releases.
+- `deploy.yml` runs CI (typecheck, lint, format check, test, build) for pull requests. `docker-publish.yml` runs the same checks on pushes to `main` and, only if they pass, builds and publishes the images to GHCR and deploys them over SSH, running `prisma migrate deploy` on each deploy. A manual rollback re-run with an earlier tag skips the checks. Neither publishes GitHub releases.
 - Firecrawl Cloud and PostgreSQL are external services. A repository release does not create or upgrade those services, nor does it redeploy a running self-hosted Firecrawl stack from `deploy/firecrawl`.
 
 ## Prepare the release
@@ -48,7 +48,7 @@ Verify the deployment that corresponds to the intended commit:
 - Confirm the `maintenance` container logged a successful call (`docker compose logs maintenance`) and review logs without exposing secrets.
 - Check the deployed `IMAGE_TAG` (`sha-<7 hex>`) matches the intended commit; roll back by re-running the workflow manually with an earlier tag.
 
-A green GitHub typecheck does not prove that either app deployed successfully or that the self-hosted Firecrawl stack, Firecrawl Cloud, or PostgreSQL configuration is correct.
+Green GitHub checks do not prove that either app deployed successfully or that the self-hosted Firecrawl stack, Firecrawl Cloud, or PostgreSQL configuration is correct.
 
 ## Prisma migrations are separate
 

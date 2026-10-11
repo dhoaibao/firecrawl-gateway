@@ -17,6 +17,13 @@ permissions:
   contents: read
 
 jobs:
+  # A push to main builds and deploys only after the repository checks pass. A
+  # manual rollback redeploys an existing image, so it is not gated on them.
+  checks:
+    name: Checks
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/deploy.yml
+
   plan:
     name: Plan
     runs-on: ubuntu-latest
@@ -55,7 +62,7 @@ jobs:
 
   build-and-push:
     name: Build and push (${{ matrix.image }})
-    needs: plan
+    needs: [plan, checks]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
@@ -96,9 +103,12 @@ jobs:
 
   deploy:
     name: Deploy
-    needs: [plan, build-and-push]
+    needs: [checks, plan, build-and-push]
+    # `checks` is skipped for a rollback and must have passed for a push. Without it,
+    # a failed check would skip the build and this job would deploy an unbuilt tag.
     if: >-
       ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.stale != 'true'
+      && (needs.checks.result == 'success' || needs.checks.result == 'skipped')
       && (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped') }}
     runs-on: ubuntu-latest
     environment: production

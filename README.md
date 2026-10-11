@@ -41,7 +41,7 @@ The API's security and runtime boundaries are deliberate:
 
 ## Getting started
 
-Follow [`QUICKSTART.md`](QUICKSTART.md) for local development and the Docker/GHCR deployment, and [`.env.example`](.env.example) for configuration. Prisma migrations are never applied by builds, the typecheck workflow, or API startup; the single-admin cutover is destructive, so review [`RELEASING.md`](RELEASING.md) before running `bun run db:migrate`.
+Follow [`QUICKSTART.md`](QUICKSTART.md) for local development and the Docker/GHCR deployment, and [`.env.example`](.env.example) for configuration. Prisma migrations are never applied by builds, the CI workflow, or API startup; the single-admin cutover is destructive, so review [`RELEASING.md`](RELEASING.md) before running `bun run db:migrate`.
 
 ## Documentation
 

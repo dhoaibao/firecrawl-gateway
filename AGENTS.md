@@ -27,7 +27,7 @@ This Bun-workspace Turborepo ships an independently deployable NestJS/Fastify ga
 
 ### Project-specific boundaries
 
-- Firecrawl Cloud and PostgreSQL are external deployment prerequisites; the self-hosted Firecrawl comes from `deploy/firecrawl`. A passing GitHub Actions typecheck (`.github/workflows/deploy.yml`) is not deployment evidence; deployment is `docker-publish.yml`.
+- Firecrawl Cloud and PostgreSQL are external deployment prerequisites; the self-hosted Firecrawl comes from `deploy/firecrawl`. Passing GitHub Actions checks (`.github/workflows/deploy.yml`) are not deployment evidence; deployment is `docker-publish.yml`, which runs those checks first.
 - The post-baseline single-admin migration deletes existing users, virtual API keys, and audit logs before removing user ownership. It needs a migration-capable direct PostgreSQL connection; see `RELEASING.md` before an approved migration.
 - The API forwards request bodies as UTF-8, so it is intended for UTF-8 JSON rather than binary or Latin-1 payloads. Audit logs are stored only in PostgreSQL.
 - Routing modes and Cloud requirements are decided in `apps/api/src/proxy/policy.ts`; sensitive headers, cookies, and private target URLs restrict fallback.
