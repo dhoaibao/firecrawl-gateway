@@ -19,9 +19,11 @@ export interface AuditEntry {
   request_id?: string;
 }
 
+export type Backend = "cloud" | "self-hosted";
+
 export interface ProxyResult {
   kind: "response" | "network-error";
-  backend: string;
+  backend: Backend;
   response?: Response;
   error?: Error;
   body?: Buffer;
@@ -39,9 +41,4 @@ export interface RequestWithContext extends FastifyRequest {
 export interface NeedsCloudResult {
   required: boolean;
   reason: string;
-}
-
-export interface PrivacyCheck {
-  hasSensitiveHeaders: boolean;
-  hasPrivateTargetUrl: boolean;
 }

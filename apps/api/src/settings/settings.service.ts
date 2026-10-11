@@ -1,14 +1,7 @@
 import { Injectable } from "@nestjs/common";
-import { Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
+import { VALID_ROUTE_MODES, type RouteMode } from "../proxy/policy";
 
-export const VALID_ROUTE_MODES = [
-  "self-hosted-first",
-  "self-hosted-only",
-  "cloud-first",
-  "cloud-only",
-] as const;
-export type RouteMode = (typeof VALID_ROUTE_MODES)[number];
 export interface SettingRecord {
   key: string;
   value: string;
@@ -118,22 +111,6 @@ export class SettingsService {
     this.cache.delete(key);
     this.inflight.delete(key);
     return count > 0;
-  }
-
-  async deleteSetting(key: string): Promise<boolean> {
-    try {
-      await this.prisma.setting.delete({ where: { key } });
-      this.cache.delete(key);
-      return true;
-    } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025")
-        return false;
-      throw error;
-    }
-  }
-
-  async getDefaultRouteMode(fallback: RouteMode): Promise<RouteMode> {
-    return parseRouteMode(await this.getSetting("default_route_mode"), fallback);
   }
 
   clearCache(): void {

@@ -1,14 +1,16 @@
-import { Inject, Injectable } from "@nestjs/common";
+import { Inject, Injectable, Logger } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { SettingsService } from "../settings/settings.service";
+import { loadCloudApiKeys } from "../settings/cloud-keys";
 import { API_CONFIG } from "../common/config.provider";
 import type { ApiConfig } from "../common/config";
-import { encryptSettingValue } from "../common/crypto";
-import { CreditRoutingService, parseCreditKeys } from "../credits/credit-routing.service";
+import { CreditRoutingService } from "../credits/credit-routing.service";
 
 @Injectable()
 export class CronService {
+  private readonly logger = new Logger(CronService.name);
+
   // Fixed retention window (user decision): audit entries older than this are
   // pruned. AUDIT_RETENTION_DAYS is the single greppable source of the cutoff.
   private static readonly AUDIT_RETENTION_DAYS = 30;
@@ -41,16 +43,19 @@ export class CronService {
     const record = await this.settings.getSetting("firecrawl_api_keys");
     if (!record?.value) return 0;
     try {
-      const parsed = parseCreditKeys(record.value, this.config.firecrawlKeysEncryptionKey);
-      if (!parsed.encrypted)
-        await this.settings.replaceSettingIfUnchanged(
-          record.key,
-          record.value,
-          encryptSettingValue(record.value, this.config.firecrawlKeysEncryptionKey),
-        );
-      const details = await this.credits.refreshCreditUsageForKeys(parsed.keys);
+      const keys = await loadCloudApiKeys(
+        record,
+        this.config.firecrawlKeysEncryptionKey,
+        this.settings,
+      );
+      const details = await this.credits.refreshCreditUsageForKeys(keys);
       return details.filter((item) => !item.error && item.remainingCredits !== null).length;
-    } catch {
+    } catch (error) {
+      // Only the error class is logged: a JSON parse message can quote the key material.
+      this.logger.warn(
+        `Credit usage refresh skipped (${(error as Error).name}); ` +
+          "check FIRECRAWL_KEYS_ENCRYPTION_KEY and the stored firecrawl_api_keys setting",
+      );
       return 0;
     }
   }

@@ -1,0 +1,57 @@
+import { describe, expect, it, vi } from "vitest";
+import { encryptSettingValue } from "../common/crypto";
+import { loadCloudApiKeys, parseCloudApiKeys } from "./cloud-keys";
+
+const ENCRYPTION_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+function record(value: string) {
+  return { key: "firecrawl_api_keys", value, updated_at: "2026-01-01T00:00:00.000Z" };
+}
+
+describe("parseCloudApiKeys", () => {
+  it("keeps only non-empty strings and treats non-arrays as no keys", () => {
+    expect(parseCloudApiKeys('["fc-a","",7,null,"fc-b"]')).toEqual(["fc-a", "fc-b"]);
+    expect(parseCloudApiKeys('{"keys":["fc-a"]}')).toEqual([]);
+    expect(parseCloudApiKeys("[]")).toEqual([]);
+  });
+
+  it("throws on invalid JSON", () => {
+    expect(() => parseCloudApiKeys("not json")).toThrow();
+  });
+});
+
+describe("loadCloudApiKeys", () => {
+  it("decrypts an encrypted record without rewriting it", async () => {
+    const settings = { replaceSettingIfUnchanged: vi.fn() };
+    const value = encryptSettingValue('["fc-a","fc-b"]', ENCRYPTION_KEY);
+
+    await expect(loadCloudApiKeys(record(value), ENCRYPTION_KEY, settings)).resolves.toEqual([
+      "fc-a",
+      "fc-b",
+    ]);
+    expect(settings.replaceSettingIfUnchanged).not.toHaveBeenCalled();
+  });
+
+  it("encrypts a legacy plaintext record in place, only while it is unchanged", async () => {
+    const settings = { replaceSettingIfUnchanged: vi.fn().mockResolvedValue(true) };
+
+    await expect(loadCloudApiKeys(record('["fc-a"]'), ENCRYPTION_KEY, settings)).resolves.toEqual([
+      "fc-a",
+    ]);
+
+    expect(settings.replaceSettingIfUnchanged).toHaveBeenCalledWith(
+      "firecrawl_api_keys",
+      '["fc-a"]',
+      expect.stringMatching(/^enc:v1:/),
+    );
+    expect(settings.replaceSettingIfUnchanged.mock.calls[0][2]).not.toContain("fc-a");
+  });
+
+  it("throws when the value cannot be decrypted", async () => {
+    const settings = { replaceSettingIfUnchanged: vi.fn() };
+    const value = encryptSettingValue('["fc-a"]', "f".repeat(64));
+
+    await expect(loadCloudApiKeys(record(value), ENCRYPTION_KEY, settings)).rejects.toThrow();
+    expect(settings.replaceSettingIfUnchanged).not.toHaveBeenCalled();
+  });
+});

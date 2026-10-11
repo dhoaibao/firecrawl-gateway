@@ -1,15 +1,13 @@
-import { Body, Controller, Get, Inject, Put, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Inject, Logger, Put, UseGuards } from "@nestjs/common";
 import { API_CONFIG } from "../common/config.provider";
 import type { ApiConfig } from "../common/config";
 import { decryptSettingValue, encryptSettingValue } from "../common/crypto";
 import { apiError } from "../common/http";
 import { AuthGuard } from "../auth/guards";
-import { SettingsService, VALID_ROUTE_MODES } from "./settings.service";
-import {
-  creditKeyPrefix,
-  parseCreditKeys,
-  CreditRoutingService,
-} from "../credits/credit-routing.service";
+import { VALID_ROUTE_MODES } from "../proxy/policy";
+import { SettingsService } from "./settings.service";
+import { loadCloudApiKeys } from "./cloud-keys";
+import { creditKeyPrefix, CreditRoutingService } from "../credits/credit-routing.service";
 
 const VALID_SETTINGS = [
   "firecrawl_api_keys",
@@ -36,6 +34,8 @@ export interface CreditUsageItem {
 @Controller("admin/api/settings")
 @UseGuards(AuthGuard)
 export class SettingsController {
+  private readonly logger = new Logger(SettingsController.name);
+
   constructor(
     private readonly settings: SettingsService,
     @Inject(API_CONFIG) private readonly config: ApiConfig,
@@ -120,15 +120,13 @@ export class SettingsController {
     if (!record?.value) return [];
     let keys: string[];
     try {
-      const parsed = parseCreditKeys(record.value, this.config.firecrawlKeysEncryptionKey);
-      keys = parsed.keys;
-      if (!parsed.encrypted)
-        await this.settings.replaceSettingIfUnchanged(
-          record.key,
-          record.value,
-          encryptSettingValue(record.value, this.config.firecrawlKeysEncryptionKey),
-        );
-    } catch {
+      keys = await loadCloudApiKeys(record, this.config.firecrawlKeysEncryptionKey, this.settings);
+    } catch (error) {
+      // Only the error class is logged: a JSON parse message can quote the key material.
+      this.logger.warn(
+        `Could not load the Firecrawl Cloud API keys (${(error as Error).name}); ` +
+          "check FIRECRAWL_KEYS_ENCRYPTION_KEY and the stored firecrawl_api_keys setting",
+      );
       return [];
     }
     const details = await this.credits.refreshCreditUsageForKeys(keys);

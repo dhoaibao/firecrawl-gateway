@@ -1,5 +1,23 @@
-import type { NeedsCloudResult } from "../common/types";
+import type { Backend, NeedsCloudResult } from "../common/types";
 import { findObjectsByKey, walk } from "../common/utils";
+
+export const VALID_ROUTE_MODES = [
+  "self-hosted-first",
+  "self-hosted-only",
+  "cloud-first",
+  "cloud-only",
+] as const;
+export type RouteMode = (typeof VALID_ROUTE_MODES)[number];
+/** Used until the admin saves a `default_route_mode` setting. */
+export const DEFAULT_ROUTE_MODE: RouteMode = "cloud-first";
+
+export type InitialBackend = Backend | "reject";
+
+/** Facts about a request that restrict falling back to Cloud. */
+export interface PrivacyFlags {
+  hasSensitiveHeaders: boolean;
+  hasPrivateTargetUrl: boolean;
+}
 
 const cloudOnlyPathPatterns = [
   /^\/v\d+\/agent(?:\/|$)/,
@@ -82,20 +100,32 @@ export function requestNeedsCloud(pathname: string, jsonBody: unknown): NeedsClo
   return { required: Boolean(reason), reason: reason || "" };
 }
 
-export function chooseInitialBackend(routeMode: string, needsCloud: NeedsCloudResult): string {
+export function chooseInitialBackend(
+  routeMode: RouteMode,
+  needsCloud: NeedsCloudResult,
+): InitialBackend {
   if (routeMode === "cloud-first" || routeMode === "cloud-only") return "cloud";
   if (routeMode === "self-hosted-only") return needsCloud.required ? "reject" : "self-hosted";
   return needsCloud.required ? "cloud" : "self-hosted";
 }
 
-export function isFallbackAllowed(
-  routeMode: string,
-  privacy: { hasSensitiveHeaders: boolean; hasPrivateTargetUrl: boolean },
-): boolean {
+export function isFallbackAllowed(routeMode: RouteMode, privacy: PrivacyFlags): boolean {
   if (routeMode !== "self-hosted-first") return false;
   if (privacy.hasSensitiveHeaders) return false;
   if (privacy.hasPrivateTargetUrl) return false;
   return true;
+}
+
+/** Whether the request may use a Cloud key, directly or as a self-hosted fallback. */
+export function mayUseCloudKeys(
+  initialBackend: InitialBackend,
+  routeMode: RouteMode,
+  privacy: PrivacyFlags,
+): boolean {
+  return (
+    initialBackend === "cloud" ||
+    (initialBackend === "self-hosted" && isFallbackAllowed(routeMode, privacy))
+  );
 }
 
 export function isFallbackEligible(result: {
@@ -122,7 +152,7 @@ export function isFallbackEligible(result: {
 }
 
 export function isCloudQuotaFallbackAllowed(
-  routeMode: string,
+  routeMode: RouteMode,
   needsCloud: NeedsCloudResult,
 ): boolean {
   if (routeMode !== "cloud-first") return false;

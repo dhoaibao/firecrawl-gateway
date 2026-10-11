@@ -1,9 +1,15 @@
-import { Inject, Injectable } from "@nestjs/common";
+import { Inject, Injectable, Logger } from "@nestjs/common";
 import { Readable } from "node:stream";
 import type { FastifyReply } from "fastify";
 import { API_CONFIG } from "../common/config.provider";
 import type { ApiConfig } from "../common/config";
-import type { AuditEntry, ProxyResult, RequestWithContext } from "../common/types";
+import type {
+  AuditEntry,
+  Backend,
+  NeedsCloudResult,
+  ProxyResult,
+  RequestWithContext,
+} from "../common/types";
 import {
   cryptoRandomId,
   collectTargetUrls,
@@ -11,21 +17,20 @@ import {
   inspectBody,
   nowIso,
 } from "../common/utils";
-import { decryptSettingValue, encryptSettingValue } from "../common/crypto";
 import {
+  DEFAULT_ROUTE_MODE,
   chooseInitialBackend,
   hasSensitiveHeaders,
   isCloudQuotaFallbackAllowed,
   isFallbackAllowed,
   isFallbackEligible,
+  mayUseCloudKeys,
   requestNeedsCloud,
-} from "./policy";
-import {
-  SettingsService,
-  parseRouteMode,
+  type PrivacyFlags,
   type RouteMode,
-  type SettingRecord,
-} from "../settings/settings.service";
+} from "./policy";
+import { SettingsService, parseRouteMode, type SettingRecord } from "../settings/settings.service";
+import { loadCloudApiKeys } from "../settings/cloud-keys";
 import { ApiKeysService } from "../api-keys/api-keys.service";
 import { AuditService } from "../audit/audit.service";
 import {
@@ -52,6 +57,44 @@ const PROXY_SETTING_KEYS = ["default_route_mode", "firecrawl_api_keys"] as const
 const RETRYABLE_CLOUD_STATUS = new Set([401, 402, 403, 429]);
 const CLOUD_CAPACITY_STATUS = new Set([402, 429]);
 
+type ProxySettings = Record<(typeof PROXY_SETTING_KEYS)[number], SettingRecord | null>;
+
+/** Per-request state shared by the proxy stages. */
+interface ProxyContext {
+  request: RequestWithContext;
+  reply: FastifyReply;
+  started: number;
+  /** Path of the request as the client sent it, used for policy and the audit entry. */
+  path: string;
+  /** Path and query forwarded upstream (the legacy `routeMode` parameter removed). */
+  upstreamUrl: string;
+  routeMode: RouteMode;
+  primaryTargetUrl: string;
+}
+
+/** What a request needs once it passed validation and the routing decision. */
+interface RoutePlan {
+  bodyBuffer: Buffer;
+  needsCloud: NeedsCloudResult;
+  privacy: PrivacyFlags;
+  initialBackend: Backend;
+  cloudApiKeys: string[];
+  estimatedCredits: number;
+  attemptedCloudKeyIds: Set<string>;
+}
+
+interface CloudAttempt {
+  result: ProxyResult;
+  reservation: CreditReservation;
+}
+
+/** The response that will be sent, and how routing arrived at it. */
+interface Outcome {
+  result: ProxyResult;
+  fallbackUsed: boolean;
+  fallbackReason: string;
+}
+
 // `routeMode` was once a client override; it is no longer honored, so do not forward it upstream.
 function withoutRouteModeParam(originalUrl: string, parsedUrl: URL): string {
   if (!parsedUrl.searchParams.has("routeMode")) return originalUrl;
@@ -67,7 +110,9 @@ function isJsonContentType(contentType: string | null): boolean {
 
 @Injectable()
 export class ProxyService {
+  private readonly logger = new Logger(ProxyService.name);
   private cloudKeysCache: { value: string; keys: string[] } | null = null;
+  private lastCloudKeysFailure: string | null = null;
 
   constructor(
     @Inject(API_CONFIG) private readonly config: ApiConfig,
@@ -82,293 +127,332 @@ export class ProxyService {
     reply: FastifyReply,
     originalUrl = request.raw.url || request.url,
   ): Promise<void> {
-    const started = Date.now();
+    const ctx = this.createContext(request, reply, originalUrl);
+    if (!ctx) return;
+    const settings = await this.authenticate(ctx);
+    if (!settings) return;
+    const plan = await this.buildPlan(ctx, settings);
+    if (!plan) return;
+    const outcome = await this.dispatch(ctx, plan);
+    if (!outcome) return;
+    if (await this.rotateCloudKeys(ctx, plan, outcome))
+      await this.fallBackToSelfHosted(ctx, plan, outcome);
+    await this.respond(ctx, plan, outcome);
+  }
+
+  private createContext(
+    request: RequestWithContext,
+    reply: FastifyReply,
+    originalUrl: string,
+  ): ProxyContext | null {
     let parsedUrl: URL;
     try {
       parsedUrl = new URL(originalUrl, "http://gateway.local");
     } catch {
       reply.code(400).send({ success: false, error: "Invalid request URL" });
-      return;
+      return null;
     }
-    const upstreamUrl = withoutRouteModeParam(originalUrl, parsedUrl);
-    let primaryTargetUrl = "";
-    let routeMode: string = this.configDefaultRouteMode();
-    const appendAuditEntry = async (
-      backendUsed: string,
-      statusCode: number,
-      fallbackUsed = false,
-      fallbackReason = "",
-    ) => {
-      const entry: AuditEntry = {
-        id: cryptoRandomId(),
-        created_at: nowIso(),
-        method: request.method,
-        path: parsedUrl.pathname,
-        route_mode: routeMode,
-        backend_used: backendUsed,
-        fallback_used: fallbackUsed,
-        fallback_reason: fallbackReason,
-        status_code: statusCode,
-        duration_ms: Date.now() - started,
-        target_url: primaryTargetUrl,
-        request_id: request.requestId,
-      };
-      await this.audit.appendAudit(entry);
+    return {
+      request,
+      reply,
+      started: Date.now(),
+      path: parsedUrl.pathname,
+      upstreamUrl: withoutRouteModeParam(originalUrl, parsedUrl),
+      routeMode: DEFAULT_ROUTE_MODE,
+      primaryTargetUrl: "",
     };
-    const sendEarlyResponse = async (
-      backendUsed: string,
-      statusCode: number,
-      fallbackUsed: boolean,
-      fallbackReason: string,
-      payload: unknown,
-    ) => {
-      await appendAuditEntry(backendUsed, statusCode, fallbackUsed, fallbackReason).catch(
-        () => undefined,
-      );
-      reply.code(statusCode).send(payload);
-    };
+  }
 
+  /**
+   * Loads the settings, resolves the route mode and validates the virtual API
+   * key. Returns null after sending a 401 when the caller is not allowed.
+   */
+  private async authenticate(ctx: ProxyContext): Promise<ProxySettings | null> {
+    const { request } = ctx;
     // Settings and API-key validation are independent, so fetch them together.
     const needsAuth = this.config.authEnabled && !request.admin;
     const bearerMatch = needsAuth
       ? String(request.headers.authorization || "").match(/^Bearer\s+(.+)$/i)
       : null;
-    const [settingRecords, authenticated] = await Promise.all([
+    const [settings, authenticated] = await Promise.all([
       this.settings.getSettings(PROXY_SETTING_KEYS),
       bearerMatch ? this.keys.validateApiKey(bearerMatch[1]) : null,
     ]);
     // Clients cannot choose the route mode; only the admin's default decides it.
-    routeMode = parseRouteMode(settingRecords.default_route_mode, this.configDefaultRouteMode());
+    ctx.routeMode = parseRouteMode(settings.default_route_mode, DEFAULT_ROUTE_MODE);
 
-    if (needsAuth) {
-      if (!bearerMatch) {
-        await sendEarlyResponse("none", 401, false, "Missing or invalid API key", {
-          success: false,
-          error: "Missing or invalid API key",
-        });
-        return;
-      }
-      if (!authenticated) {
-        await sendEarlyResponse("none", 401, false, "Invalid or revoked API key", {
-          success: false,
-          error: "Invalid or revoked API key",
-        });
-        return;
-      }
-      void this.keys.touchApiKey(authenticated.id).catch(() => undefined);
+    if (!needsAuth) return settings;
+    if (!bearerMatch) {
+      await this.rejectEarly(ctx, "none", 401, "Missing or invalid API key", {
+        success: false,
+        error: "Missing or invalid API key",
+      });
+      return null;
     }
+    if (!authenticated) {
+      await this.rejectEarly(ctx, "none", 401, "Invalid or revoked API key", {
+        success: false,
+        error: "Invalid or revoked API key",
+      });
+      return null;
+    }
+    void this.keys.touchApiKey(authenticated.id).catch(() => undefined);
+    return settings;
+  }
 
+  /**
+   * Inspects the body and decides where the request goes first. Returns null
+   * after sending a 400, 413, 502 or 409 when it cannot be routed at all.
+   */
+  private async buildPlan(ctx: ProxyContext, settings: ProxySettings): Promise<RoutePlan | null> {
+    const { request } = ctx;
     const bodyBuffer = this.getBodyBuffer(request);
     if (bodyBuffer.length > this.config.maxBodyBytes) {
-      await sendEarlyResponse(
-        "none",
-        413,
-        false,
-        "Request body is too large for gateway inspection",
-        { success: false, error: "Request body is too large for gateway inspection" },
-      );
-      return;
+      await this.rejectEarly(ctx, "none", 413, "Request body is too large for gateway inspection", {
+        success: false,
+        error: "Request body is too large for gateway inspection",
+      });
+      return null;
     }
     const { json, parseError } = inspectBody(request.body, request.headers);
     if (parseError) {
-      await sendEarlyResponse("none", 400, false, parseError, {
+      await this.rejectEarly(ctx, "none", 400, parseError, {
         success: false,
         error: "Invalid JSON body",
         details: parseError,
       });
-      return;
+      return null;
     }
     const targetUrls = collectTargetUrls(json);
-    primaryTargetUrl = targetUrls[0] || "";
-    const privacy = {
+    ctx.primaryTargetUrl = targetUrls[0] || "";
+    const privacy: PrivacyFlags = {
       hasSensitiveHeaders: hasSensitiveHeaders(this.privacyHeaders(request), json),
       hasPrivateTargetUrl: hasPrivateTargetUrl(targetUrls),
     };
-    const needsCloud = requestNeedsCloud(parsedUrl.pathname, json);
-    const initialBackend = chooseInitialBackend(routeMode, needsCloud);
-    let cloudApiKeys: string[] = [];
-    if (
-      initialBackend === "cloud" ||
-      (initialBackend === "self-hosted" &&
-        routeMode !== "self-hosted-only" &&
-        isFallbackAllowed(routeMode, privacy))
-    )
-      cloudApiKeys = await this.getCloudApiKeys(settingRecords.firecrawl_api_keys);
+    const needsCloud = requestNeedsCloud(ctx.path, json);
+    const initialBackend = chooseInitialBackend(ctx.routeMode, needsCloud);
+    const cloudApiKeys = mayUseCloudKeys(initialBackend, ctx.routeMode, privacy)
+      ? await this.getCloudApiKeys(settings.firecrawl_api_keys)
+      : [];
     if (initialBackend === "cloud" && !cloudApiKeys.length) {
-      await sendEarlyResponse("none", 502, false, "No Firecrawl Cloud API key configured", {
+      await this.rejectEarly(ctx, "none", 502, "No Firecrawl Cloud API key configured", {
         success: false,
         error: "No Firecrawl Cloud API key configured. Add one in Settings.",
       });
-      return;
+      return null;
     }
     if (initialBackend === "reject") {
-      await sendEarlyResponse("none", 409, false, needsCloud.reason, {
+      await this.rejectEarly(ctx, "none", 409, needsCloud.reason, {
         success: false,
         error: "This request requires Firecrawl Cloud, but route mode is self-hosted-only.",
         reason: needsCloud.reason,
       });
-      return;
+      return null;
     }
-
-    const estimatedCredits = estimateCreditCost(parsedUrl.pathname, json);
-    const attemptedCloudKeyIds = new Set<string>();
-    const proxyCloud = async (): Promise<{
-      result: ProxyResult;
-      reservation: CreditReservation;
-    } | null> => {
-      const reservation = await this.credits.reserve(
-        cloudApiKeys,
-        estimatedCredits,
-        attemptedCloudKeyIds,
-      );
-      if (!reservation) return null;
-      attemptedCloudKeyIds.add(reservation.keyId);
-      const cloudResult = await this.proxyToBackend(
-        "cloud",
-        request,
-        bodyBuffer,
-        this.backendUrl("cloud", upstreamUrl),
-        reservation.key,
-      );
-      if (cloudResult.kind === "response" && cloudResult.response) {
-        const status = cloudResult.response.status;
-        const jsonResponse = isJsonContentType(cloudResult.response.headers.get("content-type"));
-        if (cloudResult.stream && cloudResult.response.ok && jsonResponse) {
-          cloudResult.stream = observeCreditsUsedStream(cloudResult.stream, (creditsUsed) =>
-            this.credits.recordResponse(reservation, status, creditsUsed),
-          );
-        } else if (!(cloudResult.stream && !jsonResponse)) {
-          const actualCreditsUsed =
-            jsonResponse && cloudResult.body ? extractCreditsUsed(cloudResult.body) : null;
-          if (actualCreditsUsed === null) await this.credits.recordResponse(reservation, status);
-          else await this.credits.recordResponse(reservation, status, actualCreditsUsed);
-        }
-      }
-      return { result: cloudResult, reservation };
+    return {
+      bodyBuffer,
+      needsCloud,
+      privacy,
+      initialBackend,
+      cloudApiKeys,
+      estimatedCredits: estimateCreditCost(ctx.path, json),
+      attemptedCloudKeyIds: new Set<string>(),
     };
+  }
 
-    let fallbackUsed = false;
-    let fallbackReason = "";
-    let cloudAttempt: { result: ProxyResult; reservation: CreditReservation } | null = null;
-    let result: ProxyResult;
-    if (initialBackend === "cloud") {
-      cloudAttempt = await proxyCloud();
-      if (!cloudAttempt) {
-        if (isCloudQuotaFallbackAllowed(routeMode, needsCloud)) {
-          fallbackUsed = true;
-          fallbackReason = "No available Firecrawl Cloud credit pool; falling back to self-hosted";
-          result = await this.proxyToBackend(
-            "self-hosted",
-            request,
-            bodyBuffer,
-            this.backendUrl("self-hosted", upstreamUrl),
-          );
-        } else {
-          await sendEarlyResponse("cloud", 429, false, "No available Firecrawl Cloud credit pool", {
-            success: false,
-            error:
-              "No available Firecrawl Cloud credit pool. Refresh credit usage or try again later.",
-          });
-          return;
-        }
-      } else {
-        result = cloudAttempt.result;
+  /**
+   * Sends the request to its first backend, falling back once when policy
+   * allows. Returns null after sending a 429 when no Cloud credit pool is left.
+   */
+  private async dispatch(ctx: ProxyContext, plan: RoutePlan): Promise<Outcome | null> {
+    if (plan.initialBackend === "cloud") {
+      const cloudAttempt = await this.proxyCloud(ctx, plan);
+      if (cloudAttempt)
+        return { result: cloudAttempt.result, fallbackUsed: false, fallbackReason: "" };
+      if (!isCloudQuotaFallbackAllowed(ctx.routeMode, plan.needsCloud)) {
+        await this.rejectEarly(ctx, "cloud", 429, "No available Firecrawl Cloud credit pool", {
+          success: false,
+          error:
+            "No available Firecrawl Cloud credit pool. Refresh credit usage or try again later.",
+        });
+        return null;
       }
-    } else {
-      result = await this.proxyToBackend(
-        initialBackend,
-        request,
-        bodyBuffer,
-        this.backendUrl(initialBackend, upstreamUrl),
-      );
-      if (
-        initialBackend === "self-hosted" &&
-        cloudApiKeys.length > 0 &&
-        isFallbackEligible(result) &&
-        isFallbackAllowed(routeMode, privacy)
-      ) {
-        cloudAttempt = await proxyCloud();
-        if (cloudAttempt) {
-          fallbackUsed = true;
-          fallbackReason =
-            result.kind === "network-error"
-              ? result.error?.message || "self-hosted network error"
-              : `self-hosted returned ${result.response?.status}`;
-          result = cloudAttempt.result;
-        }
-      }
+      return {
+        result: await this.proxySelfHosted(ctx, plan),
+        fallbackUsed: true,
+        fallbackReason: "No available Firecrawl Cloud credit pool; falling back to self-hosted",
+      };
     }
 
-    let allCloudKeysQuotaLimited = false;
+    const result = await this.proxySelfHosted(ctx, plan);
+    const outcome: Outcome = { result, fallbackUsed: false, fallbackReason: "" };
     if (
-      cloudAttempt &&
-      result.backend === "cloud" &&
-      result.kind === "response" &&
-      result.response &&
-      RETRYABLE_CLOUD_STATUS.has(result.response.status)
+      plan.cloudApiKeys.length > 0 &&
+      isFallbackEligible(result) &&
+      isFallbackAllowed(ctx.routeMode, plan.privacy)
     ) {
-      const firstStatus = result.response.status;
-      let attempts = 1;
-      let quotaAttempts = CLOUD_CAPACITY_STATUS.has(firstStatus) ? 1 : 0;
-      while (true) {
-        const next = await proxyCloud();
-        if (!next) break;
-        attempts++;
-        if (
-          next.result.kind === "response" &&
-          next.result.response &&
-          CLOUD_CAPACITY_STATUS.has(next.result.response.status)
-        )
-          quotaAttempts++;
-        if (
-          next.result.kind === "response" &&
-          next.result.response &&
-          !RETRYABLE_CLOUD_STATUS.has(next.result.response.status)
-        ) {
-          fallbackUsed = true;
-          fallbackReason = `primary cloud key failed with ${firstStatus}, next key succeeded`;
-          result = next.result;
-          cloudAttempt = next;
-          break;
-        }
-        result = next.result;
-        cloudAttempt = next;
+      const cloudAttempt = await this.proxyCloud(ctx, plan);
+      if (cloudAttempt) {
+        outcome.result = cloudAttempt.result;
+        outcome.fallbackUsed = true;
+        outcome.fallbackReason =
+          result.kind === "network-error"
+            ? result.error?.message || "self-hosted network error"
+            : `self-hosted returned ${result.response?.status}`;
       }
-      allCloudKeysQuotaLimited = quotaAttempts === attempts;
     }
+    return outcome;
+  }
+
+  /**
+   * While Cloud answers with an auth or capacity error, retries with the next
+   * reservable key. Returns whether every attempted key was out of quota.
+   */
+  private async rotateCloudKeys(
+    ctx: ProxyContext,
+    plan: RoutePlan,
+    outcome: Outcome,
+  ): Promise<boolean> {
+    const first = outcome.result;
     if (
-      allCloudKeysQuotaLimited &&
-      result.backend === "cloud" &&
-      result.kind === "response" &&
-      result.response &&
-      CLOUD_CAPACITY_STATUS.has(result.response.status) &&
-      isCloudQuotaFallbackAllowed(routeMode, needsCloud)
-    ) {
-      fallbackUsed = true;
-      fallbackReason = `all ${cloudApiKeys.length} cloud API key(s) are unavailable (${result.response.status}); falling back to self-hosted`;
-      result = await this.proxyToBackend(
-        "self-hosted",
-        request,
-        bodyBuffer,
-        this.backendUrl("self-hosted", upstreamUrl),
-      );
+      first.backend !== "cloud" ||
+      first.kind !== "response" ||
+      !first.response ||
+      !RETRYABLE_CLOUD_STATUS.has(first.response.status)
+    )
+      return false;
+    const firstStatus = first.response.status;
+    let attempts = 1;
+    let quotaAttempts = CLOUD_CAPACITY_STATUS.has(firstStatus) ? 1 : 0;
+    while (true) {
+      const next = await this.proxyCloud(ctx, plan);
+      if (!next) break;
+      attempts++;
+      const status = next.result.kind === "response" ? next.result.response?.status : undefined;
+      if (status !== undefined && CLOUD_CAPACITY_STATUS.has(status)) quotaAttempts++;
+      outcome.result = next.result;
+      if (status !== undefined && !RETRYABLE_CLOUD_STATUS.has(status)) {
+        outcome.fallbackUsed = true;
+        outcome.fallbackReason = `primary cloud key failed with ${firstStatus}, next key succeeded`;
+        break;
+      }
     }
+    return quotaAttempts === attempts;
+  }
+
+  /** Last resort once every Cloud key is out of quota, when policy allows it. */
+  private async fallBackToSelfHosted(
+    ctx: ProxyContext,
+    plan: RoutePlan,
+    outcome: Outcome,
+  ): Promise<void> {
+    const { result } = outcome;
+    if (
+      result.backend !== "cloud" ||
+      result.kind !== "response" ||
+      !result.response ||
+      !CLOUD_CAPACITY_STATUS.has(result.response.status) ||
+      !isCloudQuotaFallbackAllowed(ctx.routeMode, plan.needsCloud)
+    )
+      return;
+    outcome.fallbackUsed = true;
+    outcome.fallbackReason = `all ${plan.cloudApiKeys.length} cloud API key(s) are unavailable (${result.response.status}); falling back to self-hosted`;
+    outcome.result = await this.proxySelfHosted(ctx, plan);
+  }
+
+  private async respond(ctx: ProxyContext, plan: RoutePlan, outcome: Outcome): Promise<void> {
+    const { result, fallbackUsed, fallbackReason } = outcome;
     const status = result.kind === "network-error" ? 502 : result.response?.status || 502;
-    const auditPromise = appendAuditEntry(
+    const auditPromise = this.appendAuditEntry(
+      ctx,
       result.backend,
       status,
       fallbackUsed,
-      fallbackReason || needsCloud.reason || "",
+      fallbackReason || plan.needsCloud.reason || "",
     ).catch(() => undefined);
     try {
-      await this.sendProxyResponse(reply, result, { fallbackUsed, fallbackReason });
+      await this.sendProxyResponse(ctx.reply, result, { fallbackUsed, fallbackReason });
     } finally {
       await auditPromise;
     }
   }
 
-  private configDefaultRouteMode(): RouteMode {
-    return "cloud-first";
+  private async appendAuditEntry(
+    ctx: ProxyContext,
+    backendUsed: string,
+    statusCode: number,
+    fallbackUsed = false,
+    fallbackReason = "",
+  ): Promise<void> {
+    const entry: AuditEntry = {
+      id: cryptoRandomId(),
+      created_at: nowIso(),
+      method: ctx.request.method,
+      path: ctx.path,
+      route_mode: ctx.routeMode,
+      backend_used: backendUsed,
+      fallback_used: fallbackUsed,
+      fallback_reason: fallbackReason,
+      status_code: statusCode,
+      duration_ms: Date.now() - ctx.started,
+      target_url: ctx.primaryTargetUrl,
+      request_id: ctx.request.requestId,
+    };
+    await this.audit.appendAudit(entry);
+  }
+
+  /** Audits and answers a request that never reached an upstream. */
+  private async rejectEarly(
+    ctx: ProxyContext,
+    backendUsed: string,
+    statusCode: number,
+    reason: string,
+    payload: unknown,
+  ): Promise<void> {
+    await this.appendAuditEntry(ctx, backendUsed, statusCode, false, reason).catch(() => undefined);
+    ctx.reply.code(statusCode).send(payload);
+  }
+
+  /** Reserves a Cloud key and proxies to Cloud with it; null when none is reservable. */
+  private async proxyCloud(ctx: ProxyContext, plan: RoutePlan): Promise<CloudAttempt | null> {
+    const reservation = await this.credits.reserve(
+      plan.cloudApiKeys,
+      plan.estimatedCredits,
+      plan.attemptedCloudKeyIds,
+    );
+    if (!reservation) return null;
+    plan.attemptedCloudKeyIds.add(reservation.keyId);
+    const cloudResult = await this.proxyToBackend(
+      "cloud",
+      ctx.request,
+      plan.bodyBuffer,
+      this.backendUrl("cloud", ctx.upstreamUrl),
+      reservation.key,
+    );
+    if (cloudResult.kind === "response" && cloudResult.response) {
+      const status = cloudResult.response.status;
+      const jsonResponse = isJsonContentType(cloudResult.response.headers.get("content-type"));
+      if (cloudResult.stream && cloudResult.response.ok && jsonResponse) {
+        cloudResult.stream = observeCreditsUsedStream(cloudResult.stream, (creditsUsed) =>
+          this.credits.recordResponse(reservation, status, creditsUsed),
+        );
+      } else if (!(cloudResult.stream && !jsonResponse)) {
+        const actualCreditsUsed =
+          jsonResponse && cloudResult.body ? extractCreditsUsed(cloudResult.body) : null;
+        if (actualCreditsUsed === null) await this.credits.recordResponse(reservation, status);
+        else await this.credits.recordResponse(reservation, status, actualCreditsUsed);
+      }
+    }
+    return { result: cloudResult, reservation };
+  }
+
+  private proxySelfHosted(ctx: ProxyContext, plan: RoutePlan): Promise<ProxyResult> {
+    return this.proxyToBackend(
+      "self-hosted",
+      ctx.request,
+      plan.bodyBuffer,
+      this.backendUrl("self-hosted", ctx.upstreamUrl),
+    );
   }
 
   private getBodyBuffer(request: RequestWithContext): Buffer {
@@ -392,14 +476,14 @@ export class ProxyService {
     );
   }
 
-  private backendUrl(backend: string, path: string): string {
+  private backendUrl(backend: Backend, path: string): string {
     const base = backend === "cloud" ? this.config.cloudBaseUrl : this.config.selfHostedBaseUrl;
     return `${base}${path}`;
   }
 
   private sanitizeHeaders(
     headers: RequestWithContext["headers"],
-    backend: string,
+    backend: Backend,
     apiKey?: string,
   ): Record<string, string> {
     const next: Record<string, string> = {};
@@ -416,7 +500,7 @@ export class ProxyService {
   }
 
   private async proxyToBackend(
-    backend: string,
+    backend: Backend,
     request: RequestWithContext,
     bodyBuffer: Buffer,
     targetUrl: string,
@@ -528,25 +612,28 @@ export class ProxyService {
   }
 
   private async getCloudApiKeys(record: SettingRecord | null): Promise<string[]> {
+    if (!record?.value) return [];
+    // Keyed on the stored (encrypted) value, so a settings change is picked up on the next read.
+    if (this.cloudKeysCache?.value === record.value) return [...this.cloudKeysCache.keys];
     try {
-      if (!record?.value) return [];
-      // Keyed on the stored (encrypted) value, so a settings change is picked up on the next read.
-      if (this.cloudKeysCache?.value === record.value) return [...this.cloudKeysCache.keys];
-      const decrypted = decryptSettingValue(record.value, this.config.firecrawlKeysEncryptionKey);
-      if (!decrypted.encrypted)
-        // Conditional: `record` may predate a concurrent admin update that must not be overwritten.
-        await this.settings.replaceSettingIfUnchanged(
-          record.key,
-          record.value,
-          encryptSettingValue(record.value, this.config.firecrawlKeysEncryptionKey),
-        );
-      const parsed = JSON.parse(decrypted.value) as unknown;
-      const keys = Array.isArray(parsed)
-        ? parsed.filter((key): key is string => typeof key === "string" && key.length > 0)
-        : [];
+      const keys = await loadCloudApiKeys(
+        record,
+        this.config.firecrawlKeysEncryptionKey,
+        this.settings,
+      );
       this.cloudKeysCache = { value: record.value, keys };
+      this.lastCloudKeysFailure = null;
       return [...keys];
-    } catch {
+    } catch (error) {
+      // Warn once per stored value rather than per request, and only with the error
+      // class: a JSON parse message can quote the key material.
+      if (this.lastCloudKeysFailure !== record.value) {
+        this.lastCloudKeysFailure = record.value;
+        this.logger.warn(
+          `Could not load the Firecrawl Cloud API keys (${(error as Error).name}); ` +
+            "check FIRECRAWL_KEYS_ENCRYPTION_KEY and the stored firecrawl_api_keys setting",
+        );
+      }
       return [];
     }
   }

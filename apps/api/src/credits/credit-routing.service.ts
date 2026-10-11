@@ -2,7 +2,6 @@ import { Inject, Injectable } from "@nestjs/common";
 import crypto from "node:crypto";
 import { API_CONFIG } from "../common/config.provider";
 import type { ApiConfig } from "../common/config";
-import { decryptSettingValue } from "../common/crypto";
 import { RedisCreditLedgerStore } from "./credit-ledger.store";
 
 export interface CreditUsageDetails {
@@ -540,20 +539,6 @@ export class CreditRoutingService {
  */
 export function estimateCreditCost(_pathname: string, _body: unknown): number {
   return 1;
-}
-
-export function parseCreditKeys(
-  value: string,
-  encryptionKey: string,
-): { keys: string[]; encrypted: boolean } {
-  const decrypted = decryptSettingValue(value, encryptionKey);
-  const parsed = JSON.parse(decrypted.value) as unknown;
-  return {
-    keys: Array.isArray(parsed)
-      ? parsed.filter((key): key is string => typeof key === "string" && key.length > 0)
-      : [],
-    encrypted: decrypted.encrypted,
-  };
 }
 
 export function creditKeyPrefix(apiKey: string): string {

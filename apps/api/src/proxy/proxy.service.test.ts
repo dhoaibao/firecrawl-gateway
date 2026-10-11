@@ -1,4 +1,5 @@
 import { Writable } from "node:stream";
+import { Logger } from "@nestjs/common";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RequestWithContext } from "../common/types";
 import * as cryptoModule from "../common/crypto";
@@ -639,5 +640,212 @@ describe("ProxyService", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][1].headers).not.toHaveProperty("cookie");
     expect(credits.reserve).not.toHaveBeenCalled();
+  });
+});
+
+describe("ProxyService routing outcomes", () => {
+  const KEYS = ["fc_cloud_key_1111111111", "fc_cloud_key_2222222222"];
+
+  function cloudSettings(keys: string[], mode: string) {
+    const encrypted = encryptSettingValue(JSON.stringify(keys), config.firecrawlKeysEncryptionKey);
+    return settingsWith(
+      { firecrawl_api_keys: { key: "firecrawl_api_keys", value: encrypted } },
+      mode,
+    );
+  }
+
+  function creditsReserving(...keys: string[]) {
+    const credits = makeCredits();
+    keys.forEach((key, index) =>
+      credits.reserve.mockResolvedValueOnce({
+        key,
+        keyId: `opaque-${index + 1}`,
+        amount: 1,
+        source: "local",
+      }),
+    );
+    credits.reserve.mockResolvedValue(null);
+    return credits;
+  }
+
+  async function run(settings: ReturnType<typeof settingsWith>, credits = makeCredits()) {
+    const audit = { appendAudit: vi.fn().mockResolvedValue(undefined) };
+    const reply = makeReply();
+    await makeService(settings as never, audit, credits).handle(makeRequest(), reply as never);
+    // Streamed responses write their head to the raw socket, buffered ones use reply.headers.
+    const headers = (reply.raw.writeHead.mock.calls[0]?.[1] ??
+      reply.headers.mock.calls[0]?.[0] ??
+      {}) as Record<string, string>;
+    return { reply, audit, headers, entry: audit.appendAudit.mock.calls[0]?.[0] };
+  }
+
+  it("falls back to self-hosted when cloud-first has no reservable credit pool", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { headers, entry } = await run(cloudSettings(KEYS, "cloud-first"));
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("https://self.test/v1/test");
+    expect(headers).toMatchObject({
+      "x-hybrid-firecrawl-backend": "self-hosted",
+      "x-hybrid-firecrawl-fallback": "true",
+      "x-hybrid-firecrawl-fallback-reason":
+        "No available Firecrawl Cloud credit pool; falling back to self-hosted",
+    });
+    expect(entry).toMatchObject({ backend_used: "self-hosted", fallback_used: true });
+  });
+
+  it("answers 429 without any upstream call when cloud-only has no reservable credit pool", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { reply, entry } = await run(cloudSettings(KEYS, "cloud-only"));
+
+    expect(reply.code).toHaveBeenCalledWith(429);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(entry).toMatchObject({
+      status_code: 429,
+      backend_used: "cloud",
+      fallback_used: false,
+      fallback_reason: "No available Firecrawl Cloud credit pool",
+    });
+  });
+
+  it("answers 502 without any upstream call when Cloud is required and no key is configured", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { reply, entry } = await run(settingsWith({}, "cloud-only"));
+
+    expect(reply.code).toHaveBeenCalledWith(502);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(entry).toMatchObject({ status_code: 502, backend_used: "none" });
+  });
+
+  it("falls back from a failing self-hosted to Cloud and records the failure as the reason", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("connect ECONNREFUSED"))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { headers, entry } = await run(
+      cloudSettings(KEYS, "self-hosted-first"),
+      creditsReserving(KEYS[0]),
+    );
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "https://self.test/v1/test",
+      "https://cloud.test/v1/test",
+    ]);
+    expect(fetchMock.mock.calls[1][1].headers).toMatchObject({
+      authorization: `Bearer ${KEYS[0]}`,
+    });
+    expect(headers).toMatchObject({
+      "x-hybrid-firecrawl-backend": "cloud",
+      "x-hybrid-firecrawl-fallback": "true",
+      "x-hybrid-firecrawl-fallback-reason": "connect ECONNREFUSED",
+    });
+    expect(entry).toMatchObject({ backend_used: "cloud", fallback_used: true });
+  });
+
+  it("returns the self-hosted failure when self-hosted-first has no Cloud key to fall back to", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("unavailable", { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const credits = makeCredits();
+
+    const { reply, entry } = await run(settingsWith({}, "self-hosted-first"), credits);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(credits.reserve).not.toHaveBeenCalled();
+    expect(reply.code).toHaveBeenCalledWith(503);
+    expect(entry).toMatchObject({ status_code: 503, backend_used: "self-hosted" });
+  });
+
+  it("rotates to the next Cloud key after a 429 and reports why", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("slow down", { status: 429 }))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const credits = creditsReserving(...KEYS);
+
+    const { headers, entry } = await run(cloudSettings(KEYS, "cloud-only"), credits);
+
+    expect(
+      fetchMock.mock.calls.map(
+        ([, init]) => (init.headers as Record<string, string>).authorization,
+      ),
+    ).toEqual(KEYS.map((key) => `Bearer ${key}`));
+    expect(credits.recordResponse).toHaveBeenCalledWith(
+      expect.objectContaining({ keyId: "opaque-1" }),
+      429,
+    );
+    expect(headers).toMatchObject({
+      "x-hybrid-firecrawl-fallback": "true",
+      "x-hybrid-firecrawl-fallback-reason": "primary cloud key failed with 429, next key succeeded",
+    });
+    expect(entry).toMatchObject({ status_code: 200, backend_used: "cloud", fallback_used: true });
+  });
+
+  it("falls back to self-hosted once every Cloud key is out of quota (cloud-first)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("limit", { status: 429 }))
+      .mockResolvedValueOnce(new Response("limit", { status: 429 }))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { headers, entry } = await run(
+      cloudSettings(KEYS, "cloud-first"),
+      creditsReserving(...KEYS),
+    );
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "https://cloud.test/v1/test",
+      "https://cloud.test/v1/test",
+      "https://self.test/v1/test",
+    ]);
+    expect(headers).toMatchObject({
+      "x-hybrid-firecrawl-backend": "self-hosted",
+      "x-hybrid-firecrawl-fallback-reason":
+        "all 2 cloud API key(s) are unavailable (429); falling back to self-hosted",
+    });
+    expect(entry).toMatchObject({ backend_used: "self-hosted", fallback_used: true });
+  });
+
+  it("returns the last Cloud quota error when cloud-only runs out of keys", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("no credits", { status: 402 }))
+      .mockResolvedValueOnce(new Response("limit", { status: 429 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { reply, entry } = await run(
+      cloudSettings(KEYS, "cloud-only"),
+      creditsReserving(...KEYS),
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(reply.code).toHaveBeenCalledWith(429);
+    expect(entry).toMatchObject({ status_code: 429, backend_used: "cloud", fallback_used: false });
+  });
+
+  it("warns once, without key material, when the stored Cloud keys cannot be loaded", async () => {
+    const warn = vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    const secret = "fc_super_secret_value";
+    const settings = settingsWith(
+      { firecrawl_api_keys: { key: "firecrawl_api_keys", value: `enc:v1:${secret}:b:c` } },
+      "cloud-only",
+    );
+    vi.stubGlobal("fetch", vi.fn());
+    const service = makeService(settings as never);
+
+    for (let i = 0; i < 3; i++) await service.handle(makeRequest(), makeReply() as never);
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).not.toContain(secret);
+    expect(String(warn.mock.calls[0][0])).toContain("FIRECRAWL_KEYS_ENCRYPTION_KEY");
   });
 });
