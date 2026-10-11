@@ -18,6 +18,9 @@ model ApiKey {
   createdAt  DateTime  @default(now()) @map("created_at")
   updatedAt  DateTime  @default(now()) @updatedAt @map("updated_at")
   lastUsedAt DateTime? @map("last_used_at")
+  // Optional per-key limits; null means no expiry / no per-key rate limit.
+  expiresAt          DateTime? @map("expires_at")
+  rateLimitPerMinute Int?      @map("rate_limit_per_minute")
 
   @@index([keyHash])
   @@index([keyPrefix])

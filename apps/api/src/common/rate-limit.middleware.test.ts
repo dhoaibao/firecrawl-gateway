@@ -33,6 +33,15 @@ function createMiddleware(
   return new RateLimitMiddleware(prisma as never, {} as never, metrics as never);
 }
 
+/** The middleware's counter state, which these tests assert on directly. */
+function bucketsOf(middleware: RateLimitMiddleware) {
+  return (
+    middleware as unknown as {
+      counter: { buckets: Map<string, { syncedCount: number; pendingDelta: number }> };
+    }
+  ).counter.buckets;
+}
+
 /** Extracts the delta substituted into VALUES from a captured Prisma.sql call. */
 function deltaOf(call: unknown[]): number {
   const sql = call[0] as unknown as { values: unknown[] };
@@ -171,43 +180,37 @@ describe("RateLimitMiddleware (hybrid in-memory counting)", () => {
     expect(after.next).toHaveBeenCalled();
     expect(after.reply.code).not.toHaveBeenCalled();
     expect(after.reply.headers["X-RateLimit-Remaining"]).toBe("300");
-    const bucket = (
-      middleware as unknown as {
-        buckets: Map<string, { syncedCount: number; pendingDelta: number }>;
-      }
-    ).buckets.get("203.0.113.10");
+    const bucket = bucketsOf(middleware).get("203.0.113.10");
     expect(bucket?.syncedCount).toBe(0);
     expect(bucket?.pendingDelta).toBe(0);
   });
 
   it("bounds the bucket map at the cap across more distinct IPs than the cap", async () => {
     const middleware = createMiddleware(queryRaw);
-    const buckets = middleware as unknown as { buckets: Map<string, unknown> };
 
     for (let i = 0; i < 10_010; i += 1) {
       const ip = `10.0.${Math.floor(i / 256) % 256}.${i % 256}`;
       await makeRequestThrough(middleware, ip);
     }
 
-    expect(buckets.buckets.size).toBe(10_000);
+    expect(bucketsOf(middleware).size).toBe(10_000);
   });
 
   it("does not throw on query failure, proceeds, and restores the delta instead of losing it", async () => {
     queryRaw.mockRejectedValueOnce(new Error("database down"));
     const middleware = createMiddleware(queryRaw);
-    const buckets = middleware as unknown as { buckets: Map<string, { pendingDelta: number }> };
 
     const first = await makeRequestThrough(middleware);
     expect(first.next).toHaveBeenCalled();
 
     // The failed flush's delta was restored.
-    expect(buckets.buckets.get("203.0.113.10")?.pendingDelta).toBe(1);
+    expect(bucketsOf(middleware).get("203.0.113.10")?.pendingDelta).toBe(1);
 
     // Counting keeps enforcing locally with no further queries inside the interval.
     const second = await makeRequestThrough(middleware);
     expect(second.next).toHaveBeenCalled();
     expect(queryRaw).toHaveBeenCalledTimes(1);
-    expect(buckets.buckets.get("203.0.113.10")?.pendingDelta).toBe(2);
+    expect(bucketsOf(middleware).get("203.0.113.10")?.pendingDelta).toBe(2);
   });
 
   it("coalesces concurrent requests for one key into a single flush without lost increments", async () => {
@@ -231,11 +234,7 @@ describe("RateLimitMiddleware (hybrid in-memory counting)", () => {
 
     // The leader flushed its delta of 1; the four later arrivals survive
     // in pendingDelta. Total accounted: 1 synced + 4 pending = 5.
-    const bucket = (
-      middleware as unknown as {
-        buckets: Map<string, { syncedCount: number; pendingDelta: number }>;
-      }
-    ).buckets.get("203.0.113.10");
+    const bucket = bucketsOf(middleware).get("203.0.113.10");
     expect(bucket?.syncedCount).toBe(1);
     expect(bucket?.pendingDelta).toBe(4);
 

@@ -34,7 +34,7 @@ import {
 } from "./policy";
 import { SettingsService, parseRouteMode, type SettingRecord } from "../settings/settings.service";
 import { loadCloudKeyEntries } from "../settings/cloud-keys";
-import { ApiKeysService } from "../api-keys/api-keys.service";
+import { ApiKeysService, isApiKeyExpired } from "../api-keys/api-keys.service";
 import { AuditService } from "../audit/audit.service";
 import { MetricsService } from "../metrics/metrics.service";
 import { CircuitBreaker } from "./circuit-breaker";
@@ -235,6 +235,30 @@ export class ProxyService {
       return null;
     }
     ctx.apiKeyId = authenticated.id;
+    // Expiry is read from the (briefly cached) record on every request, so it is exact.
+    if (isApiKeyExpired(authenticated)) {
+      await this.rejectEarly(ctx, "none", 401, "API key has expired", {
+        success: false,
+        error: "API key has expired",
+      });
+      return null;
+    }
+    if (authenticated.rate_limit_per_minute != null) {
+      const limit = await this.keys.hitRateLimit(authenticated);
+      if (limit?.exceeded) {
+        ctx.reply.headers({
+          "x-ratelimit-limit": String(limit.limit),
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-reset": String(Math.ceil(limit.resetAt / 1000)),
+          "retry-after": String(Math.max(1, Math.ceil((limit.resetAt - Date.now()) / 1000))),
+        });
+        await this.rejectEarly(ctx, "none", 429, "API key rate limit exceeded", {
+          success: false,
+          error: "API key rate limit exceeded. Please try again later.",
+        });
+        return null;
+      }
+    }
     void this.keys.touchApiKey(authenticated.id).catch(() => undefined);
     return settings;
   }

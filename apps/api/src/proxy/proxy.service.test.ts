@@ -1181,6 +1181,115 @@ describe("ProxyService routing outcomes", () => {
     });
   });
 
+  describe("per-key limits", () => {
+    function makeLimitedService(
+      record: Record<string, unknown>,
+      hitRateLimit?: ReturnType<typeof vi.fn>,
+    ) {
+      const keys = {
+        validateApiKey: vi.fn().mockResolvedValue({ id: "key-1", ...record }),
+        touchApiKey: vi.fn().mockResolvedValue(undefined),
+        hitRateLimit: hitRateLimit ?? vi.fn().mockResolvedValue(null),
+      };
+      const audit = { appendAudit: vi.fn().mockResolvedValue(undefined) };
+      const service = new ProxyService(
+        { ...config, authEnabled: true } as never,
+        makeSettings() as never,
+        keys as never,
+        audit as never,
+        makeCredits() as never,
+        makeMetrics() as never,
+      );
+      return { service, keys, audit };
+    }
+    const authed = () => makeRequest({ headers: { authorization: "Bearer fc_limited" } });
+
+    it("rejects an expired key with 401 before any upstream call, attributing the audit row", async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const { service, keys, audit } = makeLimitedService({
+        expires_at: new Date(Date.now() - 1000).toISOString(),
+      });
+      const reply = makeReply();
+
+      await service.handle(authed(), reply as never);
+
+      expect(reply.code).toHaveBeenCalledWith(401);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(keys.touchApiKey).not.toHaveBeenCalled();
+      expect(audit.appendAudit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status_code: 401,
+          api_key_id: "key-1",
+          fallback_reason: "API key has expired",
+        }),
+      );
+    });
+
+    it("accepts a key whose expiry is still in the future", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+      const { service, keys } = makeLimitedService({
+        expires_at: new Date(Date.now() + 60_000).toISOString(),
+      });
+      const reply = makeReply();
+
+      await service.handle(authed(), reply as never);
+
+      expect(reply.code).not.toHaveBeenCalledWith(401);
+      expect(keys.touchApiKey).toHaveBeenCalledWith("key-1");
+    });
+
+    it("answers 429 with rate-limit headers when the per-key limit is exceeded", async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const resetAt = Date.now() + 30_000;
+      const hitRateLimit = vi
+        .fn()
+        .mockResolvedValue({ limit: 5, remaining: 0, resetAt, exceeded: true });
+      const { service, audit } = makeLimitedService({ rate_limit_per_minute: 5 }, hitRateLimit);
+      const reply = makeReply();
+
+      await service.handle(authed(), reply as never);
+
+      expect(hitRateLimit).toHaveBeenCalledTimes(1);
+      expect(reply.code).toHaveBeenCalledWith(429);
+      expect(reply.headers).toHaveBeenCalledWith(
+        expect.objectContaining({
+          "x-ratelimit-limit": "5",
+          "x-ratelimit-remaining": "0",
+          "retry-after": expect.stringMatching(/^(29|30)$/),
+        }),
+      );
+      expect(String(reply.send.mock.calls[0][0].error)).toContain("API key rate limit exceeded");
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(audit.appendAudit).toHaveBeenCalledWith(
+        expect.objectContaining({ status_code: 429, api_key_id: "key-1", backend_used: "none" }),
+      );
+    });
+
+    it("proxies a limited key that is within its limit", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+      const hitRateLimit = vi
+        .fn()
+        .mockResolvedValue({ limit: 5, remaining: 3, resetAt: Date.now() + 1000, exceeded: false });
+      const { service } = makeLimitedService({ rate_limit_per_minute: 5 }, hitRateLimit);
+      const reply = makeReply();
+
+      await service.handle(authed(), reply as never);
+
+      expect(reply.code).not.toHaveBeenCalledWith(429);
+    });
+
+    it("never consults the per-key limiter for keys without a limit", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+      const { service, keys } = makeLimitedService({ rate_limit_per_minute: null });
+
+      await service.handle(authed(), makeReply() as never);
+
+      expect(keys.hitRateLimit).not.toHaveBeenCalled();
+    });
+  });
+
   describe("request metrics", () => {
     function makeMeteredService() {
       const metrics = makeMetrics();

@@ -5,6 +5,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { API_CONFIG } from "../common/config.provider";
 import type { ApiConfig } from "../common/config";
 import { encryptSettingValue } from "../common/crypto";
+import { RateLimitCounter } from "../common/rate-limit-counter";
 
 const API_KEY_VALIDATION_CACHE_TTL_MS = 30_000;
 
@@ -18,6 +19,29 @@ export interface ApiKeyRecord {
   created_at: string;
   updated_at: string;
   last_used_at: string | null;
+  /** ISO timestamp after which the key is rejected; null means it never expires. */
+  expires_at: string | null;
+  /** Requests per minute allowed for this key; null means no per-key limit. */
+  rate_limit_per_minute: number | null;
+}
+
+/** Optional per-key limits; `null` clears a limit, `undefined` leaves it unchanged. */
+export interface ApiKeyLimits {
+  expiresAt?: Date | null;
+  rateLimitPerMinute?: number | null;
+}
+
+export interface ApiKeyRateLimitResult {
+  limit: number;
+  remaining: number;
+  /** Unix milliseconds at which the current window ends. */
+  resetAt: number;
+  exceeded: boolean;
+}
+
+/** Whether the key's expiry has passed. Checked per request, never cached. */
+export function isApiKeyExpired(key: Pick<ApiKeyRecord, "expires_at">, now = Date.now()): boolean {
+  return Boolean(key.expires_at) && Date.parse(key.expires_at as string) <= now;
 }
 
 function toKey(key: {
@@ -30,6 +54,8 @@ function toKey(key: {
   createdAt: Date;
   updatedAt: Date;
   lastUsedAt: Date | null;
+  expiresAt?: Date | null;
+  rateLimitPerMinute?: number | null;
 }): ApiKeyRecord {
   return {
     id: key.id,
@@ -41,6 +67,8 @@ function toKey(key: {
     created_at: key.createdAt.toISOString(),
     updated_at: key.updatedAt.toISOString(),
     last_used_at: key.lastUsedAt?.toISOString() ?? null,
+    expires_at: key.expiresAt?.toISOString() ?? null,
+    rate_limit_per_minute: key.rateLimitPerMinute ?? null,
   };
 }
 
@@ -56,12 +84,18 @@ export class ApiKeysService {
   private readonly touchDebounceMs = 60_000;
   private readonly touchTrackerMaxSize = 10_000;
 
+  // Own counter (and bucket map) so attacker-controlled client IPs in the
+  // per-IP middleware can never evict per-key buckets.
+  private readonly rateLimits: RateLimitCounter;
+
   constructor(
     private readonly prisma: PrismaService,
     @Inject(API_CONFIG) private readonly config: ApiConfig,
-  ) {}
+  ) {
+    this.rateLimits = new RateLimitCounter(prisma);
+  }
 
-  async createApiKey(name: string) {
+  async createApiKey(name: string, limits: ApiKeyLimits = {}) {
     const key = `fc_${crypto.randomBytes(32).toString("base64url")}`;
     const row = await this.prisma.apiKey.create({
       data: {
@@ -70,10 +104,53 @@ export class ApiKeysService {
         keyHash: this.hashApiKey(key),
         keyValue: encryptSettingValue(key, this.config.firecrawlKeysEncryptionKey),
         keyPrefix: key.slice(0, 8),
+        ...(limits.expiresAt !== undefined ? { expiresAt: limits.expiresAt } : {}),
+        ...(limits.rateLimitPerMinute !== undefined
+          ? { rateLimitPerMinute: limits.rateLimitPerMinute }
+          : {}),
       },
     });
     const { key_value: _keyValue, ...keyData } = toKey(row);
     return { ...keyData, key };
+  }
+
+  /** Changes a key's limits; null when the key does not exist. Takes effect immediately. */
+  async updateApiKeyLimits(id: string, limits: ApiKeyLimits): Promise<ApiKeyRecord | null> {
+    try {
+      const updated = toKey(
+        await this.prisma.apiKey.update({
+          where: { id },
+          data: {
+            ...(limits.expiresAt !== undefined ? { expiresAt: limits.expiresAt } : {}),
+            ...(limits.rateLimitPerMinute !== undefined
+              ? { rateLimitPerMinute: limits.rateLimitPerMinute }
+              : {}),
+          },
+        }),
+      );
+      this.validationCache.delete(updated.key_hash);
+      this.validationInFlight.delete(updated.key_hash);
+      return updated;
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025")
+        return null;
+      throw error;
+    }
+  }
+
+  /**
+   * Counts one request against the key's per-minute limit. Returns null when the
+   * key has no limit (or counting failed: the limiter fails open, like the per-IP one).
+   */
+  async hitRateLimit(key: ApiKeyRecord): Promise<ApiKeyRateLimitResult | null> {
+    const limit = key.rate_limit_per_minute;
+    if (limit === null || limit === undefined) return null;
+    try {
+      const { count, resetAt } = await this.rateLimits.hit(`key:${key.id}`);
+      return { limit, remaining: Math.max(0, limit - count), resetAt, exceeded: count > limit };
+    } catch {
+      return null;
+    }
   }
 
   async listApiKeys(): Promise<ApiKeyRecord[]> {

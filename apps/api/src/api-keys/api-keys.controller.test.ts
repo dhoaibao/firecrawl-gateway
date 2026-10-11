@@ -50,6 +50,87 @@ describe("ApiKeysController", () => {
     const controller = new ApiKeysController(keys as never);
 
     await expect(controller.create({ name: "production" })).resolves.toEqual({ data: created });
-    expect(keys.createApiKey).toHaveBeenCalledWith("production");
+    expect(keys.createApiKey).toHaveBeenCalledWith("production", {
+      expiresAt: undefined,
+      rateLimitPerMinute: undefined,
+    });
+  });
+
+  describe("per-key limits", () => {
+    const future = new Date(Date.now() + 86_400_000).toISOString();
+
+    it("creates a key with an expiry and a rate limit", async () => {
+      const keys = { createApiKey: vi.fn().mockResolvedValue({ ...record(), key: "fc_x" }) };
+      const controller = new ApiKeysController(keys as never);
+
+      await controller.create({
+        name: "partner",
+        expires_at: future,
+        rate_limit_per_minute: 60,
+      });
+
+      expect(keys.createApiKey).toHaveBeenCalledWith("partner", {
+        expiresAt: new Date(future),
+        rateLimitPerMinute: 60,
+      });
+    });
+
+    it.each([
+      [{ expires_at: "not-a-date" }, /valid ISO timestamp/],
+      [{ expires_at: new Date(Date.now() - 1000).toISOString() }, /in the future/],
+      [{ expires_at: 12345 }, /ISO timestamp or null/],
+      [{ rate_limit_per_minute: 0 }, /between 1 and/],
+      [{ rate_limit_per_minute: 1.5 }, /between 1 and/],
+      [{ rate_limit_per_minute: "60" }, /between 1 and/],
+      [{ rate_limit_per_minute: 100_001 }, /between 1 and/],
+    ])("rejects invalid limits %j on create and update", async (body, message) => {
+      const keys = {
+        createApiKey: vi.fn(),
+        updateApiKeyLimits: vi.fn(),
+      };
+      const controller = new ApiKeysController(keys as never);
+
+      await expect(controller.create({ name: "k", ...body })).rejects.toMatchObject({
+        status: 400,
+        response: { error: expect.stringMatching(message) },
+      });
+      await expect(controller.update("key-1", body)).rejects.toMatchObject({ status: 400 });
+      expect(keys.createApiKey).not.toHaveBeenCalled();
+      expect(keys.updateApiKeyLimits).not.toHaveBeenCalled();
+    });
+
+    it("updates, clears, and leaves limits unchanged independently", async () => {
+      const keys = {
+        updateApiKeyLimits: vi.fn().mockResolvedValue(record({ rate_limit_per_minute: 10 })),
+      };
+      const controller = new ApiKeysController(keys as never);
+
+      const response = await controller.update("key-1", {
+        expires_at: null,
+        rate_limit_per_minute: 10,
+      });
+      await controller.update("key-1", { rate_limit_per_minute: null });
+
+      expect(keys.updateApiKeyLimits).toHaveBeenNthCalledWith(1, "key-1", {
+        expiresAt: null,
+        rateLimitPerMinute: 10,
+      });
+      expect(keys.updateApiKeyLimits).toHaveBeenNthCalledWith(2, "key-1", {
+        expiresAt: undefined,
+        rateLimitPerMinute: null,
+      });
+      expect(response.data).not.toHaveProperty("key_hash");
+      expect(response.data).not.toHaveProperty("key_value");
+    });
+
+    it("requires at least one field and reports unknown keys", async () => {
+      const keys = { updateApiKeyLimits: vi.fn().mockResolvedValue(null) };
+      const controller = new ApiKeysController(keys as never);
+
+      await expect(controller.update("key-1", {})).rejects.toMatchObject({ status: 400 });
+      await expect(
+        controller.update("missing", { rate_limit_per_minute: 5 }),
+      ).rejects.toMatchObject({ status: 404 });
+    });
   });
 });
