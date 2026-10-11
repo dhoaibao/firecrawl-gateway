@@ -4,33 +4,6 @@ export function nowIso(): string {
   return new Date().toISOString();
 }
 
-export function escapeHtml(value: string): string {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-export function writeJson(
-  res: {
-    writeHead: (status: number, headers: Record<string, string>) => void;
-    end: (body: Buffer) => void;
-  },
-  statusCode: number,
-  payload: unknown,
-  extraHeaders: Record<string, string> = {},
-): void {
-  const body = Buffer.from(JSON.stringify(payload));
-  res.writeHead(statusCode, {
-    "content-type": "application/json; charset=utf-8",
-    "content-length": String(body.length),
-    ...extraHeaders,
-  });
-  res.end(body);
-}
-
 export function walk(value: unknown, visit: (value: unknown) => void): void {
   visit(value);
   if (Array.isArray(value)) {
@@ -155,13 +128,4 @@ export function hasPrivateTargetUrl(urls: string[]): boolean {
 
 export function cryptoRandomId(): string {
   return crypto.randomUUID();
-}
-
-export function shuffleArray<T>(array: T[]): T[] {
-  const result = [...array];
-  for (let i = result.length - 1; i > 0; i--) {
-    const j = crypto.randomInt(0, i + 1);
-    [result[i], result[j]] = [result[j], result[i]];
-  }
-  return result;
 }

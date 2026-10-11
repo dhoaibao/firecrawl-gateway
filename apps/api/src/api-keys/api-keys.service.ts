@@ -132,10 +132,6 @@ export class ApiKeysService {
     this.recordTouch(id, now);
   }
 
-  clearTouchDebouncer(): void {
-    this.lastTouchById.clear();
-  }
-
   clearValidationCache(): void {
     this.validationCache.clear();
     this.validationInFlight.clear();

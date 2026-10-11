@@ -4,7 +4,7 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "build": "prisma generate && tsc -p tsconfig.json",
+    "build": "prisma generate && tsc -p tsconfig.build.json",
     "dev": "bun run build && node scripts/dev.mjs",
     "start": "node dist/main.js",
     "lint": "eslint src",
@@ -23,7 +23,6 @@
     "bcrypt": "^6.0.0",
     "fastify": "^5.6.1",
     "fastify-raw-body": "^5.0.0",
-    "pino": "^9.6.0",
     "redis": "^6.2.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
@@ -36,7 +35,6 @@
     "@typescript-eslint/parser": "^8.46.2",
     "eslint": "^9.39.1",
     "prisma": "^6.19.0",
-    "tsx": "^4.20.6",
     "typescript": "^5.7.3",
     "vitest": "^4.1.8"
   },
