@@ -15,8 +15,6 @@
       "name": "@firecrawl-gateway/admin",
       "version": "2.0.0",
       "dependencies": {
-        "@radix-ui/react-select": "^2.3.0",
-        "@radix-ui/react-slot": "^1.2.5",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
         "lucide-react": "^1.17.0",
