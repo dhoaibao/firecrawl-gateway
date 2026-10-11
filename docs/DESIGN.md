@@ -171,6 +171,7 @@ Use the components in `apps/admin/src/components/ui/`. Do not introduce new thir
 - **Badge** (`badge.tsx`): Variants include `default`, `secondary`, `destructive`, `outline`, `success`, `warning`, `info`.
 - **Select** (`select.tsx`): Radix-based, compact trigger (`h-7`), dark popover surface with `bg-surface-2`.
 - **Skeleton** (`skeleton.tsx`): Shimmer loader over `bg-[hsl(230_9%_16%)]`.
+- **Popover** (`popover.tsx`) and **Calendar** (`calendar.tsx`): shadcn registry components (Radix popover, `react-day-picker`). Use them for date selection instead of native `datetime-local` inputs.
 
 ### Custom components
 
@@ -178,6 +179,7 @@ Use the components in `apps/admin/src/components/ui/`. Do not introduce new thir
 - **DataTable** (`DataTable.tsx`): Generic typed table with column alignment, custom row hover accent bar, and empty state injection.
 - **MetricCard** (`MetricCard.tsx`): Small card with uppercase label, icon badge, large value, and detail text.
 - **MetricsGrid** (`MetricsGrid.tsx`): Five-column metric skeleton + metric card layout.
+- **ExpiryPicker** (`ExpiryPicker.tsx`): Optional expiry as a shadcn Calendar popover plus a time input, with a remove button. Its value is a local `YYYY-MM-DDTHH:mm` string (empty for none).
 - **EmptyState** (`EmptyState.tsx`): Centered state with gradient icon container, title, description, optional action.
 - **Pagination** (`Pagination.tsx`): Compact page numbers + first/previous/next/last + page-size selector, built on shadcn `pagination`, `button`, and `select` with labelled controls and `aria-current` on the active page.
 - **FilterBar** (`FilterBar.tsx`): Dashboard-specific filter cluster using shadcn `toggle-group` (single select, 32 px targets) for period/backend/status and compact selects for custom dates.
@@ -194,6 +196,7 @@ Use the components in `apps/admin/src/components/ui/`. Do not introduce new thir
 ### Dependencies to respect
 
 - `@radix-ui/react-select` and `@radix-ui/react-slot` back the Select and Button `asChild` behavior.
+- `react-day-picker` backs the shadcn Calendar; reuse `components/ui/calendar.tsx` rather than adding another date library.
 - `@dnd-kit/core`, `@dnd-kit/sortable`, and `@dnd-kit/utilities` support drag-to-reorder in the Configure page. Prefer these existing packages for future sortable UIs.
 
 ## Interaction States

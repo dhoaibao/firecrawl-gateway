@@ -23,6 +23,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { FormDialog } from "@/components/FormDialog";
+import { ExpiryPicker } from "@/components/ExpiryPicker";
 import { useToast } from "@/hooks/useToast";
 import Pagination from "@/components/Pagination";
 import PageSkeleton from "@/components/PageSkeleton";
@@ -553,11 +554,10 @@ export default function ApiKeys() {
               >
                 Expires <span className="text-xs text-muted-foreground">(optional)</span>
               </label>
-              <Input
+              <ExpiryPicker
                 id="new-api-key-expires"
-                type="datetime-local"
                 value={newKeyExpiresAt}
-                onChange={(e) => setNewKeyExpiresAt(e.target.value)}
+                onChange={setNewKeyExpiresAt}
               />
             </div>
             <div className="space-y-2">
@@ -636,11 +636,10 @@ export default function ApiKeys() {
               >
                 Expires
               </label>
-              <Input
+              <ExpiryPicker
                 id="edit-api-key-expires"
-                type="datetime-local"
                 value={editExpiresAt}
-                onChange={(e) => setEditExpiresAt(e.target.value)}
+                onChange={setEditExpiresAt}
               />
             </div>
             <div className="space-y-2">
