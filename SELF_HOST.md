@@ -94,5 +94,6 @@ The API remains compatible with `/health`, `/ready`, `/v1/*`, `/v2/*`, and `/adm
 - `self-hosted-only`: never send requests to Cloud.
 - `cloud-first`: use Cloud first and fall back to self-hosted when eligible.
 - `cloud-only`: use Cloud exclusively.
+- `hybrid`: use Cloud-role API keys first, then self-hosted when their credit runs out, then Fallback-role API keys when self-hosted fails. Key roles are set per key in the admin Cloud API Keys page and are ignored by every other mode.
 
 Cloud API keys remain encrypted in PostgreSQL. Sensitive headers/cookies and private target URLs continue to disable fallback.

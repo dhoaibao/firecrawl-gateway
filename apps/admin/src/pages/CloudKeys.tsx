@@ -9,20 +9,37 @@ import PageLayout from "@/components/PageLayout";
 import { api } from "@/lib/api";
 import { creditKeyPrefix, nextUpPrefixes } from "@/lib/credits";
 import { Badge } from "@/components/ui/badge";
-import type { SettingsData, CreditUsageItem } from "@/types";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import type { SettingsData, CreditUsageItem, CloudKeyEntry, CloudKeyRole } from "@/types";
 
 interface ApiKeyRow {
   id: string;
   key: string;
+  role: CloudKeyRole;
 }
+
+const ROLE_OPTIONS: { value: CloudKeyRole; label: string }[] = [
+  { value: "cloud", label: "Cloud" },
+  { value: "fallback", label: "Fallback" },
+];
 
 function maskKey(key: string): string {
   if (key.length <= 12) return key;
   return `${key.slice(0, 8)}...${key.slice(-4)}`;
 }
 
-function makeRows(keys: string[], idCounter: { current: number }): ApiKeyRow[] {
-  return keys.map((key) => ({ id: `key-${idCounter.current++}`, key }));
+function makeRows(entries: CloudKeyEntry[], idCounter: { current: number }): ApiKeyRow[] {
+  return entries.map(({ key, role }) => ({ id: `key-${idCounter.current++}`, key, role }));
+}
+
+function toEntries(rows: ApiKeyRow[]): CloudKeyEntry[] {
+  return rows.map(({ key, role }) => ({ key, role }));
 }
 
 function ApiKeyRow({
@@ -30,12 +47,14 @@ function ApiKeyRow({
   usage,
   nextUp,
   tiedForNext,
+  onRoleChange,
   onRemove,
 }: {
   row: ApiKeyRow;
   usage: CreditUsageItem | undefined;
   nextUp: boolean;
   tiedForNext: boolean;
+  onRoleChange: (role: CloudKeyRole) => void;
   onRemove: () => void;
 }) {
   return (
@@ -58,14 +77,32 @@ function ApiKeyRow({
             </Badge>
           )}
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-7 border-danger-muted bg-danger-muted/30 text-danger-fg hover:bg-danger-muted/50 shrink-0"
-          onClick={onRemove}
-        >
-          <Trash2 className="size-3 mr-1" /> Remove
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          <Select value={row.role} onValueChange={(value) => onRoleChange(value as CloudKeyRole)}>
+            <SelectTrigger
+              className="h-7 w-[7.5rem] text-xs"
+              aria-label={`Role of key ${maskKey(row.key)}`}
+              title="Cloud keys serve Cloud traffic. Fallback keys are used in hybrid mode only when self-hosted cannot answer."
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {ROLE_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 border-danger-muted bg-danger-muted/30 text-danger-fg hover:bg-danger-muted/50"
+            onClick={onRemove}
+          >
+            <Trash2 className="size-3 mr-1" /> Remove
+          </Button>
+        </div>
       </div>
       {usage?.error ? (
         <p className="text-xs text-danger-fg">{usage.error}</p>
@@ -149,7 +186,7 @@ export default function CloudKeys() {
         idCounter.current = 0;
         const rows = makeRows(data.firecrawl_api_keys || [], idCounter);
         setApiKeyRows(rows);
-        setSavedSnapshot(JSON.stringify(rows.map((row) => row.key)));
+        setSavedSnapshot(JSON.stringify(toEntries(rows)));
       } catch (err) {
         if (signal?.aborted) return;
         addToast(err instanceof Error ? err.message : "Failed to load settings", "error");
@@ -174,8 +211,7 @@ export default function CloudKeys() {
     return () => controller.abort();
   }, [fetchCreditUsage]);
 
-  const isDirty =
-    Boolean(savedSnapshot) && JSON.stringify(apiKeyRows.map((row) => row.key)) !== savedSnapshot;
+  const isDirty = Boolean(savedSnapshot) && JSON.stringify(toEntries(apiKeyRows)) !== savedSnapshot;
 
   useEffect(() => {
     if (!isDirty) return;
@@ -193,8 +229,15 @@ export default function CloudKeys() {
       addToast("This key is already in the list", "error");
       return;
     }
-    setApiKeyRows((prev) => [...prev, { id: `key-${idCounter.current++}`, key: trimmed }]);
+    setApiKeyRows((prev) => [
+      ...prev,
+      { id: `key-${idCounter.current++}`, key: trimmed, role: "cloud" },
+    ]);
     setNewKey("");
+  }
+
+  function setKeyRole(index: number, role: CloudKeyRole) {
+    setApiKeyRows((prev) => prev.map((row, i) => (i === index ? { ...row, role } : row)));
   }
 
   function removeApiKey(index: number) {
@@ -204,9 +247,9 @@ export default function CloudKeys() {
   async function handleSave() {
     setSaving(true);
     try {
-      const keys = apiKeyRows.map((row) => row.key);
-      await api.put<{ data: SettingsData }>("/admin/api/settings", { firecrawl_api_keys: keys });
-      setSavedSnapshot(JSON.stringify(keys));
+      const entries = toEntries(apiKeyRows);
+      await api.put<{ data: SettingsData }>("/admin/api/settings", { firecrawl_api_keys: entries });
+      setSavedSnapshot(JSON.stringify(entries));
       await fetchCreditUsage();
       addToast("Cloud API keys saved successfully", "success");
     } catch (err) {
@@ -281,6 +324,11 @@ export default function CloudKeys() {
             Add Firecrawl API keys. The gateway uses the key that renews soonest first; on the same
             renewal day it prefers the key with more remaining credits, picking randomly on equal
             credits. It tries the remaining keys on rate limits or auth errors.
+          </p>
+          <p className="text-sm text-muted-foreground">
+            Roles only matter in hybrid mode: Cloud keys are used first, self-hosted takes over when
+            their credit runs out, and Fallback keys step in only when self-hosted cannot answer.
+            Every other route mode uses all keys regardless of role.
           </p>
           <div className="flex gap-2">
             <Input
@@ -357,6 +405,7 @@ export default function CloudKeys() {
                   usage={usageByPrefix.get(prefix)}
                   nextUp={nextUpSet.has(prefix)}
                   tiedForNext={nextUpSet.has(prefix) && nextUpSet.size > 1}
+                  onRoleChange={(role) => setKeyRole(i, role)}
                   onRemove={() => removeApiKey(i)}
                 />
               );

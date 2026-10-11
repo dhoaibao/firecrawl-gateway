@@ -47,8 +47,16 @@ export interface ApiResponse<T> {
   data: T;
 }
 
+/** `cloud` keys serve Cloud traffic; `fallback` keys only back up self-hosted in hybrid mode. */
+export type CloudKeyRole = "cloud" | "fallback";
+
+export interface CloudKeyEntry {
+  key: string;
+  role: CloudKeyRole;
+}
+
 export interface SettingsData {
-  firecrawl_api_keys?: string[];
+  firecrawl_api_keys?: CloudKeyEntry[];
   api_key_inactivity_revoke_days?: number;
   default_route_mode?: RouteMode;
 }

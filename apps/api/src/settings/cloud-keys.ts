@@ -1,12 +1,30 @@
 import { decryptSettingValue, encryptSettingValue } from "../common/crypto";
+import type { CloudKeyEntry } from "../common/types";
 import type { SettingRecord, SettingsService } from "./settings.service";
 
-/** Parses a decrypted `firecrawl_api_keys` value, keeping only non-empty strings. */
-export function parseCloudApiKeys(plaintext: string): string[] {
+/**
+ * Parses a decrypted `firecrawl_api_keys` value. A plain string is a `cloud`
+ * key; an object carries its own `role`. Anything else is dropped.
+ */
+export function parseCloudKeyEntries(plaintext: string): CloudKeyEntry[] {
   const parsed = JSON.parse(plaintext) as unknown;
-  return Array.isArray(parsed)
-    ? parsed.filter((key): key is string => typeof key === "string" && key.length > 0)
-    : [];
+  if (!Array.isArray(parsed)) return [];
+  const entries: CloudKeyEntry[] = [];
+  for (const item of parsed as unknown[]) {
+    if (typeof item === "string") {
+      if (item) entries.push({ key: item, role: "cloud" });
+    } else if (item && typeof item === "object") {
+      const { key, role } = item as Record<string, unknown>;
+      if (typeof key === "string" && key)
+        entries.push({ key, role: role === "fallback" ? "fallback" : "cloud" });
+    }
+  }
+  return entries;
+}
+
+/** Cloud-role keys stay plain strings, so an older API version still reads them after a rollback. */
+export function serializeCloudKeyEntries(entries: CloudKeyEntry[]): string {
+  return JSON.stringify(entries.map((entry) => (entry.role === "cloud" ? entry.key : entry)));
 }
 
 /**
@@ -18,11 +36,11 @@ export function parseCloudApiKeys(plaintext: string): string[] {
  * degrade. Never include the thrown message in logs: a JSON parse error can
  * quote the key material.
  */
-export async function loadCloudApiKeys(
+export async function loadCloudKeyEntries(
   record: SettingRecord,
   encryptionKey: string,
   settings: Pick<SettingsService, "replaceSettingIfUnchanged">,
-): Promise<string[]> {
+): Promise<CloudKeyEntry[]> {
   const decrypted = decryptSettingValue(record.value, encryptionKey);
   if (!decrypted.encrypted)
     await settings.replaceSettingIfUnchanged(
@@ -30,5 +48,15 @@ export async function loadCloudApiKeys(
       record.value,
       encryptSettingValue(record.value, encryptionKey),
     );
-  return parseCloudApiKeys(decrypted.value);
+  return parseCloudKeyEntries(decrypted.value);
+}
+
+/** Every configured key regardless of role, for credit refreshes. */
+export async function loadCloudApiKeys(
+  record: SettingRecord,
+  encryptionKey: string,
+  settings: Pick<SettingsService, "replaceSettingIfUnchanged">,
+): Promise<string[]> {
+  const entries = await loadCloudKeyEntries(record, encryptionKey, settings);
+  return entries.map((entry) => entry.key);
 }

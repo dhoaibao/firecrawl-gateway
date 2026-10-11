@@ -27,8 +27,11 @@ The route mode is decided only by the `default_route_mode` admin setting; client
 - `self-hosted-only` — never send requests to Cloud; Cloud-required requests are rejected.
 - `cloud-first` — use Cloud first and fall back to self-hosted when an eligible, non-Cloud-required request cannot use the configured Cloud credit pool.
 - `cloud-only` — use Cloud exclusively.
+- `hybrid` — use the Cloud-role API keys first; when their credit runs out, use the self-hosted Firecrawl; when self-hosted also fails, use the Fallback-role API keys. A request that requires Cloud skips self-hosted and goes to a Fallback key once the Cloud-role keys are out of credit. With no Cloud-role key, hybrid starts on self-hosted and backs up to the Fallback keys.
 
-Some paths and request options require Cloud-managed behavior, including examples such as agent, browser, monitor, research, and Fire-engine-backed actions. The gateway routes those requests to Cloud when possible and rejects them in `self-hosted-only` mode. Fallback is policy-controlled rather than a generic retry: the self-hosted-first path does not fall back when sensitive upstream headers or cookies, sensitive body headers, or private target URLs are present.
+Each Cloud API key has a role, `cloud` (default) or `fallback`, set on the admin Cloud API Keys page. Roles only matter in `hybrid`; every other mode uses all keys as one pool.
+
+Some paths and request options require Cloud-managed behavior, including examples such as agent, browser, monitor, research, and Fire-engine-backed actions. The gateway routes those requests to Cloud when possible and rejects them in `self-hosted-only` mode. Fallback is policy-controlled rather than a generic retry: the self-hosted-first path, and the hybrid path's fallback keys, do not take over when sensitive upstream headers or cookies, sensitive body headers, or private target URLs are present.
 
 The API's security and runtime boundaries are deliberate:
 

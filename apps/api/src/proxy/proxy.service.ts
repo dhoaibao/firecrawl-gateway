@@ -6,6 +6,7 @@ import type { ApiConfig } from "../common/config";
 import type {
   AuditEntry,
   Backend,
+  CloudKeyEntry,
   NeedsCloudResult,
   ProxyResult,
   RequestWithContext,
@@ -26,11 +27,12 @@ import {
   isFallbackEligible,
   mayUseCloudKeys,
   requestNeedsCloud,
+  selectKeyPools,
   type PrivacyFlags,
   type RouteMode,
 } from "./policy";
 import { SettingsService, parseRouteMode, type SettingRecord } from "../settings/settings.service";
-import { loadCloudApiKeys } from "../settings/cloud-keys";
+import { loadCloudKeyEntries } from "../settings/cloud-keys";
 import { ApiKeysService } from "../api-keys/api-keys.service";
 import { AuditService } from "../audit/audit.service";
 import {
@@ -78,7 +80,12 @@ interface RoutePlan {
   needsCloud: NeedsCloudResult;
   privacy: PrivacyFlags;
   initialBackend: Backend;
+  /** The pool Cloud is currently tried with; swapped for `fallbackApiKeys` once those take over. */
   cloudApiKeys: string[];
+  /** Hybrid reserve: taken over once, when Cloud credit is out and only these keys can still answer. */
+  fallbackApiKeys: string[];
+  /** Set once self-hosted has answered, so a Cloud quota failure never sends the request back. */
+  selfHostedAttempted: boolean;
   estimatedCredits: number;
   attemptedCloudKeyIds: Set<string>;
 }
@@ -111,7 +118,7 @@ function isJsonContentType(contentType: string | null): boolean {
 @Injectable()
 export class ProxyService {
   private readonly logger = new Logger(ProxyService.name);
-  private cloudKeysCache: { value: string; keys: string[] } | null = null;
+  private cloudKeysCache: { value: string; entries: CloudKeyEntry[] } | null = null;
   private lastCloudKeysFailure: string | null = null;
 
   constructor(
@@ -137,6 +144,8 @@ export class ProxyService {
     if (!outcome) return;
     if (await this.rotateCloudKeys(ctx, plan, outcome))
       await this.fallBackToSelfHosted(ctx, plan, outcome);
+    if (await this.fallBackToFallbackKeys(ctx, plan, outcome))
+      await this.rotateCloudKeys(ctx, plan, outcome);
     await this.respond(ctx, plan, outcome);
   }
 
@@ -230,10 +239,16 @@ export class ProxyService {
       hasPrivateTargetUrl: hasPrivateTargetUrl(targetUrls),
     };
     const needsCloud = requestNeedsCloud(ctx.path, json);
-    const initialBackend = chooseInitialBackend(ctx.routeMode, needsCloud);
-    const cloudApiKeys = mayUseCloudKeys(initialBackend, ctx.routeMode, privacy)
-      ? await this.getCloudApiKeys(settings.firecrawl_api_keys)
+    const firstBackend = chooseInitialBackend(ctx.routeMode, needsCloud);
+    const keyEntries = mayUseCloudKeys(firstBackend, ctx.routeMode, privacy)
+      ? await this.getCloudKeyEntries(settings.firecrawl_api_keys)
       : [];
+    const { initialBackend, cloudApiKeys, fallbackApiKeys } = selectKeyPools(
+      ctx.routeMode,
+      firstBackend,
+      needsCloud,
+      keyEntries,
+    );
     if (initialBackend === "cloud" && !cloudApiKeys.length) {
       await this.rejectEarly(ctx, "none", 502, "No Firecrawl Cloud API key configured", {
         success: false,
@@ -255,6 +270,8 @@ export class ProxyService {
       privacy,
       initialBackend,
       cloudApiKeys,
+      fallbackApiKeys,
+      selfHostedAttempted: false,
       estimatedCredits: estimateCreditCost(ctx.path, json),
       attemptedCloudKeyIds: new Set<string>(),
     };
@@ -270,6 +287,16 @@ export class ProxyService {
       if (cloudAttempt)
         return { result: cloudAttempt.result, fallbackUsed: false, fallbackReason: "" };
       if (!isCloudQuotaFallbackAllowed(ctx.routeMode, plan.needsCloud)) {
+        // A Cloud-required hybrid request cannot go to self-hosted, so the reserve keys take it.
+        const reserveAttempt = this.takeFallbackKeys(plan)
+          ? await this.proxyCloud(ctx, plan)
+          : null;
+        if (reserveAttempt)
+          return {
+            result: reserveAttempt.result,
+            fallbackUsed: true,
+            fallbackReason: "No available Firecrawl Cloud credit pool; using fallback API key",
+          };
         await this.rejectEarly(ctx, "cloud", 429, "No available Firecrawl Cloud credit pool", {
           success: false,
           error:
@@ -348,6 +375,7 @@ export class ProxyService {
   ): Promise<void> {
     const { result } = outcome;
     if (
+      plan.selfHostedAttempted ||
       result.backend !== "cloud" ||
       result.kind !== "response" ||
       !result.response ||
@@ -358,6 +386,52 @@ export class ProxyService {
     outcome.fallbackUsed = true;
     outcome.fallbackReason = `all ${plan.cloudApiKeys.length} cloud API key(s) are unavailable (${result.response.status}); falling back to self-hosted`;
     outcome.result = await this.proxySelfHosted(ctx, plan);
+  }
+
+  /**
+   * Hybrid reserve: the fallback keys answer when Cloud credit ran out on a
+   * request only Cloud can serve, or when self-hosted failed after Cloud credit
+   * ran out. Returns whether they replaced the outcome.
+   */
+  private async fallBackToFallbackKeys(
+    ctx: ProxyContext,
+    plan: RoutePlan,
+    outcome: Outcome,
+  ): Promise<boolean> {
+    if (!plan.fallbackApiKeys.length) return false;
+    const { result } = outcome;
+    const cloudOutOfQuota =
+      plan.needsCloud.required &&
+      result.backend === "cloud" &&
+      result.kind === "response" &&
+      !!result.response &&
+      CLOUD_CAPACITY_STATUS.has(result.response.status);
+    const selfHostedFailed =
+      result.backend === "self-hosted" &&
+      isFallbackEligible(result) &&
+      isFallbackAllowed(ctx.routeMode, plan.privacy);
+    if (!cloudOutOfQuota && !selfHostedFailed) return false;
+    this.takeFallbackKeys(plan);
+    const attempt = await this.proxyCloud(ctx, plan);
+    if (!attempt) return false;
+    outcome.result = attempt.result;
+    outcome.fallbackUsed = true;
+    outcome.fallbackReason = cloudOutOfQuota
+      ? `all cloud API key(s) are unavailable (${result.response?.status}); using fallback API key`
+      : `${
+          result.kind === "network-error"
+            ? result.error?.message || "self-hosted network error"
+            : `self-hosted returned ${result.response?.status}`
+        }; using fallback API key`;
+    return true;
+  }
+
+  /** Makes the reserve the active pool; false when there is none left. */
+  private takeFallbackKeys(plan: RoutePlan): boolean {
+    if (!plan.fallbackApiKeys.length) return false;
+    plan.cloudApiKeys = plan.fallbackApiKeys;
+    plan.fallbackApiKeys = [];
+    return true;
   }
 
   private async respond(ctx: ProxyContext, plan: RoutePlan, outcome: Outcome): Promise<void> {
@@ -447,6 +521,7 @@ export class ProxyService {
   }
 
   private proxySelfHosted(ctx: ProxyContext, plan: RoutePlan): Promise<ProxyResult> {
+    plan.selfHostedAttempted = true;
     return this.proxyToBackend(
       "self-hosted",
       ctx.request,
@@ -611,19 +686,19 @@ export class ProxyService {
       .send(result.body);
   }
 
-  private async getCloudApiKeys(record: SettingRecord | null): Promise<string[]> {
+  private async getCloudKeyEntries(record: SettingRecord | null): Promise<CloudKeyEntry[]> {
     if (!record?.value) return [];
     // Keyed on the stored (encrypted) value, so a settings change is picked up on the next read.
-    if (this.cloudKeysCache?.value === record.value) return [...this.cloudKeysCache.keys];
+    if (this.cloudKeysCache?.value === record.value) return [...this.cloudKeysCache.entries];
     try {
-      const keys = await loadCloudApiKeys(
+      const entries = await loadCloudKeyEntries(
         record,
         this.config.firecrawlKeysEncryptionKey,
         this.settings,
       );
-      this.cloudKeysCache = { value: record.value, keys };
+      this.cloudKeysCache = { value: record.value, entries };
       this.lastCloudKeysFailure = null;
-      return [...keys];
+      return [...entries];
     } catch (error) {
       // Warn once per stored value rather than per request, and only with the error
       // class: a JSON parse message can quote the key material.

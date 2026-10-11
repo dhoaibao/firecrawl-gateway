@@ -17,7 +17,8 @@ import PageLayout from "@/components/PageLayout";
 import { api } from "@/lib/api";
 import type { SettingsData } from "@/types";
 
-type SettingKey = keyof SettingsData;
+/** The key list is managed on the Cloud API Keys page, not here. */
+type SettingKey = Exclude<keyof SettingsData, "firecrawl_api_keys">;
 
 interface SettingField {
   key: SettingKey;

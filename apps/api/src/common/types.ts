@@ -21,6 +21,14 @@ export interface AuditEntry {
 
 export type Backend = "cloud" | "self-hosted";
 
+/** `cloud` keys serve Cloud traffic; `fallback` keys only back up self-hosted in hybrid mode. */
+export type CloudKeyRole = "cloud" | "fallback";
+
+export interface CloudKeyEntry {
+  key: string;
+  role: CloudKeyRole;
+}
+
 export interface ProxyResult {
   kind: "response" | "network-error";
   backend: Backend;

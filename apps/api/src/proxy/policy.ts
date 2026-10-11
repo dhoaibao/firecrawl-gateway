@@ -1,4 +1,4 @@
-import type { Backend, NeedsCloudResult } from "../common/types";
+import type { Backend, CloudKeyEntry, NeedsCloudResult } from "../common/types";
 import { findObjectsByKey, walk } from "../common/utils";
 
 export const VALID_ROUTE_MODES = [
@@ -6,6 +6,7 @@ export const VALID_ROUTE_MODES = [
   "self-hosted-only",
   "cloud-first",
   "cloud-only",
+  "hybrid",
 ] as const;
 export type RouteMode = (typeof VALID_ROUTE_MODES)[number];
 /** Used until the admin saves a `default_route_mode` setting. */
@@ -104,13 +105,45 @@ export function chooseInitialBackend(
   routeMode: RouteMode,
   needsCloud: NeedsCloudResult,
 ): InitialBackend {
-  if (routeMode === "cloud-first" || routeMode === "cloud-only") return "cloud";
+  if (routeMode === "cloud-first" || routeMode === "cloud-only" || routeMode === "hybrid")
+    return "cloud";
   if (routeMode === "self-hosted-only") return needsCloud.required ? "reject" : "self-hosted";
   return needsCloud.required ? "cloud" : "self-hosted";
 }
 
+/**
+ * Splits the configured keys into the pool Cloud is tried with first and the
+ * reserve held back for later. Only `hybrid` honours key roles: its `cloud`
+ * keys come first and its `fallback` keys back up self-hosted. Without a
+ * `cloud` key hybrid starts on self-hosted, or on the reserve when the request
+ * requires Cloud. Every other mode uses all keys as one pool.
+ */
+export function selectKeyPools(
+  routeMode: RouteMode,
+  initialBackend: InitialBackend,
+  needsCloud: NeedsCloudResult,
+  entries: CloudKeyEntry[],
+): { initialBackend: InitialBackend; cloudApiKeys: string[]; fallbackApiKeys: string[] } {
+  if (routeMode !== "hybrid")
+    return {
+      initialBackend,
+      cloudApiKeys: entries.map((entry) => entry.key),
+      fallbackApiKeys: [],
+    };
+  const keysWithRole = (role: CloudKeyEntry["role"]) =>
+    entries.filter((entry) => entry.role === role).map((entry) => entry.key);
+  const cloudApiKeys = keysWithRole("cloud");
+  const fallbackApiKeys = keysWithRole("fallback");
+  if (cloudApiKeys.length) return { initialBackend, cloudApiKeys, fallbackApiKeys };
+  return {
+    initialBackend: needsCloud.required ? "cloud" : "self-hosted",
+    cloudApiKeys: fallbackApiKeys,
+    fallbackApiKeys: [],
+  };
+}
+
 export function isFallbackAllowed(routeMode: RouteMode, privacy: PrivacyFlags): boolean {
-  if (routeMode !== "self-hosted-first") return false;
+  if (routeMode !== "self-hosted-first" && routeMode !== "hybrid") return false;
   if (privacy.hasSensitiveHeaders) return false;
   if (privacy.hasPrivateTargetUrl) return false;
   return true;
@@ -155,6 +188,6 @@ export function isCloudQuotaFallbackAllowed(
   routeMode: RouteMode,
   needsCloud: NeedsCloudResult,
 ): boolean {
-  if (routeMode !== "cloud-first") return false;
+  if (routeMode !== "cloud-first" && routeMode !== "hybrid") return false;
   return !needsCloud.required;
 }

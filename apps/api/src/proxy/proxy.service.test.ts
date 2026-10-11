@@ -647,7 +647,7 @@ describe("ProxyService", () => {
 describe("ProxyService routing outcomes", () => {
   const KEYS = ["fc_cloud_key_1111111111", "fc_cloud_key_2222222222"];
 
-  function cloudSettings(keys: string[], mode: string) {
+  function cloudSettings(keys: (string | { key: string; role: string })[], mode: string) {
     const encrypted = encryptSettingValue(JSON.stringify(keys), config.firecrawlKeysEncryptionKey);
     return settingsWith(
       { firecrawl_api_keys: { key: "firecrawl_api_keys", value: encrypted } },
@@ -669,10 +669,17 @@ describe("ProxyService routing outcomes", () => {
     return credits;
   }
 
-  async function run(settings: ReturnType<typeof settingsWith>, credits = makeCredits()) {
+  async function run(
+    settings: ReturnType<typeof settingsWith>,
+    credits = makeCredits(),
+    request: Record<string, unknown> = {},
+  ) {
     const audit = { appendAudit: vi.fn().mockResolvedValue(undefined) };
     const reply = makeReply();
-    await makeService(settings as never, audit, credits).handle(makeRequest(), reply as never);
+    await makeService(settings as never, audit, credits).handle(
+      makeRequest(request),
+      reply as never,
+    );
     // Streamed responses write their head to the raw socket, buffered ones use reply.headers.
     const headers = (reply.raw.writeHead.mock.calls[0]?.[1] ??
       reply.headers.mock.calls[0]?.[0] ??
@@ -831,6 +838,228 @@ describe("ProxyService routing outcomes", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(reply.code).toHaveBeenCalledWith(429);
     expect(entry).toMatchObject({ status_code: 429, backend_used: "cloud", fallback_used: false });
+  });
+
+  describe("hybrid mode", () => {
+    const CLOUD_KEY = "fc_cloud_role_key_111111";
+    const FALLBACK_KEY = "fc_fallback_role_key_2222";
+    const HYBRID_KEYS = [CLOUD_KEY, { key: FALLBACK_KEY, role: "fallback" }];
+
+    /** Hands out one reservation per call, in order; null means no reservable key. */
+    function reservations(...keys: (string | null)[]) {
+      const credits = makeCredits();
+      keys.forEach((key, index) =>
+        credits.reserve.mockResolvedValueOnce(
+          key ? { key, keyId: `opaque-${index + 1}`, amount: 1, source: "local" } : null,
+        ),
+      );
+      credits.reserve.mockResolvedValue(null);
+      return credits;
+    }
+
+    const bearers = (fetchMock: ReturnType<typeof vi.fn>) =>
+      fetchMock.mock.calls.map(
+        ([, init]) => (init.headers as Record<string, string>).authorization,
+      );
+
+    it("serves from a cloud-role key and keeps fallback keys out of the first pool", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const credits = reservations(CLOUD_KEY);
+
+      const { headers, entry } = await run(cloudSettings(HYBRID_KEYS, "hybrid"), credits);
+
+      expect(credits.reserve).toHaveBeenCalledTimes(1);
+      expect(credits.reserve).toHaveBeenCalledWith([CLOUD_KEY], 1, expect.any(Set));
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["https://cloud.test/v1/test"]);
+      expect(headers).toMatchObject({
+        "x-hybrid-firecrawl-backend": "cloud",
+        "x-hybrid-firecrawl-fallback": "false",
+      });
+      expect(entry).toMatchObject({ route_mode: "hybrid", backend_used: "cloud" });
+    });
+
+    it("uses self-hosted once cloud-role credit is out", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { headers, entry } = await run(cloudSettings(HYBRID_KEYS, "hybrid"), reservations());
+
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["https://self.test/v1/test"]);
+      expect(headers).toMatchObject({
+        "x-hybrid-firecrawl-backend": "self-hosted",
+        "x-hybrid-firecrawl-fallback-reason":
+          "No available Firecrawl Cloud credit pool; falling back to self-hosted",
+      });
+      expect(entry).toMatchObject({ backend_used: "self-hosted", fallback_used: true });
+    });
+
+    it("uses self-hosted when a cloud-role key answers out of quota", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response("limit", { status: 429 }))
+        .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { entry } = await run(cloudSettings(HYBRID_KEYS, "hybrid"), reservations(CLOUD_KEY));
+
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+        "https://cloud.test/v1/test",
+        "https://self.test/v1/test",
+      ]);
+      expect(entry).toMatchObject({ backend_used: "self-hosted", fallback_used: true });
+    });
+
+    it("uses a fallback key when self-hosted also fails after cloud credit ran out", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+        .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const credits = reservations(null, FALLBACK_KEY);
+
+      const { headers, entry } = await run(cloudSettings(HYBRID_KEYS, "hybrid"), credits);
+
+      expect(credits.reserve.mock.calls.map(([keys]) => keys)).toEqual([
+        [CLOUD_KEY],
+        [FALLBACK_KEY],
+      ]);
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+        "https://self.test/v1/test",
+        "https://cloud.test/v1/test",
+      ]);
+      expect(bearers(fetchMock)[1]).toBe(`Bearer ${FALLBACK_KEY}`);
+      expect(headers).toMatchObject({
+        "x-hybrid-firecrawl-backend": "cloud",
+        "x-hybrid-firecrawl-fallback": "true",
+        "x-hybrid-firecrawl-fallback-reason": "self-hosted returned 503; using fallback API key",
+      });
+      expect(entry).toMatchObject({ status_code: 200, backend_used: "cloud", fallback_used: true });
+    });
+
+    it("never retries self-hosted or the reserve twice when everything is exhausted", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+        .mockResolvedValueOnce(new Response("limit", { status: 429 }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { reply, entry } = await run(
+        cloudSettings(HYBRID_KEYS, "hybrid"),
+        reservations(null, FALLBACK_KEY),
+      );
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(reply.code).toHaveBeenCalledWith(429);
+      expect(entry).toMatchObject({ backend_used: "cloud", status_code: 429 });
+    });
+
+    it("sends a Cloud-required request to a fallback key when cloud credit is out", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const credits = reservations(null, FALLBACK_KEY);
+
+      const { headers, entry } = await run(cloudSettings(HYBRID_KEYS, "hybrid"), credits, {
+        raw: { url: "/v1/agent" },
+        url: "/v1/agent",
+      });
+
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["https://cloud.test/v1/agent"]);
+      expect(bearers(fetchMock)).toEqual([`Bearer ${FALLBACK_KEY}`]);
+      expect(headers).toMatchObject({
+        "x-hybrid-firecrawl-fallback-reason":
+          "No available Firecrawl Cloud credit pool; using fallback API key",
+      });
+      expect(entry).toMatchObject({ backend_used: "cloud", fallback_used: true });
+    });
+
+    it("answers 429 for a Cloud-required request when no key at all has credit", async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { reply } = await run(cloudSettings(HYBRID_KEYS, "hybrid"), reservations(), {
+        raw: { url: "/v1/agent" },
+        url: "/v1/agent",
+      });
+
+      expect(reply.code).toHaveBeenCalledWith(429);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("does not send a sensitive request to a fallback key after a self-hosted failure", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response("unavailable", { status: 503 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const credits = reservations();
+
+      const { reply, entry } = await run(cloudSettings(HYBRID_KEYS, "hybrid"), credits, {
+        headers: { cookie: "session=1" },
+      });
+
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["https://self.test/v1/test"]);
+      expect(credits.reserve).toHaveBeenCalledTimes(1);
+      expect(reply.code).toHaveBeenCalledWith(503);
+      expect(entry).toMatchObject({ backend_used: "self-hosted", fallback_used: true });
+    });
+
+    it("starts on self-hosted and backs up to the fallback key when only fallback keys exist", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("connect ECONNREFUSED"))
+        .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const credits = reservations(FALLBACK_KEY);
+
+      const { entry } = await run(
+        cloudSettings([{ key: FALLBACK_KEY, role: "fallback" }], "hybrid"),
+        credits,
+      );
+
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+        "https://self.test/v1/test",
+        "https://cloud.test/v1/test",
+      ]);
+      expect(credits.reserve).toHaveBeenCalledWith([FALLBACK_KEY], 1, expect.any(Set));
+      expect(entry).toMatchObject({ backend_used: "cloud", fallback_used: true });
+    });
+
+    it("does not send the request back to self-hosted once the only fallback keys are out of quota", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+        .mockResolvedValueOnce(new Response("no credits", { status: 402 }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { reply, entry } = await run(
+        cloudSettings([{ key: FALLBACK_KEY, role: "fallback" }], "hybrid"),
+        reservations(FALLBACK_KEY),
+      );
+
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+        "https://self.test/v1/test",
+        "https://cloud.test/v1/test",
+      ]);
+      expect(reply.code).toHaveBeenCalledWith(402);
+      expect(entry).toMatchObject({ backend_used: "cloud", status_code: 402 });
+    });
+
+    it("serves from self-hosted without any key configured", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { entry } = await run(settingsWith({}, "hybrid"));
+
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["https://self.test/v1/test"]);
+      expect(entry).toMatchObject({ backend_used: "self-hosted", fallback_used: false });
+    });
+
+    it("ignores roles outside hybrid and uses every key as one pool", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("ok", { status: 200 })));
+      const credits = reservations(CLOUD_KEY);
+
+      await run(cloudSettings(HYBRID_KEYS, "cloud-first"), credits);
+
+      expect(credits.reserve).toHaveBeenCalledWith([CLOUD_KEY, FALLBACK_KEY], 1, expect.any(Set));
+    });
   });
 
   it("warns once, without key material, when the stored Cloud keys cannot be loaded", async () => {

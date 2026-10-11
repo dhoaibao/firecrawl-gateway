@@ -6,7 +6,8 @@ import { apiError } from "../common/http";
 import { AuthGuard } from "../auth/guards";
 import { VALID_ROUTE_MODES } from "../proxy/policy";
 import { SettingsService } from "./settings.service";
-import { loadCloudApiKeys } from "./cloud-keys";
+import type { CloudKeyEntry } from "../common/types";
+import { loadCloudApiKeys, parseCloudKeyEntries, serializeCloudKeyEntries } from "./cloud-keys";
 import { creditKeyPrefix, CreditRoutingService } from "../credits/credit-routing.service";
 
 const VALID_SETTINGS = [
@@ -56,7 +57,10 @@ export class SettingsController {
         row.key === "firecrawl_api_keys"
           ? decryptSettingValue(row.value, this.config.firecrawlKeysEncryptionKey)
           : { value: row.value, encrypted: false };
-      data[row.key] = parseValue(value.value, SETTING_TYPES[row.key] || "string");
+      data[row.key] =
+        row.key === "firecrawl_api_keys"
+          ? keyEntriesOrRaw(value.value)
+          : parseValue(value.value, SETTING_TYPES[row.key] || "string");
       if (row.key === "firecrawl_api_keys" && !value.encrypted)
         await this.settings.replaceSettingIfUnchanged(
           row.key,
@@ -77,6 +81,7 @@ export class SettingsController {
         apiError(400, `Invalid setting key: ${key}`);
       const type = SETTING_TYPES[key] || "string";
       let value: string;
+      let echoed: unknown;
       if (key === "default_route_mode") {
         if (
           typeof rawValue !== "string" ||
@@ -88,18 +93,18 @@ export class SettingsController {
         if (!Array.isArray(rawValue)) apiError(400, `${key} must be an array of API keys`);
         if ((rawValue as unknown[]).length > MAX_CLOUD_API_KEYS)
           apiError(400, `${key} may contain at most ${MAX_CLOUD_API_KEYS} keys`);
-        if (
-          (rawValue as unknown[]).some(
-            (item) => typeof item !== "string" || item.length < MIN_API_KEY_LENGTH,
-          )
-        )
+        const entries = (rawValue as unknown[]).map(toKeyEntry);
+        if (entries.some((entry) => !entry))
           apiError(
             400,
-            `${key} must be an array of API key strings with at least ${MIN_API_KEY_LENGTH} characters`,
+            `${key} must be an array of API key strings, or { key, role } objects with role "cloud" or "fallback", of at least ${MIN_API_KEY_LENGTH} characters`,
           );
-        value = JSON.stringify(rawValue);
-        if (key === "firecrawl_api_keys")
-          value = encryptSettingValue(value, this.config.firecrawlKeysEncryptionKey);
+        value = encryptSettingValue(
+          serializeCloudKeyEntries(entries as CloudKeyEntry[]),
+          this.config.firecrawlKeysEncryptionKey,
+        );
+        // The stored value is encrypted, so echo the normalized entries instead.
+        echoed = entries;
       } else if (type === "number") {
         const number = Number(rawValue);
         if (!Number.isFinite(number) || number < 0)
@@ -107,10 +112,7 @@ export class SettingsController {
         value = String(number);
       } else value = String(rawValue);
       await this.settings.setSetting(key, value);
-      result[key] = parseValue(
-        key === "firecrawl_api_keys" ? JSON.stringify(rawValue) : value,
-        type,
-      );
+      result[key] = echoed ?? parseValue(value, type);
     }
     return { data: result };
   }
@@ -135,6 +137,28 @@ export class SettingsController {
       keyPrefix: creditKeyPrefix(keys[index]),
       ...item,
     }));
+  }
+}
+
+/** A plain string is a `cloud` key; an object may carry a `fallback` role. Null when malformed. */
+function toKeyEntry(item: unknown): CloudKeyEntry | null {
+  const entry =
+    typeof item === "string"
+      ? { key: item, role: "cloud" }
+      : item && typeof item === "object"
+        ? (item as { key?: unknown; role?: unknown })
+        : null;
+  if (!entry || typeof entry.key !== "string" || entry.key.length < MIN_API_KEY_LENGTH) return null;
+  const role = entry.role ?? "cloud";
+  return role === "cloud" || role === "fallback" ? { key: entry.key, role } : null;
+}
+
+/** Normalized key entries for the admin UI; the raw value when it is not parseable JSON. */
+function keyEntriesOrRaw(value: string): unknown {
+  try {
+    return parseCloudKeyEntries(value);
+  } catch {
+    return value;
   }
 }
 
