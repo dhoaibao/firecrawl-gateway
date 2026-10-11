@@ -21,6 +21,7 @@
     "TRUST_PROXY",
     "LOG_LEVEL",
     "CRON_SECRET",
+    "METRICS_TOKEN",
     "REDIS_URL",
     "VITE_API_BASE_URL"
   ],

@@ -31,6 +31,7 @@ const savedEnv = vi.hoisted(() => {
       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     AUTH_ENABLED: "false",
     LOG_LEVEL: "silent",
+    METRICS_TOKEN: "test-metrics-token-0123456789",
   });
   return saved;
 });
@@ -72,6 +73,44 @@ describe("raw request body handling", () => {
       statusCode: 400,
       message: "Body is not valid JSON but content-type is set to 'application/json'",
     });
+  });
+});
+
+describe("metrics endpoint", () => {
+  it("rejects a scrape without the bearer token through the real pipeline", async () => {
+    const response = await app.inject({ method: "GET", url: "/admin/api/metrics" });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.body).not.toContain("gateway_request_duration_seconds");
+  });
+
+  it("serves Prometheus text for the configured token", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/admin/api/metrics",
+      headers: { authorization: "Bearer test-metrics-token-0123456789" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-type"]).toMatch(/^text\/plain/);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.body).toContain("# TYPE gateway_request_duration_seconds histogram");
+    expect(response.body).toContain("# TYPE gateway_rate_limited_total counter");
+  });
+
+  it("scrapes without querying Postgres even when the database is unreachable", async () => {
+    // The limiter flushes to Postgres through $queryRaw; the metrics route must bypass it.
+    const queryRaw = vi.spyOn(app.get(PrismaService), "$queryRaw");
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/admin/api/metrics",
+      headers: { authorization: "Bearer test-metrics-token-0123456789" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(queryRaw).not.toHaveBeenCalled();
+    queryRaw.mockRestore();
   });
 });
 

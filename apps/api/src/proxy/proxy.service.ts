@@ -35,6 +35,7 @@ import { SettingsService, parseRouteMode, type SettingRecord } from "../settings
 import { loadCloudKeyEntries } from "../settings/cloud-keys";
 import { ApiKeysService } from "../api-keys/api-keys.service";
 import { AuditService } from "../audit/audit.service";
+import { MetricsService } from "../metrics/metrics.service";
 import {
   CreditRoutingService,
   estimateCreditCost,
@@ -129,6 +130,7 @@ export class ProxyService {
     private readonly keys: ApiKeysService,
     private readonly audit: AuditService,
     private readonly credits: CreditRoutingService,
+    private readonly metrics: MetricsService,
   ) {}
 
   async handle(
@@ -477,6 +479,14 @@ export class ProxyService {
       request_id: ctx.request.requestId,
       api_key_id: ctx.apiKeyId ?? undefined,
     };
+    // Every audited request, including early rejections, is also counted here.
+    this.metrics.observeRequest({
+      backend: backendUsed,
+      statusCode,
+      durationMs: entry.duration_ms,
+      fallbackUsed,
+      path: ctx.path,
+    });
     await this.audit.appendAudit(entry);
   }
 

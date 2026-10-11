@@ -21,6 +21,8 @@ const optionalRedisUrl = z.preprocess(
   z.union([z.literal(""), z.string().url()]),
 );
 
+const MIN_METRICS_TOKEN_LENGTH = 16;
+
 export const configSchema = z
   .object({
     port: z.coerce.number().int().positive().default(8080),
@@ -59,9 +61,17 @@ export const configSchema = z
     trustProxy: z.union([z.boolean(), z.string()]).default(false),
     logLevel: z.string().default("info"),
     cronSecret: z.string().default(""),
+    // Bearer token for GET /admin/api/metrics; unset disables the endpoint (404).
+    metricsToken: z.string().default(""),
     redisUrl: optionalRedisUrl,
   })
   .superRefine((value, context) => {
+    if (value.metricsToken && value.metricsToken.length < MIN_METRICS_TOKEN_LENGTH)
+      context.addIssue({
+        code: "custom",
+        path: ["metricsToken"],
+        message: `METRICS_TOKEN must be at least ${MIN_METRICS_TOKEN_LENGTH} characters`,
+      });
     if (!value.authEnabled) return;
     if (!value.adminEmail.trim())
       context.addIssue({
@@ -104,6 +114,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     trustProxy: env.TRUST_PROXY,
     logLevel: env.LOG_LEVEL,
     cronSecret: env.CRON_SECRET,
+    metricsToken: env.METRICS_TOKEN,
     redisUrl: env.REDIS_URL,
   });
 }

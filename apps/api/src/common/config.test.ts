@@ -37,6 +37,14 @@ describe("loadConfig", () => {
     expect(loadConfig(baseEnv).redisUrl).toBe("");
   });
 
+  it("leaves the metrics endpoint disabled unless a sufficiently long METRICS_TOKEN is set", () => {
+    expect(loadConfig(baseEnv).metricsToken).toBe("");
+    expect(loadConfig({ ...baseEnv, METRICS_TOKEN: "0123456789abcdef" }).metricsToken).toBe(
+      "0123456789abcdef",
+    );
+    expect(() => loadConfig({ ...baseEnv, METRICS_TOKEN: "short" })).toThrow(/METRICS_TOKEN/);
+  });
+
   it("defaults the self-hosted Firecrawl to the Compose stack and trims trailing slashes", () => {
     expect(loadConfig(baseEnv).selfHostedBaseUrl).toBe("http://127.0.0.1:3002");
     expect(

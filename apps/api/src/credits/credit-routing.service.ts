@@ -488,6 +488,22 @@ export class CreditRoutingService {
     }
   }
 
+  /**
+   * Last-known remaining credits summed over the Cloud keys routing has learned
+   * about. Reads process memory only and never calls Cloud, so it is safe for a
+   * metrics scrape; keys removed since the last restart may still be counted.
+   */
+  estimatedRemainingCredits(): { keys: number; credits: number } {
+    let keys = 0;
+    let credits = 0;
+    for (const pool of this.localPools.values()) {
+      if (pool.credits === null) continue;
+      keys += 1;
+      credits += Math.max(0, pool.credits);
+    }
+    return { keys, credits };
+  }
+
   async refreshCreditUsageForKeys(apiKeys: string[]): Promise<CreditUsageDetails[]> {
     return Promise.all(apiKeys.map((apiKey) => this.refreshCreditUsage(apiKey)));
   }

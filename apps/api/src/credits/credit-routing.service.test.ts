@@ -350,6 +350,25 @@ describe("CreditRoutingService", () => {
     expect(ledger.reconcile).toHaveBeenCalledTimes(1);
   });
 
+  it("sums last-known remaining credits from memory without calling Cloud", async () => {
+    const service = new CreditRoutingService(config as never, makeLedger() as never);
+    expect(service.estimatedRemainingCredits()).toEqual({ keys: 0, credits: 0 });
+
+    const usage: Record<string, number> = { fc_sum_a_secret_key: 300, fc_sum_b_secret_key: 125 };
+    const fetchMock = vi.fn(async (_url: string, init: { headers: { authorization: string } }) => {
+      const key = init.headers.authorization.replace("Bearer ", "");
+      return new Response(JSON.stringify({ data: { remainingCredits: usage[key] } }), {
+        status: 200,
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await service.refreshCreditUsageForKeys(Object.keys(usage));
+    fetchMock.mockClear();
+
+    expect(service.estimatedRemainingCredits()).toEqual({ keys: 2, credits: 425 });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("prefers the soonest renewal day, then most credits, in local fallback and passes renewal to Redis", async () => {
     const ledger = makeLedger({
       capture: vi.fn().mockResolvedValue({ available: true, sequence: 1 }),

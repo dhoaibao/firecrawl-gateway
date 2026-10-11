@@ -80,6 +80,10 @@ function makeCredits() {
   };
 }
 
+function makeMetrics() {
+  return { observeRequest: vi.fn(), recordRateLimited: vi.fn() };
+}
+
 function makeService(
   settings = makeSettings(),
   audit = { appendAudit: vi.fn().mockResolvedValue(undefined) },
@@ -91,6 +95,7 @@ function makeService(
     { validateApiKey: vi.fn() } as never,
     audit as never,
     credits as never,
+    makeMetrics() as never,
   );
 }
 
@@ -194,6 +199,7 @@ describe("ProxyService", () => {
       { validateApiKey: vi.fn() } as never,
       audit as never,
       makeCredits() as never,
+      makeMetrics() as never,
     );
     const reply = makeReply(events);
     const req = makeRequest({ headers: {} });
@@ -251,6 +257,7 @@ describe("ProxyService", () => {
       keys as never,
       audit as never,
       makeCredits() as never,
+      makeMetrics() as never,
     );
 
     const handled = service.handle(
@@ -295,6 +302,7 @@ describe("ProxyService", () => {
         keys as never,
         audit as never,
         makeCredits() as never,
+        makeMetrics() as never,
       );
       const reply = makeReply();
 
@@ -574,6 +582,7 @@ describe("ProxyService", () => {
       { validateApiKey: vi.fn() } as never,
       { appendAudit: vi.fn().mockResolvedValue(undefined) } as never,
       credits as never,
+      makeMetrics() as never,
     );
 
     await service.handle(
@@ -1090,6 +1099,7 @@ describe("ProxyService routing outcomes", () => {
         { validateApiKey, touchApiKey: vi.fn().mockResolvedValue(undefined) } as never,
         audit as never,
         makeCredits() as never,
+        makeMetrics() as never,
       );
     }
 
@@ -1161,6 +1171,48 @@ describe("ProxyService routing outcomes", () => {
       for (const [entry] of audit.appendAudit.mock.calls) {
         expect(entry.api_key_id).toBeUndefined();
       }
+    });
+  });
+
+  describe("request metrics", () => {
+    function makeMeteredService() {
+      const metrics = makeMetrics();
+      const service = new ProxyService(
+        config as never,
+        makeSettings() as never,
+        { validateApiKey: vi.fn() } as never,
+        { appendAudit: vi.fn().mockResolvedValue(undefined) } as never,
+        makeCredits() as never,
+        metrics as never,
+      );
+      return { service, metrics };
+    }
+
+    it("observes a proxied request with its backend, status, fallback flag, and path", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+      const { service, metrics } = makeMeteredService();
+
+      await service.handle(makeRequest(), makeReply() as never);
+
+      expect(metrics.observeRequest).toHaveBeenCalledTimes(1);
+      expect(metrics.observeRequest).toHaveBeenCalledWith({
+        backend: "self-hosted",
+        statusCode: 204,
+        durationMs: expect.any(Number),
+        fallbackUsed: false,
+        path: "/v1/test",
+      });
+    });
+
+    it("observes an early rejection as backend none", async () => {
+      const { service, metrics } = makeMeteredService();
+      const req = makeRequest({ raw: { url: "/v1/agent" }, url: "/v1/agent" });
+
+      await service.handle(req, makeReply() as never);
+
+      expect(metrics.observeRequest).toHaveBeenCalledWith(
+        expect.objectContaining({ backend: "none", statusCode: 409, path: "/v1/agent" }),
+      );
     });
   });
 });

@@ -4,6 +4,7 @@ import { Prisma } from "@prisma/client";
 import { API_CONFIG } from "./config.provider";
 import type { ApiConfig } from "./config";
 import { PrismaService } from "../prisma/prisma.service";
+import { MetricsService } from "../metrics/metrics.service";
 
 const WINDOW_MS = 60_000;
 const MAX_REQUESTS = 300;
@@ -11,6 +12,15 @@ const MAX_REQUESTS = 300;
 const FLUSH_INTERVAL_MS = 5_000;
 // Buckets are keyed by the attacker-controlled client IP, so the map is FIFO-bounded.
 const MAX_BUCKETS = 10_000;
+
+// Probes and the metrics scrape must not depend on Postgres (the limiter flushes
+// there), so they keep answering while the database is slow. The metrics route
+// still requires its bearer token.
+const EXEMPT_PATHS = new Set(["/health", "/ready", "/admin/api/metrics"]);
+
+function isExemptPath(url: string): boolean {
+  return EXEMPT_PATHS.has(url.split("?", 1)[0]);
+}
 
 interface RateLimitBucket {
   /** Requests counted locally since the last successful flush. */
@@ -33,10 +43,11 @@ export class RateLimitMiddleware implements NestMiddleware {
   constructor(
     private readonly prisma: PrismaService,
     @Inject(API_CONFIG) private readonly config: ApiConfig,
+    private readonly metrics: MetricsService,
   ) {}
 
   async use(request: FastifyRequest, reply: FastifyReply, next: () => void): Promise<void> {
-    if (request.url === "/health" || request.url === "/ready") return next();
+    if (isExemptPath(request.url)) return next();
     const ip = request.ip || request.raw.socket.remoteAddress || "unknown";
     try {
       const now = Date.now();
@@ -65,6 +76,7 @@ export class RateLimitMiddleware implements NestMiddleware {
       reply.header("X-RateLimit-Remaining", String(Math.max(0, MAX_REQUESTS - effective)));
       reply.header("X-RateLimit-Reset", String(Math.ceil(resetAt / 1000)));
       if (effective > MAX_REQUESTS) {
+        this.metrics.recordRateLimited();
         void reply
           .code(429)
           .send({ success: false, error: "Too many requests. Please try again later." });

@@ -10,11 +10,13 @@ import { ProxyModule } from "./proxy/proxy.module";
 import { HealthModule } from "./health/health.module";
 import { CronModule } from "./cron/cron.module";
 import { CreditsModule } from "./credits/credits.module";
+import { MetricsModule } from "./metrics/metrics.module";
 
 @Module({
   imports: [
     ApiConfigModule,
     CreditsModule,
+    MetricsModule,
     PrismaModule,
     AuthModule,
     ApiKeysModule,

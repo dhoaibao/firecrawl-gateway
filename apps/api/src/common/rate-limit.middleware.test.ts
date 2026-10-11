@@ -25,9 +25,12 @@ function makeReply() {
   };
   return { reply: reply as unknown as FastifyReply, headers, code: reply.code, send: reply.send };
 }
-function createMiddleware(queryRaw: QueryRawMock): RateLimitMiddleware {
+function createMiddleware(
+  queryRaw: QueryRawMock,
+  metrics: { recordRateLimited: () => void } = { recordRateLimited: vi.fn() },
+): RateLimitMiddleware {
   const prisma = { $queryRaw: queryRaw };
-  return new RateLimitMiddleware(prisma as never, {} as never);
+  return new RateLimitMiddleware(prisma as never, {} as never, metrics as never);
 }
 
 /** Extracts the delta substituted into VALUES from a captured Prisma.sql call. */
@@ -111,6 +114,47 @@ describe("RateLimitMiddleware (hybrid in-memory counting)", () => {
     expect(third.next).not.toHaveBeenCalled();
     expect(third.reply.code).toHaveBeenCalledWith(429);
     expect(third.reply.send).toHaveBeenCalledWith(FOUR_TWENTY_NINE_BODY);
+  });
+
+  it.each(["/health", "/ready", "/admin/api/metrics", "/admin/api/metrics?x=1"])(
+    "does not touch Postgres or count requests for %s",
+    async (url) => {
+      authoritativeCount = 10_000; // would block any counted request
+      const metrics = { recordRateLimited: vi.fn() };
+      const middleware = createMiddleware(queryRaw, metrics);
+
+      for (let i = 0; i < 5; i += 1) {
+        const { next, reply } = await makeRequestThrough(middleware, undefined, url);
+        expect(next).toHaveBeenCalled();
+        expect(reply.code).not.toHaveBeenCalled();
+      }
+
+      expect(queryRaw).not.toHaveBeenCalled();
+      expect(metrics.recordRateLimited).not.toHaveBeenCalled();
+    },
+  );
+
+  it("still rate limits ordinary admin API paths", async () => {
+    authoritativeCount = 10_000;
+    const middleware = createMiddleware(queryRaw);
+
+    const { next, reply } = await makeRequestThrough(middleware, undefined, "/admin/api/logs");
+
+    expect(next).not.toHaveBeenCalled();
+    expect(reply.code).toHaveBeenCalledWith(429);
+  });
+
+  it("counts only rejected requests in the rate-limit metric", async () => {
+    authoritativeCount = 299;
+    const metrics = { recordRateLimited: vi.fn() };
+    const middleware = createMiddleware(queryRaw, metrics);
+
+    await makeRequestThrough(middleware); // 299 -> passes
+    await makeRequestThrough(middleware); // 300 -> passes
+    expect(metrics.recordRateLimited).not.toHaveBeenCalled();
+
+    await makeRequestThrough(middleware); // 301 -> blocked
+    expect(metrics.recordRateLimited).toHaveBeenCalledTimes(1);
   });
 
   it("clears counters once resetAt passes", async () => {
