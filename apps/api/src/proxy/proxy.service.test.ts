@@ -90,6 +90,7 @@ function makeMetrics() {
     recordRateLimited: vi.fn(),
     recordCircuitTransition: vi.fn(),
     recordCircuitRejected: vi.fn(),
+    recordResponseCache: vi.fn(),
   };
 }
 
@@ -1437,6 +1438,281 @@ describe("ProxyService routing outcomes", () => {
           reachedBackend: false,
         }),
       );
+    });
+  });
+
+  describe("response cache", () => {
+    const CLOUD_KEY = "fc_cloud_key_1234567890";
+    const SCRAPE_BODY = { url: "https://example.com", formats: ["markdown"] };
+    const OK_BODY = JSON.stringify({ success: true, data: { markdown: "# hi" } });
+
+    function scrapeRequest(overrides: Record<string, unknown> = {}, body: unknown = SCRAPE_BODY) {
+      const raw = Buffer.from(JSON.stringify(body));
+      return makeRequest({
+        method: "POST",
+        raw: { url: "/v1/scrape" },
+        url: "/v1/scrape",
+        headers: { authorization: "Bearer fc_client", "content-type": "application/json" },
+        rawBody: raw,
+        body,
+        ...overrides,
+      });
+    }
+
+    function makeCacheService(
+      options: { keyId?: string; ttl?: number; upstream?: () => Response } = {},
+    ) {
+      const credits = makeCredits();
+      credits.reserve.mockResolvedValue({
+        key: CLOUD_KEY,
+        keyId: "opaque-key-id",
+        amount: 1,
+        source: "local",
+      });
+      const audit = { appendAudit: vi.fn().mockResolvedValue(undefined) };
+      const metrics = makeMetrics();
+      const keyId = { current: options.keyId ?? "key-1" };
+      const keys = {
+        validateApiKey: vi.fn().mockImplementation(async () => ({ id: keyId.current })),
+        touchApiKey: vi.fn().mockResolvedValue(undefined),
+      };
+      const fetchMock = vi.fn().mockImplementation(
+        async () =>
+          options.upstream?.() ??
+          new Response(OK_BODY, {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const service = new ProxyService(
+        {
+          ...config,
+          authEnabled: true,
+          responseCacheTtlSeconds: options.ttl ?? 600,
+          responseCacheMaxBytes: 10 * 1024 * 1024,
+        } as never,
+        settingsWith(
+          {
+            firecrawl_api_keys: {
+              key: "firecrawl_api_keys",
+              value: encryptSettingValue(
+                JSON.stringify([CLOUD_KEY]),
+                config.firecrawlKeysEncryptionKey,
+              ),
+            },
+          },
+          "cloud-only",
+        ) as never,
+        keys as never,
+        audit as never,
+        credits as never,
+        metrics as never,
+      );
+      return { service, fetchMock, credits, audit, metrics, keyId };
+    }
+
+    async function stored(metrics: ReturnType<typeof makeMetrics>, count = 1) {
+      await vi.waitFor(() => {
+        const stores = metrics.recordResponseCache.mock.calls.filter(([r]) => r === "store");
+        expect(stores).toHaveLength(count);
+      });
+    }
+
+    it("stores a successful Cloud scrape and serves the repeat without upstream or credits", async () => {
+      const { service, fetchMock, credits, audit, metrics } = makeCacheService();
+
+      await service.handle(scrapeRequest(), makeReply() as never);
+      await stored(metrics);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(credits.reserve).toHaveBeenCalledTimes(1);
+
+      const reply = makeReply();
+      await service.handle(scrapeRequest(), reply as never);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(credits.reserve).toHaveBeenCalledTimes(1);
+      expect(reply.code).toHaveBeenCalledWith(200);
+      expect(reply.headers).toHaveBeenCalledWith(
+        expect.objectContaining({
+          "x-hybrid-firecrawl-cache": "hit",
+          "x-hybrid-firecrawl-backend": "cache",
+          "content-type": "application/json",
+        }),
+      );
+      expect(String(reply.send.mock.calls[0][0])).toBe(OK_BODY);
+      expect(audit.appendAudit).toHaveBeenLastCalledWith(
+        expect.objectContaining({ backend_used: "cache", status_code: 200, api_key_id: "key-1" }),
+      );
+      expect(metrics.observeRequest).toHaveBeenLastCalledWith(
+        expect.objectContaining({ backend: "cache", reachedBackend: false, statusCode: 200 }),
+      );
+      expect(metrics.recordResponseCache).toHaveBeenCalledWith("hit");
+    });
+
+    it("streams the first response to the client unchanged while caching it", async () => {
+      const { service, metrics } = makeCacheService();
+      const chunks: Buffer[] = [];
+      const reply = makeReply();
+      // The default test sink discards writes; collect them through a real pipe instead.
+      const { PassThrough } = await import("node:stream");
+      const sink = new PassThrough();
+      sink.on("data", (chunk: Buffer) => chunks.push(chunk));
+      (reply as { raw: unknown }).raw = Object.assign(sink, { writeHead: vi.fn() });
+
+      await service.handle(scrapeRequest(), reply as never);
+      await stored(metrics);
+
+      expect(Buffer.concat(chunks).toString("utf8")).toBe(OK_BODY);
+      expect(metrics.recordResponseCache).toHaveBeenCalledWith("miss");
+    });
+
+    it("terminates both branches and releases memory when the client disconnects mid-stream", async () => {
+      const { Writable } = await import("node:stream");
+      let produced = 0;
+      let cancelled = false;
+      const chunk = new Uint8Array(64 * 1024).fill(97);
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          // More than the 2 MiB cache cap, produced lazily so cancellation is observable.
+          if (produced >= 3 * 1024 * 1024) return controller.close();
+          produced += chunk.byteLength;
+          controller.enqueue(chunk);
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+      const { service, metrics } = makeCacheService({
+        upstream: () =>
+          new Response(body, { status: 200, headers: { "content-type": "application/json" } }),
+      });
+      const reply = makeReply();
+      // A client that hangs up after receiving the first chunk.
+      (reply as { raw: unknown }).raw = Object.assign(
+        new Writable({
+          write(_chunk, _encoding, callback) {
+            callback();
+            this.destroy();
+          },
+        }),
+        { writeHead: vi.fn() },
+      );
+
+      await service.handle(scrapeRequest(), reply as never);
+
+      await vi.waitFor(() => expect(cancelled).toBe(true));
+      expect(produced).toBeLessThan(3 * 1024 * 1024);
+      expect(metrics.recordResponseCache).not.toHaveBeenCalledWith("store");
+    });
+
+    it("abandons a collector whose upstream stalls instead of holding the buffer forever", async () => {
+      vi.useFakeTimers();
+      let cancelled = false;
+      const stalled = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"success":'));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+      const { service, metrics } = makeCacheService();
+      const collect = (
+        service as unknown as {
+          collectForCache(k: string, s: ReadableStream<Uint8Array>, t: string): Promise<void>;
+        }
+      ).collectForCache.bind(service);
+
+      const done = collect("key", stalled, "application/json");
+      await vi.advanceTimersByTimeAsync(config.requestTimeoutMs);
+      await done;
+
+      expect(cancelled).toBe(true);
+      expect(metrics.recordResponseCache).not.toHaveBeenCalledWith("store");
+    });
+
+    it("never shares entries between virtual API keys", async () => {
+      const { service, fetchMock, metrics, keyId } = makeCacheService();
+      await service.handle(scrapeRequest(), makeReply() as never);
+      await stored(metrics);
+
+      keyId.current = "key-2";
+      await service.handle(scrapeRequest(), makeReply() as never);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not cache non-success bodies, upstream errors, or oversized responses", async () => {
+      const failures = [
+        () =>
+          new Response(JSON.stringify({ success: false, error: "nope" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+        () =>
+          new Response(JSON.stringify({ success: true }), {
+            status: 500,
+            headers: { "content-type": "application/json" },
+          }),
+        () =>
+          new Response("x".repeat(2 * 1024 * 1024 + 10), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+        () => new Response(OK_BODY, { status: 200, headers: { "content-type": "text/html" } }),
+      ];
+      for (const upstream of failures) {
+        const { service, fetchMock, metrics } = makeCacheService({ upstream });
+
+        await service.handle(scrapeRequest(), makeReply() as never);
+        // Give the background collector a chance to (not) store.
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        await service.handle(scrapeRequest(), makeReply() as never);
+
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(metrics.recordResponseCache).not.toHaveBeenCalledWith("store");
+      }
+    });
+
+    it.each([
+      ["a sensitive header", { headers: { authorization: "Bearer fc_client", cookie: "sid=1" } }],
+      [
+        "Cache-Control: no-cache",
+        { headers: { authorization: "Bearer fc_client", "cache-control": "no-cache" } },
+      ],
+    ])("bypasses the cache for %s", async (_name, overrides) => {
+      const { service, fetchMock, metrics } = makeCacheService();
+      await service.handle(scrapeRequest(), makeReply() as never);
+      await stored(metrics);
+
+      await service.handle(scrapeRequest(overrides), makeReply() as never);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("honours the request's own maxAge: 0 and storeInCache: false", async () => {
+      const { service, fetchMock, metrics } = makeCacheService();
+      await service.handle(scrapeRequest(), makeReply() as never);
+      await stored(metrics);
+
+      await service.handle(scrapeRequest({}, { ...SCRAPE_BODY, maxAge: 0 }), makeReply() as never);
+      await service.handle(
+        scrapeRequest({}, { ...SCRAPE_BODY, storeInCache: false }),
+        makeReply() as never,
+      );
+
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it("is off unless a TTL is configured", async () => {
+      const { service, fetchMock, metrics } = makeCacheService({ ttl: 0 });
+
+      await service.handle(scrapeRequest(), makeReply() as never);
+      await service.handle(scrapeRequest(), makeReply() as never);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(metrics.recordResponseCache).not.toHaveBeenCalled();
     });
   });
 

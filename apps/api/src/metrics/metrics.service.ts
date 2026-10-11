@@ -26,6 +26,8 @@ const ROUTE_SEGMENTS = new Set([
 ]);
 const DURATION_BUCKETS_SECONDS = [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120];
 const BACKENDS = new Set(["cloud", "self-hosted"]);
+/** Backend label values; `cache` is a gateway response-cache hit, never a backend call. */
+const BACKEND_LABELS = new Set([...BACKENDS, "cache"]);
 
 export interface RequestObservation {
   /** `backend_used` as audited: `cloud`, `self-hosted`, or `none` for early rejections. */
@@ -56,6 +58,7 @@ export class MetricsService {
   private readonly circuitRejected: Counter;
   private readonly circuitState: Gauge;
   private readonly alertsSent: Counter<"rule" | "outcome">;
+  private readonly responseCache: Counter<"result">;
   /** Per-minute request/fallback counts for the alerting window, pruned to an hour. */
   private readonly minuteBuckets = new Map<number, { total: number; fallbacks: number }>();
   private currentCircuit: "closed" | "half-open" | "open" = "closed";
@@ -95,6 +98,13 @@ export class MetricsService {
     });
     this.circuitState.set(0);
 
+    this.responseCache = new Counter({
+      name: "gateway_response_cache_total",
+      help: "Response cache lookups and stores: hit, miss, or store.",
+      labelNames: ["result"],
+      registers: [this.registry],
+    });
+
     this.alertsSent = new Counter({
       name: "gateway_alerts_total",
       help: "Alert notifications attempted, by rule and outcome (sent or failed).",
@@ -131,7 +141,7 @@ export class MetricsService {
         this.countInWindow(observation.fallbackUsed);
       this.requestDuration.observe(
         {
-          backend: BACKENDS.has(observation.backend) ? observation.backend : "none",
+          backend: BACKEND_LABELS.has(observation.backend) ? observation.backend : "none",
           status_class: statusClass(observation.statusCode),
           fallback: observation.fallbackUsed ? "true" : "false",
           route: routeLabel(observation.path),
@@ -168,6 +178,14 @@ export class MetricsService {
   /** The self-hosted circuit's current state as last reported by the breaker. */
   circuitStateNow(): "closed" | "half-open" | "open" {
     return this.currentCircuit;
+  }
+
+  recordResponseCache(result: "hit" | "miss" | "store"): void {
+    try {
+      this.responseCache.inc({ result });
+    } catch {
+      // Metrics must never affect request handling.
+    }
   }
 
   recordAlert(rule: string, outcome: "sent" | "failed"): void {

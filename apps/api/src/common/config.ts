@@ -67,6 +67,14 @@ export const configSchema = z
     cronSecret: z.string().default(""),
     // Bearer token for GET /admin/api/metrics; unset disables the endpoint (404).
     metricsToken: z.string().default(""),
+    // In-memory cache of successful Cloud scrape responses; 0 (default) disables it.
+    responseCacheTtlSeconds: z.coerce.number().int().min(0).max(86_400).default(0),
+    responseCacheMaxBytes: z.coerce
+      .number()
+      .int()
+      .min(1_048_576)
+      .max(2_147_483_647)
+      .default(67_108_864),
     // Telegram alerts are enabled only when both the bot token and chat id are set.
     telegramBotToken: z.string().trim().default(""),
     telegramChatId: z.string().trim().default(""),
@@ -141,6 +149,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     logLevel: env.LOG_LEVEL,
     cronSecret: env.CRON_SECRET,
     metricsToken: env.METRICS_TOKEN,
+    responseCacheTtlSeconds: env.RESPONSE_CACHE_TTL_SECONDS,
+    responseCacheMaxBytes: env.RESPONSE_CACHE_MAX_BYTES,
     telegramBotToken: env.TELEGRAM_BOT_TOKEN,
     telegramChatId: env.TELEGRAM_CHAT_ID,
     alertCreditsLowThreshold: env.ALERT_CREDITS_LOW_THRESHOLD,

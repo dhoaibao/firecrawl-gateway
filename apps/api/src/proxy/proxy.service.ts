@@ -39,6 +39,12 @@ import { AuditService } from "../audit/audit.service";
 import { MetricsService } from "../metrics/metrics.service";
 import { CircuitBreaker } from "./circuit-breaker";
 import {
+  MAX_CACHED_ENTRY_BYTES,
+  ResponseCache,
+  cacheLookupFor,
+  type CachedResponse,
+} from "./response-cache";
+import {
   CreditRoutingService,
   estimateCreditCost,
   extractCreditsUsed,
@@ -110,6 +116,8 @@ interface Outcome {
   result: ProxyResult;
   fallbackUsed: boolean;
   fallbackReason: string;
+  /** Set when the response was served from the gateway's response cache. */
+  cacheHit?: boolean;
 }
 
 // `routeMode` was once a client override; it is no longer honored, so do not forward it upstream.
@@ -142,6 +150,7 @@ export class ProxyService {
   private cloudKeysCache: { value: string; entries: CloudKeyEntry[] } | null = null;
   private lastCloudKeysFailure: string | null = null;
   private readonly selfHostedBreaker: CircuitBreaker;
+  private readonly responseCache: ResponseCache;
 
   constructor(
     @Inject(API_CONFIG) private readonly config: ApiConfig,
@@ -160,6 +169,10 @@ export class ProxyService {
       },
       onReject: () => this.metrics.recordCircuitRejected(),
     });
+    this.responseCache = new ResponseCache({
+      ttlMs: (config.responseCacheTtlSeconds || 0) * 1000,
+      maxBytes: config.responseCacheMaxBytes || 0,
+    });
   }
 
   async handle(
@@ -173,13 +186,124 @@ export class ProxyService {
     if (!settings) return;
     const plan = await this.buildPlan(ctx, settings);
     if (!plan) return;
+    const cacheLookup = this.responseCache.enabled
+      ? cacheLookupFor({
+          method: ctx.request.method,
+          upstreamUrl: ctx.upstreamUrl,
+          path: ctx.path,
+          headers: ctx.request.headers,
+          apiKeyId: ctx.apiKeyId,
+          bodyBuffer: plan.bodyBuffer,
+          initialBackend: plan.initialBackend,
+          needsCloud: plan.needsCloud,
+          privacy: plan.privacy,
+        })
+      : null;
+    if (cacheLookup) {
+      const hit = this.responseCache.get(cacheLookup.key, cacheLookup.maxAgeMs);
+      if (hit) {
+        this.metrics.recordResponseCache("hit");
+        await this.respondFromCache(ctx, plan, hit);
+        return;
+      }
+      this.metrics.recordResponseCache("miss");
+    }
     const outcome = await this.dispatch(ctx, plan);
     if (!outcome) return;
     if (await this.rotateCloudKeys(ctx, plan, outcome))
       await this.fallBackToSelfHosted(ctx, plan, outcome);
     if (await this.fallBackToFallbackKeys(ctx, plan, outcome))
       await this.rotateCloudKeys(ctx, plan, outcome);
-    await this.respond(ctx, plan, outcome);
+    if (cacheLookup) this.captureForCache(cacheLookup.key, outcome);
+    await this.respond(ctx, plan, outcome, cacheLookup ? "miss" : undefined);
+  }
+
+  /** Answers a request from the response cache: no upstream call, no credit reservation. */
+  private async respondFromCache(
+    ctx: ProxyContext,
+    plan: RoutePlan,
+    hit: CachedResponse,
+  ): Promise<void> {
+    const result: ProxyResult = {
+      kind: "response",
+      backend: "cloud",
+      response: new Response(null, {
+        status: hit.status,
+        headers: { "content-type": hit.contentType },
+      }),
+      body: hit.body,
+      durationMs: 0,
+    };
+    await this.respond(
+      ctx,
+      plan,
+      { result, fallbackUsed: false, fallbackReason: "", cacheHit: true },
+      "hit",
+    );
+  }
+
+  /**
+   * Stores a successful Cloud scrape for later requests without delaying the
+   * client: the response stream is split and one branch is collected, bounded to
+   * one cache entry. Anything incomplete, oversized or not `success: true` is skipped.
+   */
+  private captureForCache(key: string, outcome: Outcome): void {
+    const { result } = outcome;
+    if (
+      result.backend !== "cloud" ||
+      result.kind !== "response" ||
+      result.response?.status !== 200 ||
+      !result.stream ||
+      !isJsonContentType(result.response.headers.get("content-type"))
+    )
+      return;
+    const contentType = result.response.headers.get("content-type") ?? "application/json";
+    const [forClient, forCache] = result.stream.tee();
+    result.stream = forClient;
+    void this.collectForCache(key, forCache, contentType);
+  }
+
+  private async collectForCache(
+    key: string,
+    stream: ReadableStream<Uint8Array>,
+    contentType: string,
+  ): Promise<void> {
+    const reader = stream.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    let abandoned = false;
+    // Give up (and release what was collected) without waiting on the client's
+    // branch: cancelling one `tee` branch only settles once both are cancelled.
+    const abandon = () => {
+      abandoned = true;
+      chunks.length = 0;
+      void reader.cancel().catch(() => undefined);
+    };
+    // The client branch is no longer read once its socket is gone, and the
+    // upstream timeout is cleared when the response ends, so bound the collector.
+    const timer = setTimeout(abandon, this.config.requestTimeoutMs);
+    try {
+      while (!abandoned) {
+        const { done, value } = await reader.read();
+        if (done || abandoned) break;
+        size += value.byteLength;
+        if (size > MAX_CACHED_ENTRY_BYTES) {
+          abandon();
+          break;
+        }
+        chunks.push(value);
+      }
+      if (abandoned) return;
+      const body = Buffer.concat(chunks);
+      const parsed = JSON.parse(body.toString("utf8")) as { success?: unknown };
+      if (parsed?.success !== true) return;
+      this.responseCache.set(key, { status: 200, contentType, body });
+      this.metrics.recordResponseCache("store");
+    } catch {
+      // A failed or truncated upstream body is simply not cached.
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private createContext(
@@ -510,19 +634,29 @@ export class ProxyService {
     return true;
   }
 
-  private async respond(ctx: ProxyContext, plan: RoutePlan, outcome: Outcome): Promise<void> {
+  private async respond(
+    ctx: ProxyContext,
+    plan: RoutePlan,
+    outcome: Outcome,
+    cache?: "hit" | "miss",
+  ): Promise<void> {
     const { result, fallbackUsed, fallbackReason } = outcome;
     const status = result.kind === "network-error" ? 502 : result.response?.status || 502;
     const auditPromise = this.appendAuditEntry(
       ctx,
-      result.backend,
+      outcome.cacheHit ? "cache" : result.backend,
       status,
       fallbackUsed,
       fallbackReason || plan.needsCloud.reason || "",
       plan.upstreamAttempted,
     ).catch(() => undefined);
     try {
-      await this.sendProxyResponse(ctx.reply, result, { fallbackUsed, fallbackReason });
+      await this.sendProxyResponse(ctx.reply, result, {
+        fallbackUsed,
+        fallbackReason,
+        backendLabel: outcome.cacheHit ? "cache" : undefined,
+        cache,
+      });
     } finally {
       await auditPromise;
     }
@@ -738,7 +872,13 @@ export class ProxyService {
   private async sendProxyResponse(
     reply: FastifyReply,
     result: ProxyResult,
-    meta: { fallbackUsed: boolean; fallbackReason: string },
+    meta: {
+      fallbackUsed: boolean;
+      fallbackReason: string;
+      /** Overrides the reported backend, e.g. `cache` for a response-cache hit. */
+      backendLabel?: string;
+      cache?: "hit" | "miss";
+    },
   ): Promise<void> {
     if (result.kind === "network-error") {
       reply.code(502).headers({
@@ -758,7 +898,8 @@ export class ProxyService {
       if (hopByHopHeaders.has(lower) || lower === "content-encoding") return;
       headers[key] = value;
     });
-    headers["x-hybrid-firecrawl-backend"] = result.backend;
+    headers["x-hybrid-firecrawl-backend"] = meta.backendLabel ?? result.backend;
+    if (meta.cache) headers["x-hybrid-firecrawl-cache"] = meta.cache;
     headers["x-hybrid-firecrawl-fallback"] = String(meta.fallbackUsed);
     if (meta.fallbackReason) headers["x-hybrid-firecrawl-fallback-reason"] = meta.fallbackReason;
     if (!result.stream && result.body) headers["content-length"] = String(result.body.length);
@@ -766,9 +907,10 @@ export class ProxyService {
     if (stream) {
       reply.hijack();
       reply.raw.writeHead(result.response?.status || 502, headers);
+      const source = Readable.fromWeb(stream as unknown as Parameters<typeof Readable.fromWeb>[0]);
       try {
         await new Promise<void>((resolve, reject) =>
-          Readable.fromWeb(stream as unknown as Parameters<typeof Readable.fromWeb>[0])
+          source
             .once("error", reject)
             .once("end", resolve)
             .pipe(reply.raw)
@@ -776,6 +918,9 @@ export class ProxyService {
             .once("error", reject),
         );
       } finally {
+        // When the client went away `pipe` leaves the source open; destroying it
+        // cancels the (possibly split) upstream stream so nothing keeps reading or buffering.
+        source.destroy();
         result.cleanup?.();
       }
       return;

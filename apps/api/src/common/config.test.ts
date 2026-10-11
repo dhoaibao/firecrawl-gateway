@@ -45,6 +45,24 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...baseEnv, METRICS_TOKEN: "short" })).toThrow(/METRICS_TOKEN/);
   });
 
+  it("keeps the response cache off by default and bounds its settings", () => {
+    const off = loadConfig(baseEnv);
+    expect(off.responseCacheTtlSeconds).toBe(0);
+    expect(off.responseCacheMaxBytes).toBe(67_108_864);
+
+    const on = loadConfig({
+      ...baseEnv,
+      RESPONSE_CACHE_TTL_SECONDS: "900",
+      RESPONSE_CACHE_MAX_BYTES: "10485760",
+    });
+    expect(on.responseCacheTtlSeconds).toBe(900);
+    expect(on.responseCacheMaxBytes).toBe(10_485_760);
+
+    expect(() => loadConfig({ ...baseEnv, RESPONSE_CACHE_TTL_SECONDS: "-1" })).toThrow();
+    expect(() => loadConfig({ ...baseEnv, RESPONSE_CACHE_TTL_SECONDS: "86401" })).toThrow();
+    expect(() => loadConfig({ ...baseEnv, RESPONSE_CACHE_MAX_BYTES: "1000" })).toThrow();
+  });
+
   it("keeps Telegram alerts off unless the bot token and chat id are both set", () => {
     const off = loadConfig(baseEnv);
     expect(off.telegramBotToken).toBe("");
