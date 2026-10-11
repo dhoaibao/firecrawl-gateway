@@ -52,11 +52,27 @@ function toLocalInput(iso: string | null): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-/** Converts the two optional limit inputs; a string result is a user-facing error. */
+/** A whole number between 1 and `max`, or null for an empty input; a string is a user-facing error. */
+function parseCount(input: string, label: string, max: number): number | null | string {
+  if (!input.trim()) return null;
+  const value = Number(input);
+  if (!Number.isInteger(value) || value < 1 || value > max)
+    return `${label} must be a whole number between 1 and ${max}.`;
+  return value;
+}
+
+/** Converts the optional limit inputs; a string result is a user-facing error. */
 function parseLimits(
   expiresInput: string,
   rateInput: string,
-): { expires_at: string | null; rate_limit_per_minute: number | null } | string {
+  quotaInput: string,
+):
+  | {
+      expires_at: string | null;
+      rate_limit_per_minute: number | null;
+      monthly_quota: number | null;
+    }
+  | string {
   let expires_at: string | null = null;
   if (expiresInput) {
     const date = new Date(expiresInput);
@@ -64,14 +80,11 @@ function parseLimits(
     if (date.getTime() <= Date.now()) return "Expiry must be in the future.";
     expires_at = date.toISOString();
   }
-  let rate_limit_per_minute: number | null = null;
-  if (rateInput.trim()) {
-    const value = Number(rateInput);
-    if (!Number.isInteger(value) || value < 1 || value > 100_000)
-      return "Rate limit must be a whole number between 1 and 100000.";
-    rate_limit_per_minute = value;
-  }
-  return { expires_at, rate_limit_per_minute };
+  const rate_limit_per_minute = parseCount(rateInput, "Rate limit", 100_000);
+  if (typeof rate_limit_per_minute === "string") return rate_limit_per_minute;
+  const monthly_quota = parseCount(quotaInput, "Monthly quota", 100_000_000);
+  if (typeof monthly_quota === "string") return monthly_quota;
+  return { expires_at, rate_limit_per_minute, monthly_quota };
 }
 
 export default function ApiKeys() {
@@ -88,9 +101,11 @@ export default function ApiKeys() {
   const [newKeyName, setNewKeyName] = useState("");
   const [newKeyExpiresAt, setNewKeyExpiresAt] = useState("");
   const [newKeyRateLimit, setNewKeyRateLimit] = useState("");
+  const [newKeyQuota, setNewKeyQuota] = useState("");
   const [editingKey, setEditingKey] = useState<ApiKeyData | null>(null);
   const [editExpiresAt, setEditExpiresAt] = useState("");
   const [editRateLimit, setEditRateLimit] = useState("");
+  const [editQuota, setEditQuota] = useState("");
   const [savingLimits, setSavingLimits] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createdKey, setCreatedKey] = useState<ApiKeyData | null>(null);
@@ -174,7 +189,7 @@ export default function ApiKeys() {
 
   async function handleCreate(e: React.SubmitEvent<HTMLFormElement>) {
     e.preventDefault();
-    const limits = parseLimits(newKeyExpiresAt, newKeyRateLimit);
+    const limits = parseLimits(newKeyExpiresAt, newKeyRateLimit, newKeyQuota);
     if (typeof limits === "string") {
       addToast(limits, "error");
       return;
@@ -188,11 +203,13 @@ export default function ApiKeys() {
         ...(limits.rate_limit_per_minute
           ? { rate_limit_per_minute: limits.rate_limit_per_minute }
           : {}),
+        ...(limits.monthly_quota ? { monthly_quota: limits.monthly_quota } : {}),
       });
       setCreatedKey(json.data);
       setNewKeyName("");
       setNewKeyExpiresAt("");
       setNewKeyRateLimit("");
+      setNewKeyQuota("");
       setShowForm(false);
       await fetchKeys();
     } catch (err) {
@@ -206,6 +223,7 @@ export default function ApiKeys() {
     setEditingKey(key);
     setEditExpiresAt(toLocalInput(key.expires_at));
     setEditRateLimit(key.rate_limit_per_minute ? String(key.rate_limit_per_minute) : "");
+    setEditQuota(key.monthly_quota ? String(key.monthly_quota) : "");
   }
 
   async function handleSaveLimits(e: React.SubmitEvent<HTMLFormElement>) {
@@ -217,15 +235,18 @@ export default function ApiKeys() {
     const initialRateLimit = editingKey.rate_limit_per_minute
       ? String(editingKey.rate_limit_per_minute)
       : "";
+    const initialQuota = editingKey.monthly_quota ? String(editingKey.monthly_quota) : "";
     const expiresChanged = editExpiresAt !== toLocalInput(editingKey.expires_at);
     const rateLimitChanged = editRateLimit.trim() !== initialRateLimit;
-    if (!expiresChanged && !rateLimitChanged) {
+    const quotaChanged = editQuota.trim() !== initialQuota;
+    if (!expiresChanged && !rateLimitChanged && !quotaChanged) {
       setEditingKey(null);
       return;
     }
     const limits = parseLimits(
       expiresChanged ? editExpiresAt : "",
       rateLimitChanged ? editRateLimit : "",
+      quotaChanged ? editQuota : "",
     );
     if (typeof limits === "string") {
       addToast(limits, "error");
@@ -237,6 +258,7 @@ export default function ApiKeys() {
       await api.patch(`/admin/api/api-keys/${editingKey.id}`, {
         ...(expiresChanged ? { expires_at: limits.expires_at } : {}),
         ...(rateLimitChanged ? { rate_limit_per_minute: limits.rate_limit_per_minute } : {}),
+        ...(quotaChanged ? { monthly_quota: limits.monthly_quota } : {}),
       });
       addToast("Key limits updated", "success");
       setEditingKey(null);
@@ -557,10 +579,30 @@ export default function ApiKeys() {
                 onChange={(e) => setNewKeyRateLimit(e.target.value)}
               />
             </div>
+            <div className="space-y-2 sm:col-span-2">
+              <label
+                htmlFor="new-api-key-quota"
+                className="block text-sm font-medium text-foreground"
+              >
+                Monthly quota{" "}
+                <span className="text-xs text-muted-foreground">(requests/month)</span>
+              </label>
+              <Input
+                id="new-api-key-quota"
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={100000000}
+                step={1}
+                placeholder="No quota"
+                value={newKeyQuota}
+                onChange={(e) => setNewKeyQuota(e.target.value)}
+              />
+            </div>
           </div>
           <p className="text-xs text-muted-foreground">
-            Both are optional. The limit is enforced per key and is approximate across restarts and
-            instances.
+            All three are optional. Limits are enforced per key and are approximate across
+            instances; the quota resets at the start of each UTC month.
           </p>
         </form>
       </FormDialog>
@@ -620,6 +662,26 @@ export default function ApiKeys() {
                 onChange={(e) => setEditRateLimit(e.target.value)}
               />
             </div>
+            <div className="space-y-2 sm:col-span-2">
+              <label
+                htmlFor="edit-api-key-quota"
+                className="block text-sm font-medium text-foreground"
+              >
+                Monthly quota{" "}
+                <span className="text-xs text-muted-foreground">(requests/month)</span>
+              </label>
+              <Input
+                id="edit-api-key-quota"
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={100000000}
+                step={1}
+                placeholder="No quota"
+                value={editQuota}
+                onChange={(e) => setEditQuota(e.target.value)}
+              />
+            </div>
           </div>
           <p className="text-xs text-muted-foreground">
             Changes apply to the next request. An expired key is rejected with 401.
@@ -675,6 +737,22 @@ export default function ApiKeys() {
                     {k.rate_limit_per_minute
                       ? `${k.rate_limit_per_minute.toLocaleString()}/min`
                       : "No rate limit"}
+                  </div>
+                  <div
+                    className={cn(
+                      "font-mono tabular-nums",
+                      k.monthly_quota &&
+                        typeof k.quota_used === "number" &&
+                        k.quota_used >= k.monthly_quota
+                        ? "text-danger-fg"
+                        : k.monthly_quota
+                          ? "text-foreground"
+                          : "text-muted-foreground",
+                    )}
+                  >
+                    {k.monthly_quota
+                      ? `${(k.quota_used ?? 0).toLocaleString()} / ${k.monthly_quota.toLocaleString()} this month`
+                      : "No monthly quota"}
                   </div>
                   <div className="text-muted-foreground">
                     {k.expires_at ? `Expires ${formatDate(k.expires_at)}` : "Never expires"}

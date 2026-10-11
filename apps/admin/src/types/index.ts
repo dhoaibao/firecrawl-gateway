@@ -52,6 +52,10 @@ export interface ApiKeyData {
   expires_at: string | null;
   /** Requests per minute allowed for this key; null means no per-key limit. */
   rate_limit_per_minute: number | null;
+  /** Requests allowed per calendar month (UTC); null means no quota. */
+  monthly_quota: number | null;
+  /** Requests counted this month as of the last counter flush; null when there is no quota. */
+  quota_used?: number | null;
   key?: string;
 }
 
