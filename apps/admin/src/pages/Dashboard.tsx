@@ -35,6 +35,7 @@ import FilterBar from "@/components/FilterBar";
 import DeleteHistoryDialog from "@/components/DeleteHistoryDialog";
 import { useConfirmDialog } from "@/components/ConfirmDialog";
 import type {
+  ApiKeyData,
   AuditEntry,
   BackendFilter,
   StatusFilter,
@@ -59,6 +60,8 @@ export default function Dashboard() {
   const [live, setLive] = useState(true);
   const [backendFilter, setBackendFilter] = useState<BackendFilter>("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("");
+  const [apiKeyFilter, setApiKeyFilter] = useState("");
+  const [apiKeys, setApiKeys] = useState<ApiKeyData[]>([]);
   const [fallbackOnly, setFallbackOnly] = useState(false);
   const [slowOnly, setSlowOnly] = useState(false);
   const [search, setSearch] = useState("");
@@ -190,6 +193,17 @@ export default function Dashboard() {
     }
   }, [addToast]);
 
+  // Key names only label the API-key filter and detail drawer, so they load once.
+  const fetchApiKeys = useCallback(async () => {
+    try {
+      const json = await api.get<{ data: ApiKeyData[] }>("/admin/api/api-keys");
+      setApiKeys(Array.isArray(json.data) ? json.data : []);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to load API keys";
+      addToast(msg, "error");
+    }
+  }, [addToast]);
+
   const handleDeleteEntry = useCallback(
     async (id: string) => {
       try {
@@ -305,12 +319,23 @@ export default function Dashboard() {
     };
   }, [fetchData, fetchCreditUsage, live]);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => void fetchApiKeys(), 0);
+    return () => window.clearTimeout(timer);
+  }, [fetchApiKeys]);
+
+  const apiKeyLabels = useMemo(
+    () => new Map(apiKeys.map((key) => [key.id, `${key.name} (${key.key_prefix}…)`])),
+    [apiKeys],
+  );
+
   // Server-side aggregates mirroring the active filters, so the cards are not
   // limited to the 500 entries loaded for the table.
   const statsQuery = useMemo(() => {
     const params = new URLSearchParams();
     if (backendFilter) params.set("backend", backendFilter);
     if (statusFilter) params.set("status", statusFilter);
+    if (apiKeyFilter) params.set("api_key_id", apiKeyFilter);
     if (fallbackOnly) params.set("fallback", "true");
     if (slowOnly) params.set("slow", "true");
     if (search.trim()) params.set("search", search.trim());
@@ -327,6 +352,7 @@ export default function Dashboard() {
   }, [
     backendFilter,
     statusFilter,
+    apiKeyFilter,
     fallbackOnly,
     slowOnly,
     search,
@@ -372,6 +398,7 @@ export default function Dashboard() {
         return false;
       }
       if (backendFilter && entry.backend_used !== backendFilter) return false;
+      if (apiKeyFilter && entry.api_key_id !== apiKeyFilter) return false;
       if (fallbackOnly && !entry.fallback_used) return false;
       if (slowOnly && entry.duration_ms < 1000) return false;
       if (statusFilter === "2xx" && !(entry.status_code >= 200 && entry.status_code < 300))
@@ -417,6 +444,7 @@ export default function Dashboard() {
     });
   }, [
     backendFilter,
+    apiKeyFilter,
     entries,
     fallbackOnly,
     slowOnly,
@@ -492,6 +520,13 @@ export default function Dashboard() {
         clear: () => setBackendFilter(""),
       });
     }
+    if (apiKeyFilter) {
+      filters.push({
+        key: "apiKey",
+        label: `Key: ${apiKeyLabels.get(apiKeyFilter) ?? apiKeyFilter}`,
+        clear: () => setApiKeyFilter(""),
+      });
+    }
     if (fallbackOnly) {
       filters.push({ key: "fallback", label: "Fallback", clear: () => setFallbackOnly(false) });
     }
@@ -523,6 +558,8 @@ export default function Dashboard() {
     monthFilter,
     yearFilter,
     backendFilter,
+    apiKeyFilter,
+    apiKeyLabels,
     fallbackOnly,
     slowOnly,
     statusFilter,
@@ -540,6 +577,7 @@ export default function Dashboard() {
     setMonthFilter("all");
     setYearFilter("all");
     setSearch("");
+    setApiKeyFilter("");
     setCurrentPage(1);
     if (view === "errors") {
       setSlowOnly(false);
@@ -578,6 +616,7 @@ export default function Dashboard() {
       "status_code",
       "duration_ms",
       "target_url",
+      "api_key_id",
     ];
     const csv = [
       headers,
@@ -628,6 +667,7 @@ export default function Dashboard() {
     setMonthFilter("all");
     setYearFilter("all");
     setBackendFilter("");
+    setApiKeyFilter("");
     setFallbackOnly(false);
     setSlowOnly(false);
     setStatusFilter("");
@@ -994,6 +1034,9 @@ export default function Dashboard() {
               setFallbackOnly={setFallbackOnly}
               statusFilter={statusFilter}
               setStatusFilter={setStatusFilter}
+              apiKeyFilter={apiKeyFilter}
+              setApiKeyFilter={setApiKeyFilter}
+              apiKeys={apiKeys}
               onChange={() => setCurrentPage(1)}
             />
           </CardHeader>
@@ -1023,6 +1066,9 @@ export default function Dashboard() {
 
       <AuditDetailDrawer
         entry={selectedEntry}
+        apiKeyLabel={
+          selectedEntry?.api_key_id ? (apiKeyLabels.get(selectedEntry.api_key_id) ?? null) : null
+        }
         copiedField={copiedField}
         onCopy={handleCopyDetailValue}
         onClose={closeAuditDrawer}

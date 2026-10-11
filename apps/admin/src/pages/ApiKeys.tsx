@@ -21,11 +21,16 @@ import PageLayout from "@/components/PageLayout";
 import { api } from "@/lib/api";
 import { formatDate } from "@/lib/date";
 import { getGatewayUrl } from "@/lib/gateway";
-import type { ApiKeyData } from "@/types";
+import { formatLatency } from "@/hooks/useAuditMetrics";
+import { cn } from "@/lib/utils";
+import type { ApiKeyData, ApiKeyUsage } from "@/types";
 
 export default function ApiKeys() {
   const gatewayUrl = getGatewayUrl();
   const [keys, setKeys] = useState<ApiKeyData[]>([]);
+  const [usage, setUsage] = useState<ApiKeyUsage[]>([]);
+  // Usage is secondary to the key list, so a slow or failed usage request never blocks it.
+  const [usageStatus, setUsageStatus] = useState<"loading" | "ready" | "error">("loading");
   const [loading, setLoading] = useState(true);
   const { addToast } = useToast();
   const [showForm, setShowForm] = useState(false);
@@ -74,10 +79,44 @@ export default function ApiKeys() {
     }
   }, [addToast]);
 
+  const fetchUsage = useCallback(async () => {
+    try {
+      const json = await api.get<{ data: ApiKeyUsage[] }>("/admin/api/usage/api-keys");
+      setUsage(Array.isArray(json.data) ? json.data : []);
+      setUsageStatus("ready");
+    } catch (err) {
+      setUsageStatus("error");
+      addToast(err instanceof Error ? err.message : "Error loading API key usage", "error");
+    }
+  }, [addToast]);
+
+  const loadAll = useCallback(
+    () => Promise.all([fetchKeys(), fetchUsage()]).then(() => undefined),
+    [fetchKeys, fetchUsage],
+  );
+
   useEffect(() => {
-    // Load API keys on mount: standard React pattern for loading authenticated data.
-    void fetchKeys();
-  }, [fetchKeys]);
+    // Load API keys and their usage on mount: standard React pattern for loading authenticated data.
+    void loadAll();
+  }, [loadAll]);
+
+  const usageByKey = new Map(
+    usage.flatMap((item) => (item.api_key_id ? [[item.api_key_id, item] as const] : [])),
+  );
+  const unattributedRequests = usage.find((item) => item.api_key_id === null)?.total ?? 0;
+
+  /** Renders one usage cell: a placeholder while loading or failed, otherwise the value. */
+  function usageCell(key: ApiKeyData, render: (item: ApiKeyUsage | undefined) => React.ReactNode) {
+    if (usageStatus === "loading")
+      return <span className="text-muted-foreground opacity-60">…</span>;
+    if (usageStatus === "error")
+      return (
+        <span className="text-muted-foreground" title="Usage unavailable">
+          —
+        </span>
+      );
+    return render(usageByKey.get(key.id));
+  }
 
   async function handleCreate(e: React.SubmitEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -154,7 +193,7 @@ export default function ApiKeys() {
             size="sm"
             onClick={() => {
               setRefreshing(true);
-              void fetchKeys().then(() => setRefreshing(false));
+              void loadAll().then(() => setRefreshing(false));
             }}
             disabled={refreshing}
           >
@@ -415,6 +454,55 @@ export default function ApiKeys() {
                 ),
             },
             {
+              key: "requests",
+              header: "Requests",
+              align: "right",
+              className: "font-mono tabular-nums",
+              render: (k) => usageCell(k, (item) => (item ? item.total.toLocaleString() : "0")),
+            },
+            {
+              key: "errors",
+              header: "Errors",
+              align: "right",
+              className: "font-mono tabular-nums",
+              render: (k) =>
+                usageCell(k, (item) => (
+                  <span
+                    className={cn(
+                      item && item.error_count > 0 ? "text-danger-fg" : "text-muted-foreground",
+                    )}
+                  >
+                    {(item?.error_count ?? 0).toLocaleString()}
+                  </span>
+                )),
+            },
+            {
+              key: "fallbacks",
+              header: "Fallbacks",
+              align: "right",
+              className: "font-mono tabular-nums",
+              render: (k) =>
+                usageCell(k, (item) => (
+                  <span
+                    className={cn(
+                      item && item.fallbacks > 0 ? "text-warning-fg" : "text-muted-foreground",
+                    )}
+                  >
+                    {(item?.fallbacks ?? 0).toLocaleString()}
+                  </span>
+                )),
+            },
+            {
+              key: "latency",
+              header: "Avg latency",
+              align: "right",
+              className: "font-mono tabular-nums text-muted-foreground",
+              render: (k) =>
+                usageCell(k, (item) =>
+                  item && item.total > 0 ? formatLatency(item.avg_duration_ms) : "—",
+                ),
+            },
+            {
               key: "actions",
               header: "Actions",
               align: "right",
@@ -466,6 +554,19 @@ export default function ApiKeys() {
           onPageSizeChange={setPageSize}
         />
       </div>
+
+      <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+        Usage comes from the retained audit log: entries older than 30 days are purged and deleting
+        request history lowers these counts.
+        {usageStatus === "ready" && unattributedRequests > 0 && (
+          <>
+            {" "}
+            {unattributedRequests.toLocaleString()} logged{" "}
+            {unattributedRequests === 1 ? "request is" : "requests are"} not attributed to a key
+            (admin playground, rejected requests, or logged before key attribution).
+          </>
+        )}
+      </p>
 
       {confirmDialog}
     </PageLayout>

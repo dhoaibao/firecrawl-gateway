@@ -14,6 +14,18 @@ export interface AuditEntry {
   duration_ms: number;
   target_url: string;
   request_id?: string;
+  /** Virtual API key that made the request; absent for playground and rejected requests. */
+  api_key_id?: string;
+}
+
+/** Per-key request counts from the retained audit log; `api_key_id` is null when unattributed. */
+export interface ApiKeyUsage {
+  api_key_id: string | null;
+  total: number;
+  error_count: number;
+  fallbacks: number;
+  avg_duration_ms: number;
+  last_request_at: string | null;
 }
 
 /** All-time audit aggregates computed server-side over the full log */

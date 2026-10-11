@@ -8,6 +8,8 @@ import type { AuditEntry } from "@/types";
 
 interface AuditDetailDrawerProps {
   entry: AuditEntry | null;
+  /** Name and prefix of the entry's virtual API key, when it is still listed. */
+  apiKeyLabel?: string | null;
   copiedField: string | null;
   onCopy: (field: string, value: string) => void;
   onClose: () => void;
@@ -67,6 +69,7 @@ function CopyValue({
 
 export default function AuditDetailDrawer({
   entry,
+  apiKeyLabel,
   copiedField,
   onCopy,
   onClose,
@@ -138,6 +141,18 @@ export default function AuditDetailDrawer({
                     copiedField={copiedField}
                     onCopy={onCopy}
                   />
+                </DetailRow>
+                <DetailRow label="API key">
+                  {entry.api_key_id ? (
+                    <span className="flex min-w-0 flex-col gap-0.5">
+                      {apiKeyLabel && <span>{apiKeyLabel}</span>}
+                      <code className="break-all font-mono text-xs text-muted-foreground">
+                        {entry.api_key_id}
+                      </code>
+                    </span>
+                  ) : (
+                    "—"
+                  )}
                 </DetailRow>
                 <DetailRow label="Route mode">
                   <code className="font-mono text-xs">{entry.route_mode || "—"}</code>

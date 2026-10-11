@@ -1,4 +1,4 @@
-import { CalendarDays, Server, Activity, SlidersHorizontal } from "lucide-react";
+import { CalendarDays, Server, Activity, SlidersHorizontal, KeyRound } from "lucide-react";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   Select,
@@ -7,7 +7,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { BackendFilter, StatusFilter, DateRange } from "@/types";
+import type { ApiKeyData, BackendFilter, StatusFilter, DateRange } from "@/types";
 
 const backendFilters: Array<{ label: string; value: BackendFilter }> = [
   { label: "All", value: "" },
@@ -47,6 +47,10 @@ interface FilterBarProps {
   setFallbackOnly: (value: boolean) => void;
   statusFilter: StatusFilter;
   setStatusFilter: (value: StatusFilter) => void;
+  /** Selected virtual API key id; empty string means all keys. */
+  apiKeyFilter: string;
+  setApiKeyFilter: (value: string) => void;
+  apiKeys: Array<Pick<ApiKeyData, "id" | "name" | "key_prefix" | "revoked">>;
   onChange: () => void;
 }
 
@@ -65,6 +69,9 @@ export default function FilterBar({
   setFallbackOnly,
   statusFilter,
   setStatusFilter,
+  apiKeyFilter,
+  setApiKeyFilter,
+  apiKeys,
   onChange,
 }: FilterBarProps) {
   return (
@@ -261,6 +268,38 @@ export default function FilterBar({
             </ToggleGroupItem>
           ))}
         </ToggleGroup>
+      </div>
+
+      {/* API key */}
+      <div className="space-y-1.5">
+        <span
+          id="filter-api-key-label"
+          className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground"
+        >
+          <KeyRound className="size-3" /> API key
+        </span>
+        <Select
+          value={apiKeyFilter || "all"}
+          onValueChange={(value) => {
+            setApiKeyFilter(value === "all" ? "" : value);
+            onChange();
+          }}
+        >
+          <SelectTrigger
+            aria-labelledby="filter-api-key-label"
+            className="h-8 w-full max-w-xs text-xs"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All keys</SelectItem>
+            {apiKeys.map((key) => (
+              <SelectItem key={key.id} value={key.id}>
+                {key.name} · {key.key_prefix}…{key.revoked ? " (revoked)" : ""}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
     </div>
   );
