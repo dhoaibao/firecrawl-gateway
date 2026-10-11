@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiKeysService } from "./api-keys.service";
 
 const encryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -155,6 +155,134 @@ describe("ApiKeysService", () => {
       const other = await service.hitRateLimit({ id: "b", rate_limit_per_minute: 1 } as never);
 
       expect(other).toMatchObject({ exceeded: false });
+    });
+  });
+
+  describe("monthly quota", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function quotaService(count: () => number) {
+      const queryRaw = vi
+        .fn()
+        .mockImplementation((_sql: unknown) =>
+          Promise.resolve([{ count: count(), reset_at: new Date("2026-11-01T00:00:00.000Z") }]),
+        );
+      return {
+        service: new ApiKeysService({ $queryRaw: queryRaw } as never, {} as never),
+        queryRaw,
+      };
+    }
+    const key = (quota: number | null) => ({ id: "key-1", monthly_quota: quota }) as never;
+
+    it("does nothing for a key without a quota", async () => {
+      const { service, queryRaw } = quotaService(() => 0);
+
+      await expect(service.hitQuota(key(null))).resolves.toBeNull();
+      expect(queryRaw).not.toHaveBeenCalled();
+    });
+
+    it("counts under a per-month key that ends at the start of the next UTC month", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-10-31T23:59:30.000Z"));
+      const { service, queryRaw } = quotaService(() => 3);
+
+      const result = await service.hitQuota(key(3));
+
+      const sql = queryRaw.mock.calls[0][0] as { values: unknown[] };
+      expect(sql.values[0]).toBe("quota:key-1:2026-10");
+      expect(sql.values).toContainEqual(new Date("2026-11-01T00:00:00.000Z"));
+      expect(result).toMatchObject({ limit: 3, remaining: 0, exceeded: false });
+    });
+
+    it("reports the boundary exactly: the request over the quota is the first one exceeded", async () => {
+      const { service } = quotaService(() => 2);
+
+      const first = await service.hitQuota(key(3)); // 2
+      const second = await service.hitQuota(key(3)); // 3
+      const third = await service.hitQuota(key(3)); // 4
+
+      expect(first).toMatchObject({ remaining: 1, exceeded: false });
+      expect(second).toMatchObject({ remaining: 0, exceeded: false });
+      expect(third).toMatchObject({ remaining: 0, exceeded: true });
+    });
+
+    it("starts a fresh counter in the next month", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-10-31T23:59:59.000Z"));
+      const { service, queryRaw } = quotaService(() => 1);
+
+      await service.hitQuota(key(1));
+      vi.setSystemTime(new Date("2026-11-01T00:00:01.000Z"));
+      await service.hitQuota(key(1));
+
+      const keys = queryRaw.mock.calls.map(([sql]) => (sql as { values: unknown[] }).values[0]);
+      expect(keys).toEqual(["quota:key-1:2026-10", "quota:key-1:2026-11"]);
+    });
+
+    it("keeps counting from memory while the database is down, never rejecting within quota", async () => {
+      const service = new ApiKeysService(
+        { $queryRaw: vi.fn().mockRejectedValue(new Error("db down")) } as never,
+        {} as never,
+      );
+
+      const results = [];
+      for (let i = 0; i < 4; i += 1) results.push(await service.hitQuota(key(3)));
+
+      // In-memory counts are a lower bound of real usage: allowed up to the quota, rejected after.
+      expect(results.map((result) => result?.exceeded)).toEqual([false, false, false, true]);
+    });
+
+    it("flushes idle usage on a timer and drains pending counts at shutdown", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-10-15T12:00:00.000Z"));
+      const queryRaw = vi
+        .fn()
+        .mockResolvedValue([{ count: 1, reset_at: new Date("2026-11-01T00:00:00.000Z") }]);
+      const service = new ApiKeysService({ $queryRaw: queryRaw } as never, {} as never);
+
+      await service.hitQuota(key(100)); // first sight: flushes immediately
+      await service.hitQuota(key(100)); // pending, no further traffic follows
+      expect(queryRaw).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(queryRaw).toHaveBeenCalledTimes(2);
+
+      await service.hitQuota(key(100)); // pending again, then the process shuts down
+      await service.onModuleDestroy();
+      expect(queryRaw).toHaveBeenCalledTimes(3);
+      const lastDelta = (queryRaw.mock.calls[2][0] as { values: unknown[] }).values[1];
+      expect(lastDelta).toBe(1);
+    });
+
+    it("reads this month's used count for keys that have a quota only", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-10-15T12:00:00.000Z"));
+      const findMany = vi.fn().mockResolvedValue([{ key: "quota:with:2026-10", count: 42 }]);
+      const service = new ApiKeysService({ rateLimit: { findMany } } as never, {} as never);
+
+      const usage = await service.quotaUsage([
+        { id: "with", monthly_quota: 100 },
+        { id: "without", monthly_quota: null },
+      ] as never);
+
+      expect(findMany).toHaveBeenCalledWith({
+        where: { key: { in: ["quota:with:2026-10"] }, resetAt: { gt: new Date() } },
+        select: { key: true, count: true },
+      });
+      expect(usage.get("with")).toBe(42);
+      expect(usage.has("without")).toBe(false);
+    });
+
+    it("skips the query when no key has a quota", async () => {
+      const findMany = vi.fn();
+      const service = new ApiKeysService({ rateLimit: { findMany } } as never, {} as never);
+
+      await expect(
+        service.quotaUsage([{ id: "a", monthly_quota: null }] as never),
+      ).resolves.toEqual(new Map());
+      expect(findMany).not.toHaveBeenCalled();
     });
   });
 

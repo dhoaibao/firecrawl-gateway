@@ -21,6 +21,7 @@ model ApiKey {
   // Optional per-key limits; null means no expiry / no per-key rate limit.
   expiresAt          DateTime? @map("expires_at")
   rateLimitPerMinute Int?      @map("rate_limit_per_minute")
+  monthlyQuota       Int?      @map("monthly_quota")
 
   @@index([keyHash])
   @@index([keyPrefix])

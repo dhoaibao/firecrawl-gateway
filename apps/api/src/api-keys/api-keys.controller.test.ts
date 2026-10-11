@@ -21,6 +21,7 @@ describe("ApiKeysController", () => {
     const key = record({ key: "legacy-secret" });
     const keys = {
       listApiKeys: vi.fn().mockResolvedValue([key]),
+      quotaUsage: vi.fn().mockResolvedValue(new Map()),
       getApiKeyById: vi.fn().mockResolvedValue(key),
       revokeApiKey: vi.fn().mockResolvedValue(record({ revoked: true })),
     };
@@ -53,7 +54,31 @@ describe("ApiKeysController", () => {
     expect(keys.createApiKey).toHaveBeenCalledWith("production", {
       expiresAt: undefined,
       rateLimitPerMinute: undefined,
+      monthlyQuota: undefined,
     });
+  });
+
+  it("reports this month's quota usage only for keys that have a quota", async () => {
+    const keys = {
+      listApiKeys: vi
+        .fn()
+        .mockResolvedValue([
+          record({ id: "with-quota", monthly_quota: 1000 }),
+          record({ id: "unused-quota", monthly_quota: 500 }),
+          record({ id: "no-quota", monthly_quota: null }),
+        ]),
+      quotaUsage: vi.fn().mockResolvedValue(new Map([["with-quota", 120]])),
+    };
+    const controller = new ApiKeysController(keys as never);
+
+    const { data } = await controller.list();
+
+    expect(data.map((key) => [key.id, key.quota_used])).toEqual([
+      ["with-quota", 120],
+      ["unused-quota", 0],
+      ["no-quota", null],
+    ]);
+    expect(data[0]).not.toHaveProperty("key_hash");
   });
 
   describe("per-key limits", () => {
@@ -83,6 +108,10 @@ describe("ApiKeysController", () => {
       [{ rate_limit_per_minute: 1.5 }, /between 1 and/],
       [{ rate_limit_per_minute: "60" }, /between 1 and/],
       [{ rate_limit_per_minute: 100_001 }, /between 1 and/],
+      [{ monthly_quota: 0 }, /monthly_quota must be an integer/],
+      [{ monthly_quota: 2.5 }, /monthly_quota must be an integer/],
+      [{ monthly_quota: "1000" }, /monthly_quota must be an integer/],
+      [{ monthly_quota: 100_000_001 }, /monthly_quota must be an integer/],
     ])("rejects invalid limits %j on create and update", async (body, message) => {
       const keys = {
         createApiKey: vi.fn(),
@@ -114,10 +143,19 @@ describe("ApiKeysController", () => {
       expect(keys.updateApiKeyLimits).toHaveBeenNthCalledWith(1, "key-1", {
         expiresAt: null,
         rateLimitPerMinute: 10,
+        monthlyQuota: undefined,
       });
       expect(keys.updateApiKeyLimits).toHaveBeenNthCalledWith(2, "key-1", {
         expiresAt: undefined,
         rateLimitPerMinute: null,
+        monthlyQuota: undefined,
+      });
+
+      await controller.update("key-1", { monthly_quota: 5000 });
+      expect(keys.updateApiKeyLimits).toHaveBeenNthCalledWith(3, "key-1", {
+        expiresAt: undefined,
+        rateLimitPerMinute: undefined,
+        monthlyQuota: 5000,
       });
       expect(response.data).not.toHaveProperty("key_hash");
       expect(response.data).not.toHaveProperty("key_value");

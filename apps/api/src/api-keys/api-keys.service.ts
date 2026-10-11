@@ -1,4 +1,4 @@
-import { Inject, Injectable } from "@nestjs/common";
+import { Inject, Injectable, type OnModuleDestroy } from "@nestjs/common";
 import crypto from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
@@ -23,12 +23,15 @@ export interface ApiKeyRecord {
   expires_at: string | null;
   /** Requests per minute allowed for this key; null means no per-key limit. */
   rate_limit_per_minute: number | null;
+  /** Requests allowed per calendar month (UTC); null means no quota. */
+  monthly_quota: number | null;
 }
 
 /** Optional per-key limits; `null` clears a limit, `undefined` leaves it unchanged. */
 export interface ApiKeyLimits {
   expiresAt?: Date | null;
   rateLimitPerMinute?: number | null;
+  monthlyQuota?: number | null;
 }
 
 export interface ApiKeyRateLimitResult {
@@ -56,6 +59,7 @@ function toKey(key: {
   lastUsedAt: Date | null;
   expiresAt?: Date | null;
   rateLimitPerMinute?: number | null;
+  monthlyQuota?: number | null;
 }): ApiKeyRecord {
   return {
     id: key.id,
@@ -69,11 +73,33 @@ function toKey(key: {
     last_used_at: key.lastUsedAt?.toISOString() ?? null,
     expires_at: key.expiresAt?.toISOString() ?? null,
     rate_limit_per_minute: key.rateLimitPerMinute ?? null,
+    monthly_quota: key.monthlyQuota ?? null,
+  };
+}
+
+/** Prisma `data` fragment for the limits the caller actually provided. */
+function limitsData(limits: ApiKeyLimits) {
+  return {
+    ...(limits.expiresAt !== undefined ? { expiresAt: limits.expiresAt } : {}),
+    ...(limits.rateLimitPerMinute !== undefined
+      ? { rateLimitPerMinute: limits.rateLimitPerMinute }
+      : {}),
+    ...(limits.monthlyQuota !== undefined ? { monthlyQuota: limits.monthlyQuota } : {}),
+  };
+}
+
+/** The quota counter key for the UTC calendar month containing `now`, and when that month ends. */
+function quotaWindow(keyId: string, now = new Date()): { counterKey: string; resetAt: Date } {
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth();
+  return {
+    counterKey: `quota:${keyId}:${year}-${String(month + 1).padStart(2, "0")}`,
+    resetAt: new Date(Date.UTC(year, month + 1, 1)),
   };
 }
 
 @Injectable()
-export class ApiKeysService {
+export class ApiKeysService implements OnModuleDestroy {
   private readonly lastTouchById = new Map<string, number>();
   private readonly validationCache = new Map<
     string,
@@ -92,7 +118,14 @@ export class ApiKeysService {
     private readonly prisma: PrismaService,
     @Inject(API_CONFIG) private readonly config: ApiConfig,
   ) {
-    this.rateLimits = new RateLimitCounter(prisma);
+    // Few, long-lived buckets: flush them on a timer too so idle usage (a monthly
+    // quota especially) is persisted even when no later request arrives.
+    this.rateLimits = new RateLimitCounter(prisma, { scheduleFlush: true });
+  }
+
+  /** Persists pending per-key counts while the database is still connected. */
+  async onModuleDestroy(): Promise<void> {
+    await this.rateLimits.drain();
   }
 
   async createApiKey(name: string, limits: ApiKeyLimits = {}) {
@@ -104,10 +137,7 @@ export class ApiKeysService {
         keyHash: this.hashApiKey(key),
         keyValue: encryptSettingValue(key, this.config.firecrawlKeysEncryptionKey),
         keyPrefix: key.slice(0, 8),
-        ...(limits.expiresAt !== undefined ? { expiresAt: limits.expiresAt } : {}),
-        ...(limits.rateLimitPerMinute !== undefined
-          ? { rateLimitPerMinute: limits.rateLimitPerMinute }
-          : {}),
+        ...limitsData(limits),
       },
     });
     const { key_value: _keyValue, ...keyData } = toKey(row);
@@ -120,12 +150,7 @@ export class ApiKeysService {
       const updated = toKey(
         await this.prisma.apiKey.update({
           where: { id },
-          data: {
-            ...(limits.expiresAt !== undefined ? { expiresAt: limits.expiresAt } : {}),
-            ...(limits.rateLimitPerMinute !== undefined
-              ? { rateLimitPerMinute: limits.rateLimitPerMinute }
-              : {}),
-          },
+          data: limitsData(limits),
         }),
       );
       this.validationCache.delete(updated.key_hash);
@@ -156,6 +181,44 @@ export class ApiKeysService {
   async listApiKeys(): Promise<ApiKeyRecord[]> {
     const rows = await this.prisma.apiKey.findMany({ orderBy: { createdAt: "desc" } });
     return rows.map(toKey);
+  }
+
+  /**
+   * Counts one request against the key's monthly quota (UTC calendar month).
+   * Returns null when the key has no quota (or on an unexpected counting error,
+   * in which case the request is allowed). While the database is unreachable the
+   * counter keeps counting from memory, which is a lower bound of real usage, so
+   * a key within its quota is not rejected for that. Enforcement is approximate:
+   * across the flush interval and instances, and a flush whose acknowledgement
+   * is lost after it committed can be counted twice (see `RateLimitCounter`).
+   */
+  async hitQuota(key: ApiKeyRecord): Promise<ApiKeyRateLimitResult | null> {
+    const limit = key.monthly_quota;
+    if (limit === null || limit === undefined) return null;
+    try {
+      const { counterKey, resetAt: monthEnd } = quotaWindow(key.id);
+      const { count, resetAt } = await this.rateLimits.hit(counterKey, monthEnd);
+      return { limit, remaining: Math.max(0, limit - count), resetAt, exceeded: count > limit };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Requests counted against each key's quota this month (as of the last flush), by key id. */
+  async quotaUsage(keys: ApiKeyRecord[]): Promise<Map<string, number>> {
+    const usage = new Map<string, number>();
+    const withQuota = keys.filter((key) => key.monthly_quota !== null);
+    if (withQuota.length === 0) return usage;
+    const counterKeys = new Map(withQuota.map((key) => [quotaWindow(key.id).counterKey, key.id]));
+    const rows = await this.prisma.rateLimit.findMany({
+      where: { key: { in: [...counterKeys.keys()] }, resetAt: { gt: new Date() } },
+      select: { key: true, count: true },
+    });
+    for (const row of rows) {
+      const id = counterKeys.get(row.key);
+      if (id) usage.set(id, row.count);
+    }
+    return usage;
   }
 
   async getApiKeyById(id: string): Promise<ApiKeyRecord | null> {

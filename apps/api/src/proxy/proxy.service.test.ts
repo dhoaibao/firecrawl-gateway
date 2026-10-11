@@ -1192,6 +1192,7 @@ describe("ProxyService routing outcomes", () => {
         validateApiKey: vi.fn().mockResolvedValue({ id: "key-1", ...record }),
         touchApiKey: vi.fn().mockResolvedValue(undefined),
         hitRateLimit: hitRateLimit ?? vi.fn().mockResolvedValue(null),
+        hitQuota: vi.fn().mockResolvedValue(null),
       };
       const audit = { appendAudit: vi.fn().mockResolvedValue(undefined) };
       const service = new ProxyService(
@@ -1280,6 +1281,73 @@ describe("ProxyService routing outcomes", () => {
       await service.handle(authed(), reply as never);
 
       expect(reply.code).not.toHaveBeenCalledWith(429);
+    });
+
+    it("answers 429 with quota headers when the monthly quota is exhausted", async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const resetAt = Date.now() + 5 * 86_400_000;
+      const hitQuota = vi
+        .fn()
+        .mockResolvedValue({ limit: 1000, remaining: 0, resetAt, exceeded: true });
+      const { service, keys, audit } = makeLimitedService({ monthly_quota: 1000 });
+      keys.hitQuota = hitQuota;
+      const reply = makeReply();
+
+      await service.handle(authed(), reply as never);
+
+      expect(hitQuota).toHaveBeenCalledTimes(1);
+      expect(reply.code).toHaveBeenCalledWith(429);
+      expect(reply.headers).toHaveBeenCalledWith(
+        expect.objectContaining({
+          "x-quota-limit": "1000",
+          "x-quota-remaining": "0",
+          "x-quota-reset": String(Math.ceil(resetAt / 1000)),
+        }),
+      );
+      expect(String(reply.send.mock.calls[0][0].error)).toContain("monthly quota exceeded");
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(keys.touchApiKey).not.toHaveBeenCalled();
+      expect(audit.appendAudit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status_code: 429,
+          api_key_id: "key-1",
+          fallback_reason: "API key monthly quota exceeded",
+        }),
+      );
+    });
+
+    it("does not spend quota on a request the per-minute limit already rejected", async () => {
+      vi.stubGlobal("fetch", vi.fn());
+      const hitRateLimit = vi
+        .fn()
+        .mockResolvedValue({ limit: 5, remaining: 0, resetAt: Date.now() + 1000, exceeded: true });
+      const { service, keys } = makeLimitedService(
+        { rate_limit_per_minute: 5, monthly_quota: 1000 },
+        hitRateLimit,
+      );
+      keys.hitQuota = vi.fn();
+
+      await service.handle(authed(), makeReply() as never);
+
+      expect(keys.hitQuota).not.toHaveBeenCalled();
+    });
+
+    it("proxies a key that is within its monthly quota and never counts keys without one", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+      const within = makeLimitedService({ monthly_quota: 1000 });
+      within.keys.hitQuota = vi
+        .fn()
+        .mockResolvedValue({ limit: 1000, remaining: 10, resetAt: Date.now(), exceeded: false });
+      const unlimited = makeLimitedService({ monthly_quota: null });
+      unlimited.keys.hitQuota = vi.fn();
+      const reply = makeReply();
+
+      await within.service.handle(authed(), reply as never);
+      await unlimited.service.handle(authed(), makeReply() as never);
+
+      expect(reply.code).not.toHaveBeenCalledWith(429);
+      expect(unlimited.keys.hitQuota).not.toHaveBeenCalled();
     });
 
     it("never consults the per-key limiter for keys without a limit", async () => {

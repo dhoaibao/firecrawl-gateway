@@ -264,6 +264,22 @@ export class ProxyService {
         return null;
       }
     }
+    if (authenticated.monthly_quota != null) {
+      const quota = await this.keys.hitQuota(authenticated);
+      if (quota?.exceeded) {
+        ctx.reply.headers({
+          "x-quota-limit": String(quota.limit),
+          "x-quota-remaining": "0",
+          "x-quota-reset": String(Math.ceil(quota.resetAt / 1000)),
+          "retry-after": String(Math.max(1, Math.ceil((quota.resetAt - Date.now()) / 1000))),
+        });
+        await this.rejectEarly(ctx, "none", 429, "API key monthly quota exceeded", {
+          success: false,
+          error: "API key monthly quota exceeded. It resets at the start of the next UTC month.",
+        });
+        return null;
+      }
+    }
     void this.keys.touchApiKey(authenticated.id).catch(() => undefined);
     return settings;
   }
