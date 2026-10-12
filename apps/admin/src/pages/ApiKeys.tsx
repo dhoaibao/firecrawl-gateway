@@ -141,7 +141,8 @@ export default function ApiKeys() {
   const fetchKeys = useCallback(async () => {
     try {
       const json = await api.get<{ data: ApiKeyData[] }>("/admin/api/api-keys");
-      setKeys(json.data || []);
+      // Keys owned by portal users are managed under Users, not here.
+      setKeys((json.data || []).filter((key) => !key.user_id));
     } catch (err) {
       addToast(err instanceof Error ? err.message : "Error loading virtual API keys", "error");
     } finally {

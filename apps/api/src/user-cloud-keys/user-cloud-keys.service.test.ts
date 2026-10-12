@@ -128,6 +128,9 @@ function managed(options: { rows?: unknown[]; count?: number; details?: unknown 
   }));
   const tx = {
     $executeRaw: vi.fn().mockResolvedValue(1),
+    user: {
+      findUnique: vi.fn().mockResolvedValue({ status: "active", deletedAt: null }),
+    },
     userCloudKey: {
       findMany: vi
         .fn()
@@ -322,5 +325,25 @@ describe("UserCloudKeysService key management", () => {
     // The next request must read again instead of being served the pre-delete rows.
     await expect(service.loadEntries("user-1")).resolves.toEqual([]);
     expect(prisma.userCloudKey.findMany).toHaveBeenCalledTimes(2);
+  });
+
+  it("stores nothing when the account was suspended or deleted while Cloud was being asked", async () => {
+    for (const owner of [
+      { status: "suspended", deletedAt: null },
+      { status: "active", deletedAt: new Date() },
+      null,
+    ]) {
+      const { service, tx, create } = managed();
+      tx.user.findUnique.mockResolvedValueOnce(owner);
+
+      await expect(
+        service.add("user-1", { name: "Main", key: "fc-0123456789abcdef", role: "cloud" }),
+      ).rejects.toMatchObject({ reason: "account_inactive" });
+      expect(create).not.toHaveBeenCalled();
+      // The lock is taken first, so the check cannot race a delete.
+      expect(tx.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+        tx.user.findUnique.mock.invocationCallOrder[0],
+      );
+    }
   });
 });

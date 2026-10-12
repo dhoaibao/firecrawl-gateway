@@ -46,7 +46,7 @@ A dark-themed, data-dense administrative dashboard for operating a hybrid Firecr
 ## Audience And Workflows
 
 - **Operators and admins** monitor live gateway traffic, success rates, fallback behavior, and latency.
-- **The administrator** manages global API keys (create, revoke), audit history, routing policy, API-key inactivity policy, and Firecrawl Cloud API key priority. Credentials are environment-backed; there is no user-management workflow.
+- **The administrator** manages global API keys (create, revoke), audit history, routing policy, API-key inactivity policy, and Firecrawl Cloud API key priority. Credentials are environment-backed. The administrator also oversees portal users on the Users page: search and filter, suspend or reactivate, delete, and override a user's limits in a side drawer (details, sign-in methods, keys without secrets). Keys owned by portal users are managed there, not on the Virtual API Keys page.
 - All authenticated pages share a persistent sidebar; the dashboard auto-refreshes every 5 seconds when "Live" is enabled.
 
 ## Visual Principles

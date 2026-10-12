@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { PrismaService } from "../prisma/prisma.service";
 import type { PortalUserIdentity } from "../common/types";
 import type { OAuthProfile } from "../portal-auth/oauth-providers";
+import { lockUser } from "./user-lock";
 
 export const USER_SESSION_TTL_MS = 14 * 24 * 60 * 60_000;
 /** `last_seen_at` is written at most this often per session. */
@@ -172,18 +173,32 @@ export class UsersService {
     if (user.status !== "active" || user.deletedAt !== null) throw new AccountDisabledError();
   }
 
-  /** Starts a session; only a hash of the returned token is stored. */
+  /**
+   * Starts a session; only a hash of the returned token is stored. Under the per-user
+   * lock the account is re-checked, so a sign-in that was in flight when an admin
+   * suspended or deleted the user cannot end up with a live session (an earlier one
+   * is revoked by the same lock holder, a later one is refused here).
+   */
   async createSession(userId: string, userAgent: string | undefined) {
     const token = crypto.randomBytes(32).toString("base64url");
     const expiresAt = new Date(Date.now() + USER_SESSION_TTL_MS);
-    await this.prisma.userSession.create({
-      data: {
-        id: crypto.randomUUID(),
-        userId,
-        tokenHash: hashToken(token),
-        userAgent: userAgent ? userAgent.slice(0, 255) : null,
-        expiresAt,
-      },
+    await this.prisma.$transaction(async (tx) => {
+      await lockUser(tx, userId);
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { status: true, deletedAt: true },
+      });
+      if (!user) throw new AccountDisabledError();
+      this.assertActive(user);
+      await tx.userSession.create({
+        data: {
+          id: crypto.randomUUID(),
+          userId,
+          tokenHash: hashToken(token),
+          userAgent: userAgent ? userAgent.slice(0, 255) : null,
+          expiresAt,
+        },
+      });
     });
     return { token, expiresAt };
   }
@@ -210,6 +225,19 @@ export class UsersService {
       where: { tokenHash: hashToken(token), revokedAt: null },
       data: { revokedAt: new Date() },
     });
+  }
+
+  /** The admin-set limit overrides of a user (all null for an unknown user). */
+  async limitsFor(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { maxApiKeys: true, rateLimitPerMinute: true, monthlyQuota: true },
+    });
+    return {
+      maxApiKeys: user?.maxApiKeys ?? null,
+      rateLimitPerMinute: user?.rateLimitPerMinute ?? null,
+      monthlyQuota: user?.monthlyQuota ?? null,
+    };
   }
 
   /** The sign-in methods attached to a user, oldest first. */

@@ -14,6 +14,7 @@ import { MetricsModule } from "./metrics/metrics.module";
 import { AlertsModule } from "./alerts/alerts.module";
 import { PortalAuthModule } from "./portal-auth/portal-auth.module";
 import { PortalModule } from "./portal/portal.module";
+import { UsersAdminModule } from "./users-admin/users-admin.module";
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { PortalModule } from "./portal/portal.module";
     AuthModule,
     PortalAuthModule,
     PortalModule,
+    UsersAdminModule,
     ApiKeysModule,
     SettingsModule,
     AuditModule,

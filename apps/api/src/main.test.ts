@@ -248,3 +248,20 @@ describe("portal account API", () => {
     expect(response.statusCode).toBe(403);
   });
 });
+
+describe("admin users API", () => {
+  it("is wired into the app and unavailable without an admin session", async () => {
+    // AUTH_ENABLED=false makes every admin route answer 404 by design; the point here is
+    // that the controller is registered behind the same guard and no data leaks.
+    for (const [method, url] of [
+      ["GET", "/admin/api/users"],
+      ["GET", "/admin/api/users/u1"],
+      ["PATCH", "/admin/api/users/u1"],
+      ["DELETE", "/admin/api/users/u1"],
+    ] as const) {
+      const response = await app.inject({ method, url });
+      expect(response.statusCode, `${method} ${url}`).toBe(404);
+      expect(response.body).toContain("Admin API is unavailable");
+    }
+  });
+});

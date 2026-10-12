@@ -9,6 +9,7 @@ import {
   Settings,
   KeyRound,
   CreditCard,
+  Users,
 } from "lucide-react";
 import { cn } from "@firecrawl-gateway/ui/lib/utils";
 import { useReturnFocus } from "@/hooks/useReturnFocus";
@@ -25,6 +26,7 @@ const navItems = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard },
   { label: "Virtual API Keys", href: "/api-keys", icon: Key },
   { label: "Cloud API Keys", href: "/cloud-keys", icon: CreditCard },
+  { label: "Users", href: "/users", icon: Users },
   { label: "Configure", href: "/configure", icon: Settings },
   { label: "Account", href: "/account", icon: KeyRound },
 ];

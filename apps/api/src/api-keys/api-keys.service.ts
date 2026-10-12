@@ -6,8 +6,12 @@ import { API_CONFIG } from "../common/config.provider";
 import type { ApiConfig } from "../common/config";
 import { encryptSettingValue } from "../common/crypto";
 import { RateLimitCounter } from "../common/rate-limit-counter";
+import { effectiveLimits } from "../users/user-limits";
+import { lockUser, UserInactiveError } from "../users/user-lock";
 
 const API_KEY_VALIDATION_CACHE_TTL_MS = 30_000;
+
+export { UserInactiveError };
 
 export interface ApiKeyRecord {
   id: string;
@@ -166,19 +170,30 @@ export class ApiKeysService implements OnModuleDestroy {
   /**
    * Creates a virtual key owned by a portal user. Only a hash is stored (no recoverable
    * `key_value`), so the plaintext in the result is the only time it can be seen.
-   * The cap on active keys is enforced under a per-user lock so concurrent creates
-   * cannot exceed it.
+   * Under the per-user lock, the user's state and limit overrides are read in the same
+   * transaction as the insert: a suspended or deleted user gets no key, and the key
+   * always carries the limits in force when it was created (an admin's change waits
+   * for the lock and then rewrites it).
    */
-  async createUserApiKey(
-    userId: string,
-    name: string,
-    options: { maxKeys: number; rateLimitPerMinute: number; expiresAt?: Date | null },
-  ) {
+  async createUserApiKey(userId: string, name: string, options: { expiresAt?: Date | null } = {}) {
     const key = `fc_${crypto.randomBytes(32).toString("base64url")}`;
     const row = await this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`user-api-keys:${userId}`}))`;
+      await lockUser(tx, userId);
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: {
+          status: true,
+          deletedAt: true,
+          maxApiKeys: true,
+          rateLimitPerMinute: true,
+          monthlyQuota: true,
+        },
+      });
+      if (!user || user.status !== "active" || user.deletedAt !== null)
+        throw new UserInactiveError();
+      const limits = effectiveLimits(user);
       const active = await tx.apiKey.count({ where: { userId, revoked: false } });
-      if (active >= options.maxKeys) throw new UserApiKeyLimitError(options.maxKeys);
+      if (active >= limits.maxApiKeys) throw new UserApiKeyLimitError(limits.maxApiKeys);
       return tx.apiKey.create({
         data: {
           id: crypto.randomUUID(),
@@ -187,7 +202,8 @@ export class ApiKeysService implements OnModuleDestroy {
           keyValue: null,
           keyPrefix: key.slice(0, 8),
           userId,
-          rateLimitPerMinute: options.rateLimitPerMinute,
+          rateLimitPerMinute: limits.rateLimitPerMinute,
+          ...(limits.monthlyQuota ? { monthlyQuota: limits.monthlyQuota } : {}),
           ...(options.expiresAt ? { expiresAt: options.expiresAt } : {}),
         },
       });

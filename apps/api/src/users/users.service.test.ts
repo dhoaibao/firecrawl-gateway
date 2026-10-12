@@ -29,7 +29,14 @@ function userRow(overrides: Record<string, unknown> = {}) {
 }
 
 function prismaMock() {
+  const tx = {
+    $executeRaw: vi.fn().mockResolvedValue(1),
+    user: { findUnique: vi.fn().mockResolvedValue({ status: "active", deletedAt: null }) },
+    userSession: { create: vi.fn().mockResolvedValue({}) },
+  };
   return {
+    tx,
+    $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(tx)),
     userIdentity: { findUnique: vi.fn(), create: vi.fn() },
     user: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
     userSession: {
@@ -147,10 +154,29 @@ describe("UsersService sessions", () => {
     const prisma = prismaMock();
     const service = new UsersService(prisma as never);
     const { token, expiresAt } = await service.createSession("u1", "UA");
-    const data = prisma.userSession.create.mock.calls[0][0].data;
+    const data = prisma.tx.userSession.create.mock.calls[0][0].data;
     expect(data.tokenHash).toBe(crypto.createHash("sha256").update(token).digest("hex"));
     expect(JSON.stringify(data)).not.toContain(token);
     expect(expiresAt.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("refuses a session for a user suspended or deleted while sign-in was in flight", async () => {
+    for (const user of [
+      { status: "suspended", deletedAt: null },
+      { status: "active", deletedAt: new Date() },
+      null,
+    ]) {
+      const prisma = prismaMock();
+      prisma.tx.user.findUnique.mockResolvedValueOnce(user);
+      await expect(
+        new UsersService(prisma as never).createSession("u1", "UA"),
+      ).rejects.toBeInstanceOf(AccountDisabledError);
+      expect(prisma.tx.userSession.create).not.toHaveBeenCalled();
+      // Re-checked under the per-user lock the admin's suspend/delete also holds.
+      expect(prisma.tx.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+        prisma.tx.user.findUnique.mock.invocationCallOrder[0],
+      );
+    }
   });
 
   it.each([

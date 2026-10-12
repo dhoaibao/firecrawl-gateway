@@ -11,6 +11,7 @@ const ApiKeys = lazy(() => import("@/pages/ApiKeys"));
 const Configure = lazy(() => import("@/pages/Configure"));
 const CloudKeys = lazy(() => import("@/pages/CloudKeys"));
 const Account = lazy(() => import("@/pages/Account"));
+const Users = lazy(() => import("@/pages/Users"));
 
 function LoadingScreen() {
   return (
@@ -88,6 +89,14 @@ export default function App() {
                 element={
                   <Suspense fallback={<LoadingScreen />}>
                     <CloudKeys />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="/users"
+                element={
+                  <Suspense fallback={<LoadingScreen />}>
+                    <Users />
                   </Suspense>
                 }
               />

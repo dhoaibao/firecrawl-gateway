@@ -56,7 +56,58 @@ export interface ApiKeyData {
   monthly_quota: number | null;
   /** Requests counted this month as of the last counter flush; null when there is no quota. */
   quota_used?: number | null;
+  /** The portal user who owns the key; null for global keys managed on the API Keys page. */
+  user_id?: string | null;
   key?: string;
+}
+
+export type UserState = "active" | "suspended" | "deleted";
+
+/** Portal-user limit overrides; null means the portal default applies. */
+export interface UserLimits {
+  max_api_keys: number | null;
+  rate_limit_per_minute: number | null;
+  monthly_quota: number | null;
+}
+
+/** A portal user as listed on the Users page. */
+export interface UserSummary {
+  id: string;
+  email: string;
+  name: string | null;
+  avatar_url: string | null;
+  state: UserState;
+  providers: string[];
+  api_keys: number;
+  cloud_keys: number;
+  created_at: string;
+  last_login_at: string | null;
+  deleted_at: string | null;
+  limits: UserLimits;
+}
+
+export interface UserDetail extends UserSummary {
+  effective_limits: UserLimits;
+  active_sessions: number;
+  identities: Array<{ provider: string; email: string; linked_at: string }>;
+  api_key_list: Array<{
+    id: string;
+    name: string;
+    key_prefix: string;
+    revoked: boolean;
+    created_at: string;
+    last_used_at: string | null;
+    expires_at: string | null;
+    rate_limit_per_minute: number | null;
+    monthly_quota: number | null;
+  }>;
+  cloud_key_list: Array<{
+    id: string;
+    name: string;
+    key_prefix: string;
+    role: string;
+    last_verified_at: string | null;
+  }>;
 }
 
 export type BackendFilter = "" | "self-hosted" | "cloud";

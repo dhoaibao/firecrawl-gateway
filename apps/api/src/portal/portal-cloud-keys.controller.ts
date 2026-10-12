@@ -39,6 +39,8 @@ function fail(error: unknown): never {
         );
       case "verify_too_soon":
         return apiError(429, "This key was just checked. Wait a few seconds and try again.");
+      case "account_inactive":
+        return apiError(403, "This account is disabled.");
       case "unreadable":
         return apiError(409, "This stored key can no longer be read. Remove it and add it again.");
     }

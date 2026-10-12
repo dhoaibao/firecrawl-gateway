@@ -6,6 +6,7 @@ import { decryptSettingValue, encryptSettingValue } from "../common/crypto";
 import type { CloudKeyEntry } from "../common/types";
 import { CreditRoutingService } from "../credits/credit-routing.service";
 import { PrismaService } from "../prisma/prisma.service";
+import { lockUser } from "../users/user-lock";
 
 const CACHE_TTL_MS = 30_000;
 const CACHE_MAX_USERS = 10_000;
@@ -36,7 +37,13 @@ export interface CloudKeyStatus {
 }
 
 export type UserCloudKeyFailure =
-  "limit_reached" | "duplicate" | "invalid_key" | "unverifiable" | "verify_too_soon" | "unreadable";
+  | "limit_reached"
+  | "duplicate"
+  | "invalid_key"
+  | "unverifiable"
+  | "verify_too_soon"
+  | "unreadable"
+  | "account_inactive";
 
 export class UserCloudKeyError extends Error {
   constructor(readonly reason: UserCloudKeyFailure) {
@@ -113,7 +120,15 @@ export class UserCloudKeysService {
     if (status.status === "unavailable") throw new UserCloudKeyError("unverifiable");
 
     const row = await this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`user-cloud-keys:${userId}`}))`;
+      await lockUser(tx, userId);
+      // Cloud verification above can take seconds; the account may have been suspended or
+      // deleted meanwhile, and a deleted user's secrets must stay purged.
+      const owner = await tx.user.findUnique({
+        where: { id: userId },
+        select: { status: true, deletedAt: true },
+      });
+      if (!owner || owner.status !== "active" || owner.deletedAt !== null)
+        throw new UserCloudKeyError("account_inactive");
       const stored = await tx.userCloudKey.findMany({
         where: { userId },
         select: { keyValue: true },

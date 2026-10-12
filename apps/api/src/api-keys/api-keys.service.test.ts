@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiKeysService, UserApiKeyLimitError } from "./api-keys.service";
+import { ApiKeysService, UserApiKeyLimitError, UserInactiveError } from "./api-keys.service";
 
 const encryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -420,12 +420,30 @@ describe("ApiKeysService", () => {
 });
 
 describe("ApiKeysService user keys", () => {
-  function userService(options: { active?: number } = {}) {
+  type UserState = {
+    status: string;
+    deletedAt: Date | null;
+    maxApiKeys: number | null;
+    rateLimitPerMinute: number | null;
+    monthlyQuota: number | null;
+  };
+  const ACTIVE: UserState = {
+    status: "active",
+    deletedAt: null,
+    maxApiKeys: null,
+    rateLimitPerMinute: null,
+    monthlyQuota: null,
+  };
+
+  function userService(options: { active?: number; user?: UserState | null } = {}) {
     const create = vi.fn(async ({ data }: { data: Record<string, unknown> }) =>
       row({ ...data, keyValue: data.keyValue ?? null }),
     );
     const tx = {
       $executeRaw: vi.fn().mockResolvedValue(1),
+      user: {
+        findUnique: vi.fn().mockResolvedValue(options.user === undefined ? ACTIVE : options.user),
+      },
       apiKey: { count: vi.fn().mockResolvedValue(options.active ?? 0), create },
     };
     const prisma = {
@@ -443,13 +461,10 @@ describe("ApiKeysService user keys", () => {
     return { service, prisma, tx, create };
   }
 
-  it("creates a hash-only key owned by the user with the portal limit", async () => {
+  it("creates a hash-only key owned by the user with the portal defaults", async () => {
     const { service, create, tx } = userService();
 
-    const created = await service.createUserApiKey("user-1", "CI", {
-      maxKeys: 10,
-      rateLimitPerMinute: 120,
-    });
+    const created = await service.createUserApiKey("user-1", "CI");
 
     const data = create.mock.calls[0][0].data;
     expect(data).toMatchObject({
@@ -458,6 +473,7 @@ describe("ApiKeysService user keys", () => {
       keyValue: null,
       rateLimitPerMinute: 120,
     });
+    expect(data).not.toHaveProperty("monthlyQuota");
     expect(data.keyHash).toBe(service.hashApiKey(created.key));
     // The plaintext appears once, in the result, and nowhere that is stored.
     expect(JSON.stringify(data)).not.toContain(created.key);
@@ -467,14 +483,54 @@ describe("ApiKeysService user keys", () => {
     expect(tx.$executeRaw).toHaveBeenCalledOnce();
   });
 
+  it("reads the user's state and overrides inside the locked transaction", async () => {
+    const { service, create, tx } = userService({
+      user: { ...ACTIVE, maxApiKeys: 3, rateLimitPerMinute: 30, monthlyQuota: 5000 },
+      active: 2,
+    });
+
+    await service.createUserApiKey("user-1", "CI");
+
+    expect(tx.user.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "user-1" } }),
+    );
+    expect(create.mock.calls[0][0].data).toMatchObject({
+      rateLimitPerMinute: 30,
+      monthlyQuota: 5000,
+    });
+    // The lock is taken before the state is read.
+    expect(tx.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      tx.user.findUnique.mock.invocationCallOrder[0],
+    );
+  });
+
   it("refuses a key beyond the per-user cap and counts only active keys", async () => {
     const { service, tx, create } = userService({ active: 10 });
 
-    await expect(
-      service.createUserApiKey("user-1", "one too many", { maxKeys: 10, rateLimitPerMinute: 120 }),
-    ).rejects.toBeInstanceOf(UserApiKeyLimitError);
+    await expect(service.createUserApiKey("user-1", "one too many")).rejects.toBeInstanceOf(
+      UserApiKeyLimitError,
+    );
     expect(tx.apiKey.count).toHaveBeenCalledWith({ where: { userId: "user-1", revoked: false } });
     expect(create).not.toHaveBeenCalled();
+
+    const lowered = userService({ active: 3, user: { ...ACTIVE, maxApiKeys: 3 } });
+    await expect(lowered.service.createUserApiKey("user-1", "x")).rejects.toMatchObject({
+      limit: 3,
+    });
+  });
+
+  it("creates nothing for a suspended, deleted or unknown user", async () => {
+    for (const user of [
+      { ...ACTIVE, status: "suspended" },
+      { ...ACTIVE, deletedAt: new Date() },
+      null,
+    ]) {
+      const { service, create } = userService({ user });
+      await expect(service.createUserApiKey("user-1", "x")).rejects.toBeInstanceOf(
+        UserInactiveError,
+      );
+      expect(create).not.toHaveBeenCalled();
+    }
   });
 
   it("lists and revokes only the user's own keys", async () => {
