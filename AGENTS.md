@@ -4,7 +4,7 @@
 
 ## Repository Purpose
 
-This Bun-workspace Turborepo ships an independently deployable NestJS/Fastify gateway API, a root-hosted React/Vite admin dashboard, and a customer portal SPA for Firecrawl and an externally hosted PostgreSQL; it does not host PostgreSQL. `deploy/firecrawl/docker-compose.yml` is the repository's Docker Compose stack for the self-hosted Firecrawl backend (Firecrawl Cloud stays external).
+This Bun-workspace Turborepo ships an independently deployable NestJS/Fastify gateway API, a root-hosted React/Vite admin dashboard, a customer portal SPA, and a static landing page for Firecrawl and an externally hosted PostgreSQL; it does not host PostgreSQL. `deploy/firecrawl/docker-compose.yml` is the repository's Docker Compose stack for the self-hosted Firecrawl backend (Firecrawl Cloud stays external).
 
 ## Project Operating Guide
 
@@ -17,7 +17,8 @@ This Bun-workspace Turborepo ships an independently deployable NestJS/Fastify ga
 - PostgreSQL schema and migration history are canonical in `apps/api/prisma/schema.prisma` and `apps/api/prisma/migrations/`. Prisma manages global API keys, settings, audit logs, and rate-limit records.
 - The root-hosted admin SPA lives in `apps/admin/src/`; follow `docs/DESIGN.md` for its design standard. Admin API requests remain under `/admin/api/*` on the API origin.
 - The customer portal SPA lives in `apps/portal/src/` and talks only to `/portal/api/*` (implemented in `apps/api/src/portal-auth/`, `portal/`, `users/`, `user-cloud-keys/`). It reads the API origin at runtime from `/config.js`, written by `deploy/portal/40-portal-config.sh` from `PORTAL_API_BASE_URL`, so one image serves every environment.
-- Deployment: the root `Dockerfile` builds the `api`, `web` and `portal` images, `.github/workflows/docker-publish.yml` publishes them to GHCR and deploys over SSH, `deploy/gateway/` holds the server compose file, nginx config, and `.env.example`, and `deploy/portal/` the portal's static-file nginx config and entrypoint script. Consult `RELEASING.md` for release and deployment checks.
+- The public landing page is the static Astro site in `apps/landing/src/`. Its portal link is a `__PORTAL_URL__` placeholder that `deploy/landing/40-landing-config.sh` replaces from `LANDING_PORTAL_URL` at container start; keep its copy limited to what the gateway actually does.
+- Deployment: the root `Dockerfile` builds the `api`, `web`, `portal` and `landing` images, `.github/workflows/docker-publish.yml` publishes them to GHCR and deploys over SSH, `deploy/gateway/` holds the server compose file, nginx config, and `.env.example`, and `deploy/portal/` and `deploy/landing/` the static-file nginx configs and entrypoint scripts of the portal and landing images. Consult `RELEASING.md` for release and deployment checks.
 
 ### Canonical sources and required flows
 
@@ -36,7 +37,7 @@ This Bun-workspace Turborepo ships an independently deployable NestJS/Fastify ga
 
 ## Verification
 
-Run applicable root checks (automated tests exist only in `apps/api`; `apps/admin` and `apps/portal` have no `test` script, so UI changes rely on typecheck, build, and lint):
+Run applicable root checks (automated tests exist only in `apps/api`; `apps/admin` and `apps/portal` have no `test` script and `apps/landing` has no `lint` script, so UI changes rely on typecheck, build, and lint):
 
 ```bash
 bun run typecheck

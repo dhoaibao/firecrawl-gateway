@@ -1,0 +1,205 @@
+---
+import Layout from "../layouts/Layout.astro";
+
+// The portal's address is not known at build time: the container replaces this
+// placeholder when it starts (deploy/landing/40-landing-config.sh).
+const portalUrl = import.meta.env.DEV
+  ? (import.meta.env.PUBLIC_PORTAL_URL ?? "http://localhost:5173")
+  : "__PORTAL_URL__";
+
+const steps = [
+  {
+    title: "Sign in",
+    body: "Use your Google or GitHub account. There is no password to manage and no card to enter.",
+  },
+  {
+    title: "Add your Firecrawl Cloud key",
+    body: "Paste a key from your own Firecrawl account. It is checked with Firecrawl before it is saved, stored encrypted, and never shown again.",
+  },
+  {
+    title: "Create a gateway key and call the API",
+    body: "Send requests to the gateway with that key as a Bearer token. They run on your Firecrawl account, so they use your credits.",
+  },
+];
+
+const capabilities = [
+  {
+    term: "One endpoint, your credentials",
+    detail:
+      "Point Firecrawl-compatible clients at the gateway's /v1 and /v2 routes and authenticate with a gateway key instead of handing out your Firecrawl key.",
+  },
+  {
+    term: "Keys you can revoke",
+    detail:
+      "Create up to 10 gateway keys, give each an optional expiry, and revoke one without touching your Firecrawl account. Only a hash of each key is stored.",
+  },
+  {
+    term: "Rate limits per key",
+    detail:
+      "Every key is limited to 120 requests per minute by default, so a leaked or looping client cannot burn through your credits unnoticed.",
+  },
+  {
+    term: "Several Cloud keys, one pool",
+    detail:
+      "Add more than one Firecrawl key and requests are spread across the ones that still have credits. A key that runs out is skipped until credits return.",
+  },
+  {
+    term: "Usage at a glance",
+    detail:
+      "See requests, errors and average latency for the month, per key, from the gateway's own request log.",
+  },
+];
+
+const boundaries = [
+  "Requests are billed by Firecrawl to your account. The gateway adds no credits of its own.",
+  "Requests from your keys go to Firecrawl Cloud only, never to a shared pool.",
+  "Request history is kept for 30 days.",
+  "Compatibility follows Firecrawl's API; features Firecrawl adds or changes may not be available here yet.",
+];
+---
+
+<Layout
+  title="Firecrawl Gateway — your Firecrawl account behind keys you control"
+  description="Bring your own Firecrawl Cloud key and call it through revocable gateway keys with rate limits and usage."
+>
+  <header class="border-b border-white/[0.06]">
+    <div class="mx-auto flex h-16 max-w-6xl items-center gap-6 px-5">
+      <a href="/" class="flex items-center gap-2.5 text-sm font-semibold">
+        <img src="/logo.png" alt="" width="28" height="28" class="size-7 rounded-md" />
+        Firecrawl Gateway
+      </a>
+      <nav
+        aria-label="Page"
+        class="ml-auto hidden items-center gap-6 text-sm text-muted-foreground sm:flex"
+      >
+        <a href="#how" class="hover:text-foreground">
+          How it works
+        </a>
+        <a href="#features" class="hover:text-foreground">
+          What you get
+        </a>
+        <a href="#good-to-know" class="hover:text-foreground">
+          Good to know
+        </a>
+      </nav>
+      <a
+        href={portalUrl}
+        class="ml-auto inline-flex h-9 items-center rounded-md border border-white/[0.12] px-4 text-sm font-medium hover:bg-white/[0.06] sm:ml-0"
+      >
+        Sign in
+      </a>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="mx-auto grid max-w-6xl gap-12 px-5 py-16 sm:py-24 lg:grid-cols-[1.05fr_0.95fr] lg:items-center">
+      <div>
+        <p class="text-sm font-medium text-brand">For people who already use Firecrawl</p>
+        <h1 class="mt-4 max-w-xl text-4xl font-semibold leading-[1.1] tracking-tight sm:text-5xl">
+          Your Firecrawl account, behind keys you control.
+        </h1>
+        <p class="mt-5 max-w-xl text-lg leading-relaxed text-muted-foreground">
+          Bring your own Firecrawl Cloud key. Get gateway API keys that you can limit, expire and
+          revoke, and see what each one is doing, without sharing the key that holds your credits.
+        </p>
+        <div class="mt-8 flex flex-wrap items-center gap-3">
+          <a
+            href={portalUrl}
+            class="inline-flex h-11 items-center rounded-md bg-brand px-6 text-sm font-semibold text-background hover:bg-brand/90"
+          >
+            Sign in to get started
+          </a>
+          <a
+            href="#how"
+            class="inline-flex h-11 items-center px-3 text-sm font-medium text-muted-foreground hover:text-foreground"
+          >
+            See how it works
+          </a>
+        </div>
+      </div>
+
+      <figure>
+        <figcaption class="mb-2 text-xs text-muted-foreground">
+          The same request shape as Firecrawl, sent to the gateway with a gateway key.
+        </figcaption>
+        <pre class="overflow-x-auto rounded-xl border border-white/[0.08] bg-surface-1 p-5 font-mono text-[13px] leading-relaxed"><code><span class="text-muted-foreground">$</span> curl -X POST https://<span class="text-brand">your-gateway</span>/v2/scrape \
+  -H "Authorization: Bearer <span class="text-brand">fc_your_gateway_key</span>" \
+  -H "Content-Type: application/json" \
+  -d '&#123;"url": "https://example.com"&#125;'</code></pre>
+      </figure>
+    </section>
+
+    <section id="how" class="border-t border-white/[0.06] bg-surface-1">
+      <div class="mx-auto max-w-6xl px-5 py-16 sm:py-20">
+        <h2 class="text-2xl font-semibold tracking-tight">Three steps, about two minutes</h2>
+        <ol class="mt-10 grid gap-x-12 gap-y-8 md:grid-cols-[repeat(3,minmax(0,1fr))]">
+          {steps.map((step, index) => (
+            <li class="relative border-t border-white/[0.12] pt-5">
+              <span class="font-mono text-sm text-brand">{String(index + 1).padStart(2, "0")}</span>
+              <h3 class="mt-2 text-base font-semibold">{step.title}</h3>
+              <p class="mt-2 text-sm leading-relaxed text-muted-foreground">{step.body}</p>
+            </li>
+          ))}
+        </ol>
+      </div>
+    </section>
+
+    <section id="features" class="mx-auto max-w-6xl px-5 py-16 sm:py-20">
+      <div class="grid gap-10 lg:grid-cols-[0.8fr_1.2fr]">
+        <div>
+          <h2 class="text-2xl font-semibold tracking-tight">What you get</h2>
+          <p class="mt-3 max-w-sm text-sm leading-relaxed text-muted-foreground">
+            A thin layer in front of the Firecrawl account you already pay for. It does not replace
+            Firecrawl; it controls who can use your key and shows how it is used.
+          </p>
+        </div>
+        <dl class="divide-y divide-white/[0.08] border-y border-white/[0.08]">
+          {capabilities.map((item) => (
+            <div class="grid gap-1 py-5 sm:grid-cols-[14rem_1fr] sm:gap-8">
+              <dt class="text-sm font-semibold">{item.term}</dt>
+              <dd class="text-sm leading-relaxed text-muted-foreground">{item.detail}</dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+    </section>
+
+    <section id="good-to-know" class="border-t border-white/[0.06] bg-surface-1">
+      <div class="mx-auto max-w-6xl px-5 py-16 sm:py-20">
+        <h2 class="text-2xl font-semibold tracking-tight">Good to know</h2>
+        <ul class="mt-8 grid max-w-3xl gap-4 text-sm leading-relaxed text-muted-foreground">
+          {boundaries.map((item) => (
+            <li class="flex gap-3">
+              <span
+                aria-hidden="true"
+                class="mt-2 size-1.5 shrink-0 rounded-full bg-muted-foreground"
+              ></span>
+              <span>{item}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </section>
+
+    <section class="mx-auto max-w-6xl px-5 py-16 text-center sm:py-24">
+      <h2 class="mx-auto max-w-xl text-3xl font-semibold tracking-tight">
+        Ready to put your key behind a gateway?
+      </h2>
+      <a
+        href={portalUrl}
+        class="mt-8 inline-flex h-11 items-center rounded-md bg-brand px-6 text-sm font-semibold text-background hover:bg-brand/90"
+      >
+        Sign in to get started
+      </a>
+    </section>
+  </main>
+
+  <footer class="border-t border-white/[0.06]">
+    <div class="mx-auto flex max-w-6xl flex-col gap-2 px-5 py-8 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+      <p>Firecrawl Gateway is an independent project and is not affiliated with Firecrawl.</p>
+      <a href={portalUrl} class="hover:text-foreground">
+        Sign in
+      </a>
+    </div>
+  </footer>
+</Layout>

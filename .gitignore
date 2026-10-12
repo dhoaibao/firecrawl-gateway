@@ -4,3 +4,4 @@
 .playwright-mcp/
 .turbo/
 coverage/
+.astro/

@@ -1,0 +1,22 @@
+{
+  "name": "@firecrawl-gateway/landing",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "typecheck": "astro check",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@firecrawl-gateway/ui": "workspace:*",
+    "astro": "^7.3.8"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.10",
+    "@tailwindcss/vite": "^4.3.0",
+    "tailwindcss": "^4.3.0",
+    "typescript": "~6.0.2"
+  }
+}

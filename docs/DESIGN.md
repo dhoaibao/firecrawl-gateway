@@ -290,3 +290,12 @@ The portal reuses this standard (dark-first tokens from `packages/ui/src/theme.c
 - **Secrets:** a newly created API key is shown once, in a dedicated dialog with an explicit warning and a copy action. Cloud keys are entered in a password field and never displayed again, only a short prefix.
 - **States:** every list has loading skeletons, an error banner with Retry, and an empty state with the primary action. Destructive actions use the confirm dialog.
 - **Copy:** no invented metrics, testimonials or provider logos; provider buttons are text.
+
+## Landing Page (`apps/landing`)
+
+A public, static page (Astro, no client JavaScript) that explains the portal and sends people to sign in. It uses the same dark tokens and the brand orange only for the primary call to action and small accents.
+
+- **Audience:** developers who already use Firecrawl and are deciding whether to put their key behind a gateway.
+- **Structure:** a plain header (logo, three anchors, Sign in); an asymmetric hero (headline and one call to action beside a real request example); three numbered steps separated by rules rather than cards; a definition list of what the gateway does; a short "Good to know" list; a closing call to action; a footer disclaimer.
+- **Copy rules:** every claim must be something the gateway does (limits, 10 keys, 120 requests per minute, 30-day request history, requests billed by Firecrawl to the user). No pricing, testimonials, customer logos, uptime figures or invented metrics; state the non-affiliation with Firecrawl.
+- **Accessibility and motion:** semantic landmarks, a skip link, visible focus rings, `prefers-reduced-motion` honoured, no animation beyond colour transitions.

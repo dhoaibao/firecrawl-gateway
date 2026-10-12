@@ -10,7 +10,7 @@ Keep Firecrawl-compatible clients pointed at one gateway origin while deciding w
 
 ## Architecture
 
-The Bun-workspace Turborepo contains two independently deployable apps:
+The Bun-workspace Turborepo contains independently deployable apps (the API and admin below, plus the customer portal in `apps/portal` and a static landing page in `apps/landing`):
 
 - `apps/api` — a native NestJS API on the Fastify adapter. It authenticates virtual API keys, applies route policy, proxies `/v1/*` and `/v2/*`, and exposes health, readiness, administration, and maintenance routes.
 - `apps/admin` — a root-hosted React/Vite admin SPA. It calls authenticated `/admin/api/*` endpoints on the API and does not run under an `/admin` URL prefix.

@@ -19,7 +19,7 @@
     "db:migrate": "bun --env-file=\"$(pwd)/.env\" --cwd apps/api prisma migrate deploy"
   },
   "lint-staged": {
-    "**/*.{cjs,css,html,js,jsx,json,jsonc,md,mdx,mjs,ts,tsx,yaml,yml}": "prettier --write",
+    "**/*.{astro,cjs,css,html,js,jsx,json,jsonc,md,mdx,mjs,ts,tsx,yaml,yml}": "prettier --write",
     "apps/api/**/*.{cjs,js,mjs,ts}": "./apps/api/node_modules/.bin/eslint --config apps/api/eslint.config.mjs --no-warn-ignored",
     "apps/admin/**/*.{cjs,js,jsx,mjs,ts,tsx}": "./apps/admin/node_modules/.bin/eslint --config apps/admin/eslint.config.js --no-warn-ignored",
     "apps/portal/**/*.{cjs,js,jsx,mjs,ts,tsx}": "./apps/admin/node_modules/.bin/eslint --config apps/portal/eslint.config.js --no-warn-ignored",
@@ -30,6 +30,7 @@
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0",
     "prettier": "^3.9.6",
+    "prettier-plugin-astro": "^1.1.1",
     "turbo": "^2.5.6"
   }
 }
