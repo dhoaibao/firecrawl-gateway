@@ -13,4 +13,5 @@
 .playwright-mcp
 deploy
 !deploy/gateway
+!deploy/portal
 *.md

@@ -232,6 +232,22 @@ describe("AuditService readAuditStats", () => {
   });
 });
 
+describe("AuditService key list filter", () => {
+  it("restricts usage to a list of keys as parameters, and to nothing for an empty list", async () => {
+    const queryRaw = vi.fn().mockResolvedValue([]);
+    const service = new AuditService({ $queryRaw: queryRaw } as unknown as PrismaService);
+
+    await service.readApiKeyUsage({ apiKeyIds: ["k1", "k2"] });
+    await service.readApiKeyUsage({ apiKeyIds: [] });
+
+    const listed = queryRaw.mock.calls[0][0] as { sql: string; values: unknown[] };
+    expect(listed.sql).toContain("api_key_id IN (?,?)");
+    expect(listed.values).toEqual(expect.arrayContaining(["k1", "k2"]));
+    const empty = queryRaw.mock.calls[1][0] as { sql: string };
+    expect(empty.sql).toContain("FALSE");
+  });
+});
+
 describe("AuditService API key attribution", () => {
   it("persists the key id, or null when the request had none", async () => {
     const create = vi.fn().mockResolvedValue(undefined);

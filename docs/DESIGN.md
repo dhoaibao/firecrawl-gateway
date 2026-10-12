@@ -279,3 +279,14 @@ Before considering Admin UI work complete:
 - Is a light mode required for accessibility or operator preference?
 - Should the design system include explicit dark-mode elevation tokens (e.g., shadow intensity per layer) beyond the current ad-hoc shadows?
 - Should chart components adopt a shared wrapper with consistent aria-labels and loading states?
+
+## Customer Portal (`apps/portal`)
+
+The portal reuses this standard (dark-first tokens from `packages/ui/src/theme.css`, border-based elevation, restrained motion) for a different job: an account area where a signed-in customer manages their own gateway API keys and Firecrawl Cloud keys.
+
+- **Audience:** developers who bring their own Firecrawl key. They visit rarely, to create a key, check credits or read usage, so the portal favours clarity and one obvious next step over density.
+- **Shell:** a sticky top bar (logo, four destinations, sign out) instead of the admin's sidebar; content is `max-w-5xl`, `px-4 py-6 lg:px-6`. Navigation labels collapse to icons below `md` and stay available to screen readers.
+- **Pages:** Overview (get-started checklist that disappears once complete, monthly usage, per-key table, copyable quick-start), API keys, Cloud keys, Account (sign-in methods and linking). Sign-in is a single centred card with one button per configured provider.
+- **Secrets:** a newly created API key is shown once, in a dedicated dialog with an explicit warning and a copy action. Cloud keys are entered in a password field and never displayed again, only a short prefix.
+- **States:** every list has loading skeletons, an error banner with Retry, and an empty state with the primary action. Destructive actions use the confirm dialog.
+- **Copy:** no invented metrics, testimonials or provider logos; provider buttons are text.

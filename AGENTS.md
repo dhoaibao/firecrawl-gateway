@@ -4,24 +4,25 @@
 
 ## Repository Purpose
 
-This Bun-workspace Turborepo ships an independently deployable NestJS/Fastify gateway API and root-hosted React/Vite admin dashboard for Firecrawl and an externally hosted PostgreSQL; it does not host PostgreSQL. `deploy/firecrawl/docker-compose.yml` is the repository's Docker Compose stack for the self-hosted Firecrawl backend (Firecrawl Cloud stays external).
+This Bun-workspace Turborepo ships an independently deployable NestJS/Fastify gateway API, a root-hosted React/Vite admin dashboard, and a customer portal SPA for Firecrawl and an externally hosted PostgreSQL; it does not host PostgreSQL. `deploy/firecrawl/docker-compose.yml` is the repository's Docker Compose stack for the self-hosted Firecrawl backend (Firecrawl Cloud stays external).
 
 ## Project Operating Guide
 
 ### Architecture and change map
 
 - `apps/api/src/main.ts` and `apps/api/src/app.module.ts` bootstrap the long-running Node API. Gateway route handling and fallback policy belong in `apps/api/src/proxy/` and `apps/api/src/proxy/policy.ts`.
-- Frontend code shared by the apps lives in `packages/ui` (shadcn primitives, the `cn` helper, and the design tokens in `src/theme.css`) and `packages/api-client` (the fetch wrapper). Both are consumed as TypeScript source by Vite with no build step; `apps/admin` imports them as `@firecrawl-gateway/ui/...` and `@firecrawl-gateway/api-client`.
+- Frontend code shared by the apps lives in `packages/ui` (shadcn primitives, the `cn` helper, and the design tokens in `src/theme.css`) and `packages/api-client` (the fetch wrapper). Both are consumed as TypeScript source by Vite with no build step; `apps/admin` and `apps/portal` import them as `@firecrawl-gateway/ui/...` and `@firecrawl-gateway/api-client`.
 - API administration is split across `apps/api/src/auth/`, `api-keys/`, `settings/`, `audit/`, `credits/`, and `cron/`; shared runtime configuration is in `apps/api/src/common/config.ts`.
 - Estimated-credit routing lives in `apps/api/src/credits/`; the optional `REDIS_URL` ledger store shares reservations across instances, otherwise key rotation is per-instance.
 - PostgreSQL schema and migration history are canonical in `apps/api/prisma/schema.prisma` and `apps/api/prisma/migrations/`. Prisma manages global API keys, settings, audit logs, and rate-limit records.
 - The root-hosted admin SPA lives in `apps/admin/src/`; follow `docs/DESIGN.md` for its design standard. Admin API requests remain under `/admin/api/*` on the API origin.
-- Deployment: the root `Dockerfile` builds the `api` and `web` images, `.github/workflows/docker-publish.yml` publishes them to GHCR and deploys over SSH, and `deploy/gateway/` holds the server compose file, nginx config, and `.env.example`. Consult `RELEASING.md` for release and deployment checks.
+- The customer portal SPA lives in `apps/portal/src/` and talks only to `/portal/api/*` (implemented in `apps/api/src/portal-auth/`, `portal/`, `users/`, `user-cloud-keys/`). It reads the API origin at runtime from `/config.js`, written by `deploy/portal/40-portal-config.sh` from `PORTAL_API_BASE_URL`, so one image serves every environment.
+- Deployment: the root `Dockerfile` builds the `api`, `web` and `portal` images, `.github/workflows/docker-publish.yml` publishes them to GHCR and deploys over SSH, `deploy/gateway/` holds the server compose file, nginx config, and `.env.example`, and `deploy/portal/` the portal's static-file nginx config and entrypoint script. Consult `RELEASING.md` for release and deployment checks.
 
 ### Canonical sources and required flows
 
 - Root `package.json` and `turbo.json` own workspace scripts and task orchestration; the workspace globs are `apps/*` and `packages/*`, and a new workspace's `package.json` must also be copied in the root `Dockerfile` before `bun install`. Edit source rather than generated Prisma clients or build outputs (`dist/`). A new environment variable must also be added to `turbo.json` `globalPassThroughEnv` and `.env.example`.
-- The `.husky/pre-commit` hook runs `lint-staged` (Prettier on all supported files, ESLint on staged API/admin sources).
+- The `.husky/pre-commit` hook runs `lint-staged` (Prettier on all supported files, ESLint on staged API/admin/portal sources).
 - Keep configuration examples in `.env.example`; runtime configuration is validated by `apps/api/src/common/config.ts`.
 - After changing Prisma schema, generate the client with `bun run db:generate`. Apply migrations with `bun run db:migrate` only as an approved operational cutover; migrations are not applied during API startup.
 - API behavior and setup guidance belongs in `README.md`, `QUICKSTART.md`, `SELF_HOST.md`, and `apps/api/README.md`; dashboard UI guidance belongs in `docs/DESIGN.md`.
@@ -35,7 +36,7 @@ This Bun-workspace Turborepo ships an independently deployable NestJS/Fastify ga
 
 ## Verification
 
-Run applicable root checks (automated tests exist only in `apps/api`; `apps/admin` has no `test` script, so UI changes rely on typecheck, build, and lint):
+Run applicable root checks (automated tests exist only in `apps/api`; `apps/admin` and `apps/portal` have no `test` script, so UI changes rely on typecheck, build, and lint):
 
 ```bash
 bun run typecheck

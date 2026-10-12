@@ -212,6 +212,20 @@ export class UsersService {
     });
   }
 
+  /** The sign-in methods attached to a user, oldest first. */
+  async listIdentities(userId: string) {
+    const rows = await this.prisma.userIdentity.findMany({
+      where: { userId },
+      orderBy: { createdAt: "asc" },
+      select: { provider: true, email: true, createdAt: true },
+    });
+    return rows.map((row) => ({
+      provider: row.provider,
+      email: row.email,
+      linked_at: row.createdAt.toISOString(),
+    }));
+  }
+
   /** Signs a user out everywhere, e.g. when an admin suspends the account. */
   async revokeAllSessions(userId: string): Promise<number> {
     const result = await this.prisma.userSession.updateMany({

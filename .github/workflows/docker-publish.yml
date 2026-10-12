@@ -1,6 +1,6 @@
 name: docker-publish
 
-# Builds the api and web images, publishes them to GHCR, and deploys them over
+# Builds the api, web and portal images, publishes them to GHCR, and deploys them over
 # SSH. Secrets live on the `production` environment (Settings > Environments),
 # where required reviewers can gate each deploy. See SELF_HOST.md.
 
@@ -71,7 +71,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        image: [api, web]
+        image: [api, web, portal]
     steps:
       - uses: actions/checkout@v4
 
@@ -226,23 +226,44 @@ jobs:
         env:
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
           printf '%s' "$GHCR_TOKEN" | ssh deploy "docker login ghcr.io -u '$GHCR_USER' --password-stdin"
-          ssh deploy bash -s -- "$DEPLOY_PATH" <<'REMOTE'
+          ssh deploy bash -s -- "$DEPLOY_PATH" "$IMAGE_PREFIX" "$IMAGE_TAG" "$EVENT" <<'REMOTE'
           # The script arrives on stdin, so every docker command must read /dev/null instead;
           # otherwise `compose run` swallows the rest of the script and the job still exits 0.
           set -euo pipefail
           cd "$1"
-          docker compose pull </dev/null
+          # Services this release deploys, as Compose resolves them from the compose file and
+          # .env (so `portal` is present only when its profile is enabled). The portal image
+          # is required: a normal release always publishes it. Only a rollback (manual run)
+          # to a tag from before the portal image existed may leave it out, and only when the
+          # registry says the manifest does not exist; any other failure aborts the deploy
+          # rather than silently dropping an enabled portal.
+          services="$(docker compose config --services </dev/null | grep -vx migrate)"
+          if printf '%s\n' "$services" | grep -qx portal \
+            && ! probe="$(docker manifest inspect "$2-portal:$3" </dev/null 2>&1)"; then
+            if [ "$4" = workflow_dispatch ] && printf '%s' "$probe" | grep -qiE 'no such manifest|manifest unknown'; then
+              echo "No portal image for $3; deploying without the portal."
+              services="$(printf '%s\n' "$services" | grep -vx portal)"
+            else
+              echo "Could not confirm the portal image $2-portal:$3: $probe" >&2
+              echo "If this is a rollback to a release without a portal, remove COMPOSE_PROFILES=portal from ENV_FILE." >&2
+              exit 1
+            fi
+          fi
+          printf '%s\n' "$services" > .deployed-services
+          # Plain compose service names, so splitting them on whitespace is intended.
+          docker compose pull $services </dev/null
           # Quiesce every database user before migrating (RELEASING.md: stop the API
           # first). This is a short outage on each deploy. If migrate fails the
           # services stay stopped; fix forward or redeploy an earlier tag.
           docker compose stop maintenance web gateway </dev/null
           docker compose --profile tools run --rm -T migrate </dev/null
-          if ! docker compose up -d --remove-orphans --wait --wait-timeout 120 </dev/null; then
+          if ! docker compose up -d --remove-orphans --wait --wait-timeout 120 $services </dev/null; then
             docker compose ps </dev/null
-            docker compose logs --tail 50 gateway web </dev/null
+            docker compose logs --tail 50 gateway web portal </dev/null
             exit 1
           fi
           docker compose ps </dev/null
@@ -255,7 +276,9 @@ jobs:
         run: |
           set -euo pipefail
           running="$(ssh deploy "cd '$DEPLOY_PATH' && docker compose ps --status running --services")"
-          for service in gateway web maintenance; do
+          # What the deploy step decided to run (written by it, see .deployed-services).
+          expected="$(ssh deploy "cat '$DEPLOY_PATH/.deployed-services'")"
+          for service in gateway web maintenance $expected; do
             if ! printf '%s\n' "$running" | grep -qx "$service"; then
               echo "::error::service $service is not running after deploy"
               exit 1
