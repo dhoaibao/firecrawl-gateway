@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { CircleAlert, CircleCheck, CreditCard, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@firecrawl-gateway/ui/components/button";
 import { Input } from "@firecrawl-gateway/ui/components/input";
-import { Badge } from "@firecrawl-gateway/ui/components/badge";
 import { api } from "@/lib/api";
 import { formatDateTime, formatNumber } from "@/lib/format";
 import type { CloudKey, CloudKeyStatus } from "@/lib/types";
@@ -16,9 +15,6 @@ import { EmptyBlock, LoadError, LoadingRows } from "@/components/StateViews";
 interface Limits {
   limits: { max_keys: number };
 }
-
-const FIELD =
-  "h-10 w-full rounded-md border border-white/[0.08] bg-surface-1 px-3 text-sm text-foreground outline-none focus:border-ring focus:ring-2 focus:ring-ring/30";
 
 function describeStatus(status: CloudKeyStatus): string {
   if (status.status === "invalid") return "Firecrawl rejected this key.";
@@ -34,7 +30,6 @@ export default function CloudKeys() {
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const [secret, setSecret] = useState("");
-  const [role, setRole] = useState<"cloud" | "fallback">("cloud");
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState("");
   const [checking, setChecking] = useState<string | null>(null);
@@ -52,7 +47,6 @@ export default function CloudKeys() {
   function openAdd() {
     setName("");
     setSecret("");
-    setRole("cloud");
     setFormError("");
     setAdding(true);
   }
@@ -64,7 +58,7 @@ export default function CloudKeys() {
     try {
       const response = await api.post<{ data: { key: CloudKey; status: CloudKeyStatus } }>(
         "/portal/api/cloud-keys",
-        { name, key: secret, role },
+        { name, key: secret },
       );
       setAdding(false);
       setSecret("");
@@ -112,7 +106,7 @@ export default function CloudKeys() {
     <>
       <PageHeader
         title="Cloud keys"
-        description="Your own Firecrawl Cloud API keys. Requests made with your gateway keys run on these and spend your Firecrawl credits."
+        description="Your own Firecrawl Cloud API keys. Requests made with your gateway keys run on these and spend your Firecrawl credits; with several keys, requests are spread across the ones that still have credits."
         actions={
           <Button type="button" onClick={openAdd} disabled={atLimit}>
             <Plus /> Add key
@@ -151,9 +145,6 @@ export default function CloudKeys() {
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="truncate text-sm font-medium">{key.name}</span>
-                      <Badge variant={key.role === "fallback" ? "warning" : "info"}>
-                        {key.role === "fallback" ? "Fallback" : "Primary"}
-                      </Badge>
                     </div>
                     <p className="mt-0.5 font-mono text-xs text-muted-foreground">
                       {key.key_prefix}… · checked{" "}
@@ -261,20 +252,6 @@ export default function CloudKeys() {
               className="font-mono"
               required
             />
-          </div>
-          <div className="space-y-1.5">
-            <label htmlFor="cloud-key-role" className="text-sm font-medium">
-              Use as
-            </label>
-            <select
-              id="cloud-key-role"
-              value={role}
-              onChange={(event) => setRole(event.target.value as "cloud" | "fallback")}
-              className={FIELD}
-            >
-              <option value="cloud">Primary — used for requests</option>
-              <option value="fallback">Fallback — used when primary keys run out</option>
-            </select>
           </div>
         </form>
       </FormDialog>
