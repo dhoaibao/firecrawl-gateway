@@ -1,8 +1,8 @@
 import { useState, type ReactNode } from "react";
 import { Check, Copy, ChevronDown, ChevronUp, AlertCircle, Loader2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { cn } from "@/lib/utils";
+import { Button } from "@firecrawl-gateway/ui/components/button";
+import { Card, CardContent } from "@firecrawl-gateway/ui/components/card";
+import { cn } from "@firecrawl-gateway/ui/lib/utils";
 
 interface PlaygroundResultProps {
   loading?: boolean;

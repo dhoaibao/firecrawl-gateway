@@ -142,6 +142,18 @@ export function selectKeyPools(
   };
 }
 
+/**
+ * The route mode a request actually runs with. The admin's global mode decides for
+ * global keys; a key owned by a portal user is always Cloud-only, whatever the
+ * global mode is, so it can never reach the self-hosted backend or fall back to it.
+ */
+export function effectiveRouteMode(
+  globalMode: RouteMode,
+  owner: { userId: string | null },
+): RouteMode {
+  return owner.userId ? "cloud-only" : globalMode;
+}
+
 export function isFallbackAllowed(routeMode: RouteMode, privacy: PrivacyFlags): boolean {
   if (routeMode !== "self-hosted-first" && routeMode !== "hybrid") return false;
   if (privacy.hasSensitiveHeaders) return false;

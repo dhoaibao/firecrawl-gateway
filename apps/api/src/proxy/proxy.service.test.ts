@@ -6,6 +6,7 @@ import * as cryptoModule from "../common/crypto";
 import { encryptSettingValue } from "../common/crypto";
 import { CircuitBreaker } from "./circuit-breaker";
 import { isSelfHostedUnavailable } from "./policy";
+import { ApiKeysService } from "../api-keys/api-keys.service";
 import { ProxyService } from "./proxy.service";
 
 const config = {
@@ -81,6 +82,7 @@ function makeCredits() {
   return {
     reserve: vi.fn(),
     recordResponse: vi.fn().mockResolvedValue(undefined),
+    recoverUnavailableKeys: vi.fn(),
   };
 }
 
@@ -92,6 +94,10 @@ function makeMetrics() {
     recordCircuitRejected: vi.fn(),
     recordResponseCache: vi.fn(),
   };
+}
+
+function makeUserCloudKeys(entries: Array<{ key: string; role: "cloud" | "fallback" }> = []) {
+  return { loadEntries: vi.fn().mockResolvedValue(entries) };
 }
 
 function makeService(
@@ -106,6 +112,7 @@ function makeService(
     audit as never,
     credits as never,
     makeMetrics() as never,
+    makeUserCloudKeys() as never,
   );
 }
 
@@ -210,6 +217,7 @@ describe("ProxyService", () => {
       audit as never,
       makeCredits() as never,
       makeMetrics() as never,
+      makeUserCloudKeys() as never,
     );
     const reply = makeReply(events);
     const req = makeRequest({ headers: {} });
@@ -268,6 +276,7 @@ describe("ProxyService", () => {
       audit as never,
       makeCredits() as never,
       makeMetrics() as never,
+      makeUserCloudKeys() as never,
     );
 
     const handled = service.handle(
@@ -317,6 +326,7 @@ describe("ProxyService", () => {
         audit as never,
         makeCredits() as never,
         makeMetrics() as never,
+        makeUserCloudKeys() as never,
       );
       const reply = makeReply();
 
@@ -597,6 +607,7 @@ describe("ProxyService", () => {
       { appendAudit: vi.fn().mockResolvedValue(undefined) } as never,
       credits as never,
       makeMetrics() as never,
+      makeUserCloudKeys() as never,
     );
 
     await service.handle(
@@ -1114,6 +1125,7 @@ describe("ProxyService routing outcomes", () => {
         audit as never,
         makeCredits() as never,
         makeMetrics() as never,
+        makeUserCloudKeys() as never,
       );
     }
 
@@ -1207,6 +1219,7 @@ describe("ProxyService routing outcomes", () => {
         audit as never,
         makeCredits() as never,
         makeMetrics() as never,
+        makeUserCloudKeys() as never,
       );
       return { service, keys, audit };
     }
@@ -1375,6 +1388,7 @@ describe("ProxyService routing outcomes", () => {
         { appendAudit: vi.fn().mockResolvedValue(undefined) } as never,
         makeCredits() as never,
         metrics as never,
+        makeUserCloudKeys() as never,
       );
       return { service, metrics };
     }
@@ -1418,6 +1432,7 @@ describe("ProxyService routing outcomes", () => {
         { appendAudit: vi.fn().mockResolvedValue(undefined) } as never,
         credits as never,
         metrics as never,
+        makeUserCloudKeys() as never,
       );
 
       await service.handle(makeRequest(), makeReply() as never);
@@ -1523,6 +1538,7 @@ describe("ProxyService routing outcomes", () => {
         audit as never,
         credits as never,
         metrics as never,
+        makeUserCloudKeys() as never,
       );
       return { service, fetchMock, credits, audit, metrics, keyId, ttl };
     }
@@ -1748,6 +1764,369 @@ describe("ProxyService routing outcomes", () => {
     });
   });
 
+  describe("portal user keys", () => {
+    const GLOBAL_KEY = "fc_global_pool_key_1234567890";
+    const USER_KEY = "fc_user_own_key_1234567890";
+    const MODES = [
+      "self-hosted-first",
+      "self-hosted-only",
+      "cloud-first",
+      "cloud-only",
+      "hybrid",
+    ] as const;
+
+    function makeUserService(
+      globalMode: string,
+      options: {
+        userKeys?: Array<{ key: string; role: "cloud" | "fallback" }> | Error;
+        owner?: string | null;
+        cloud?: () => Response | Promise<Response>;
+        authEnabled?: boolean;
+        validated?: Record<string, unknown> | null;
+      } = {},
+    ) {
+      const credits = makeCredits();
+      const reservedWith: string[][] = [];
+      // Like the real ledger: a key already attempted for this request is not offered again,
+      // so the rotation across a user's keys ends once they are all used up.
+      credits.reserve.mockImplementation(
+        async (keys: string[], _amount: number, excluded: ReadonlySet<string> = new Set()) => {
+          reservedWith.push([...keys]);
+          const key = keys.find((candidate) => !excluded.has(`id-${candidate}`));
+          return key ? { key, keyId: `id-${key}`, amount: 1, source: "local" } : null;
+        },
+      );
+      const audit = { appendAudit: vi.fn().mockResolvedValue(undefined) };
+      const userCloudKeys = makeUserCloudKeys();
+      if (options.userKeys instanceof Error)
+        userCloudKeys.loadEntries.mockRejectedValue(options.userKeys);
+      else
+        userCloudKeys.loadEntries.mockResolvedValue(
+          options.userKeys ?? [{ key: USER_KEY, role: "cloud" }],
+        );
+      const keys = {
+        validateApiKey: vi.fn().mockResolvedValue(
+          options.validated !== undefined
+            ? options.validated
+            : {
+                id: "key-u",
+                user_id: options.owner === undefined ? "user-1" : options.owner,
+              },
+        ),
+        touchApiKey: vi.fn().mockResolvedValue(undefined),
+      };
+      const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+        if (String(url).startsWith("https://self.test"))
+          return new Response("SELF-HOSTED", { status: 200 });
+        return options.cloud ? options.cloud() : new Response("CLOUD", { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const service = new ProxyService(
+        { ...config, authEnabled: options.authEnabled ?? true } as never,
+        settingsWith(
+          {
+            firecrawl_api_keys: {
+              key: "firecrawl_api_keys",
+              value: encryptSettingValue(
+                JSON.stringify([GLOBAL_KEY]),
+                config.firecrawlKeysEncryptionKey,
+              ),
+            },
+          },
+          globalMode,
+        ) as never,
+        keys as never,
+        audit as never,
+        credits as never,
+        makeMetrics() as never,
+        userCloudKeys as never,
+      );
+      return { service, fetchMock, credits, reservedWith, audit, userCloudKeys, keys };
+    }
+
+    const authed = (overrides: Record<string, unknown> = {}) =>
+      makeRequest({ headers: { authorization: "Bearer fc_portal_user" }, ...overrides });
+    const urlsOf = (fetchMock: ReturnType<typeof vi.fn>) =>
+      fetchMock.mock.calls.map(([url]) => String(url));
+
+    it("starts a background re-check of the user's keys when none is usable", async () => {
+      const { service, credits } = makeUserService("cloud-only", {
+        userKeys: [
+          { key: USER_KEY, role: "cloud" },
+          { key: "fc_user_second_key_1234567890", role: "fallback" },
+        ],
+      });
+      credits.reserve.mockResolvedValue(null);
+
+      await service.handle(authed(), makeReply() as never);
+
+      expect(credits.recoverUnavailableKeys).toHaveBeenCalled();
+      const rechecked = credits.recoverUnavailableKeys.mock.calls.flatMap(([keys]) => keys);
+      expect(rechecked).toContain(USER_KEY);
+      expect(rechecked).not.toContain(GLOBAL_KEY);
+    });
+
+    it("does not re-check anything when the user's key was usable", async () => {
+      const { service, credits } = makeUserService("cloud-only");
+
+      await service.handle(authed(), makeReply() as never);
+
+      expect(credits.recoverUnavailableKeys).not.toHaveBeenCalled();
+    });
+
+    it.each([...MODES])(
+      "sends a user's request to Cloud with the user's own key under global mode %s",
+      async (mode) => {
+        const { service, fetchMock, reservedWith, audit } = makeUserService(mode);
+
+        await service.handle(authed(), makeReply() as never);
+
+        expect(urlsOf(fetchMock)).toEqual(["https://cloud.test/v1/test"]);
+        expect((fetchMock.mock.calls[0][1].headers as Record<string, string>).authorization).toBe(
+          `Bearer ${USER_KEY}`,
+        );
+        // Only the user's key was offered to credit routing: the admin's pool is never touched.
+        expect(reservedWith).toEqual([[USER_KEY]]);
+        expect(audit.appendAudit).toHaveBeenCalledWith(
+          expect.objectContaining({
+            route_mode: "cloud-only",
+            backend_used: "cloud",
+            user_id: "user-1",
+            api_key_id: "key-u",
+          }),
+        );
+      },
+    );
+
+    it.each([...MODES])(
+      "never falls back to self-hosted when Cloud fails, under global mode %s",
+      async (mode) => {
+        const failures: Array<() => Response | Promise<Response>> = [
+          () => new Response("boom", { status: 500 }),
+          () => new Response("unavailable", { status: 503 }),
+          () => new Response("slow down", { status: 429 }),
+          () => new Response("out of credits", { status: 402 }),
+          () => Promise.reject(new Error("connect ECONNREFUSED")),
+        ];
+        for (const cloud of failures) {
+          const { service, fetchMock, reservedWith } = makeUserService(mode, { cloud });
+
+          await service.handle(authed(), makeReply() as never);
+
+          expect(urlsOf(fetchMock).every((url) => url.startsWith("https://cloud.test"))).toBe(true);
+          for (const keys of reservedWith) expect(keys).toEqual([USER_KEY]);
+        }
+      },
+    );
+
+    it("keeps Cloud-only features on Cloud for a user key", async () => {
+      const { service, fetchMock } = makeUserService("self-hosted-only");
+
+      const reply = makeReply();
+      await service.handle(authed({ raw: { url: "/v1/agent" }, url: "/v1/agent" }), reply as never);
+
+      expect(reply.code).not.toHaveBeenCalledWith(409);
+      expect(urlsOf(fetchMock)).toEqual(["https://cloud.test/v1/agent"]);
+    });
+
+    it("does not let sensitive headers or private URLs move a user's request to self-hosted", async () => {
+      const { service, fetchMock } = makeUserService("self-hosted-first");
+
+      await service.handle(
+        authed({
+          headers: { authorization: "Bearer fc_portal_user", cookie: "session=private" },
+        }),
+        makeReply() as never,
+      );
+
+      expect(urlsOf(fetchMock).every((url) => url.startsWith("https://cloud.test"))).toBe(true);
+    });
+
+    it.each([...MODES])(
+      "answers 409 and calls nothing when the user has no Cloud key, under mode %s",
+      async (mode) => {
+        const { service, fetchMock, credits } = makeUserService(mode, { userKeys: [] });
+        const reply = makeReply();
+
+        await service.handle(authed(), reply as never);
+
+        expect(reply.code).toHaveBeenCalledWith(409);
+        expect(String(reply.send.mock.calls[0][0].error)).toContain("Add your own key");
+        // The admin's pool has a key, and it must not be used as a substitute.
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(credits.reserve).not.toHaveBeenCalled();
+      },
+    );
+
+    it("answers 503, not 'no keys', when the user's keys cannot be read", async () => {
+      const { service, fetchMock } = makeUserService("cloud-first", {
+        userKeys: new Error("db down"),
+      });
+      const reply = makeReply();
+
+      await service.handle(authed(), reply as never);
+
+      expect(reply.code).toHaveBeenCalledWith(503);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("refuses to call self-hosted for a user even if routing ever chose it", async () => {
+      const { service, fetchMock } = makeUserService("cloud-only");
+      const internals = service as unknown as {
+        proxySelfHosted(
+          ctx: { userId: string | null },
+          plan: { selfHostedAttempted: boolean; bodyBuffer: Buffer },
+        ): Promise<{ kind: string; backend: string; body?: Buffer }>;
+      };
+      const plan = { selfHostedAttempted: false, bodyBuffer: Buffer.alloc(0) };
+
+      const result = await internals.proxySelfHosted({ userId: "user-1" }, plan);
+
+      expect(result).toMatchObject({ kind: "network-error", backend: "self-hosted" });
+      expect(String(result.body)).toContain("not available");
+      expect(plan.selfHostedAttempted).toBe(false);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    describe("with authentication turned off (AUTH_ENABLED=false)", () => {
+      it.each(["self-hosted-only", "self-hosted-first", "cloud-only", "hybrid"])(
+        "still isolates a portal user's key under global mode %s",
+        async (mode) => {
+          const { service, fetchMock, reservedWith, audit } = makeUserService(mode, {
+            authEnabled: false,
+          });
+
+          await service.handle(authed(), makeReply() as never);
+
+          expect(urlsOf(fetchMock)).toEqual(["https://cloud.test/v1/test"]);
+          expect((fetchMock.mock.calls[0][1].headers as Record<string, string>).authorization).toBe(
+            `Bearer ${USER_KEY}`,
+          );
+          expect(reservedWith).toEqual([[USER_KEY]]);
+          expect(audit.appendAudit).toHaveBeenCalledWith(
+            expect.objectContaining({ route_mode: "cloud-only", user_id: "user-1" }),
+          );
+        },
+      );
+
+      it("still enforces a user key's expiry and answers 409 without keys", async () => {
+        const expired = makeUserService("self-hosted-only", {
+          authEnabled: false,
+          validated: {
+            id: "key-u",
+            user_id: "user-1",
+            expires_at: new Date(Date.now() - 1000).toISOString(),
+          },
+        });
+        const expiredReply = makeReply();
+        await expired.service.handle(authed(), expiredReply as never);
+        expect(expiredReply.code).toHaveBeenCalledWith(401);
+        expect(expired.fetchMock).not.toHaveBeenCalled();
+
+        const noKeys = makeUserService("cloud-first", { authEnabled: false, userKeys: [] });
+        const noKeysReply = makeReply();
+        await noKeys.service.handle(authed(), noKeysReply as never);
+        expect(noKeysReply.code).toHaveBeenCalledWith(409);
+        expect(noKeys.fetchMock).not.toHaveBeenCalled();
+      });
+
+      it("leaves unknown and global keys in the open mode, unchanged", async () => {
+        for (const options of [{ validated: null }, { owner: null }]) {
+          const { service, fetchMock, userCloudKeys } = makeUserService("self-hosted-only", {
+            authEnabled: false,
+            ...options,
+          });
+
+          await service.handle(authed(), makeReply() as never);
+
+          expect(urlsOf(fetchMock)).toEqual(["https://self.test/v1/test"]);
+          expect(userCloudKeys.loadEntries).not.toHaveBeenCalled();
+        }
+      });
+    });
+
+    describe("when the key's owner is suspended or deleted", () => {
+      it.each([
+        [true, "self-hosted-only"],
+        [true, "cloud-only"],
+        [false, "self-hosted-only"],
+        [false, "cloud-only"],
+      ])(
+        "refuses the key with authentication %s under mode %s and calls nothing",
+        async (authEnabled, mode) => {
+          const { service, fetchMock, userCloudKeys, credits } = makeUserService(mode, {
+            authEnabled,
+            validated: { id: "key-u", user_id: "user-1", owner_active: false },
+          });
+          const reply = makeReply();
+
+          await service.handle(authed(), reply as never);
+
+          expect(reply.code).toHaveBeenCalledWith(401);
+          expect(fetchMock).not.toHaveBeenCalled();
+          expect(userCloudKeys.loadEntries).not.toHaveBeenCalled();
+          expect(credits.reserve).not.toHaveBeenCalled();
+        },
+      );
+
+      it.each([true, false])(
+        "composes with the real owner check (authentication %s, self-hosted-only)",
+        async (authEnabled) => {
+          const apiKeys = new ApiKeysService({} as never, {} as never);
+          const prisma = {
+            apiKey: {
+              findFirst: vi.fn().mockResolvedValue({
+                id: "key-u",
+                name: "portal",
+                keyHash: apiKeys.hashApiKey("fc_portal_user"),
+                keyValue: null,
+                keyPrefix: "fc_port",
+                revoked: false,
+                createdAt: new Date("2026-01-01T00:00:00.000Z"),
+                updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+                lastUsedAt: null,
+                userId: "user-1",
+              }),
+            },
+            user: {
+              findUnique: vi.fn().mockResolvedValue({ status: "suspended", deletedAt: null }),
+            },
+          };
+          const fetchMock = vi.fn().mockResolvedValue(new Response("SELF", { status: 200 }));
+          vi.stubGlobal("fetch", fetchMock);
+          const service = new ProxyService(
+            { ...config, authEnabled } as never,
+            settingsWith({}, "self-hosted-only") as never,
+            new ApiKeysService(prisma as never, {} as never) as never,
+            { appendAudit: vi.fn().mockResolvedValue(undefined) } as never,
+            makeCredits() as never,
+            makeMetrics() as never,
+            makeUserCloudKeys() as never,
+          );
+          const reply = makeReply();
+
+          await service.handle(authed(), reply as never);
+
+          expect(reply.code).toHaveBeenCalledWith(401);
+          expect(fetchMock).not.toHaveBeenCalled();
+        },
+      );
+    });
+
+    it("leaves global keys on the admin's mode and pool", async () => {
+      const { service, fetchMock, userCloudKeys, reservedWith } = makeUserService(
+        "self-hosted-only",
+        { owner: null },
+      );
+
+      await service.handle(authed(), makeReply() as never);
+
+      expect(urlsOf(fetchMock)).toEqual(["https://self.test/v1/test"]);
+      expect(userCloudKeys.loadEntries).not.toHaveBeenCalled();
+      expect(reservedWith).toEqual([]);
+    });
+  });
+
   describe("self-hosted circuit breaker", () => {
     const CLOUD_KEY = "fc_cloud_key_1234567890";
     const THRESHOLD = config.selfHostedBreakerFailureThreshold;
@@ -1781,6 +2160,7 @@ describe("ProxyService routing outcomes", () => {
         audit as never,
         credits as never,
         metrics as never,
+        makeUserCloudKeys() as never,
       );
       return { service, credits, audit, metrics };
     }

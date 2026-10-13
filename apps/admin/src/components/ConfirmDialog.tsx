@@ -9,7 +9,7 @@ import {
   AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+} from "@firecrawl-gateway/ui/components/alert-dialog";
 
 interface ConfirmDialogProps {
   isOpen: boolean;

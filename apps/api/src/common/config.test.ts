@@ -95,4 +95,27 @@ describe("loadConfig", () => {
     expect(config.authEnabled).toBe(false);
     expect(config.sessionSecret).toBe("");
   });
+
+  it("keeps the portal disabled without OAuth clients and needs both halves of a client", () => {
+    expect(loadConfig(baseEnv).googleClientId).toBe("");
+    expect(() => loadConfig({ ...baseEnv, GOOGLE_CLIENT_ID: "id" })).toThrow(/GOOGLE_CLIENT/);
+    expect(() => loadConfig({ ...baseEnv, GITHUB_CLIENT_SECRET: "secret" })).toThrow(
+      /GITHUB_CLIENT/,
+    );
+  });
+
+  it("requires the origins and secret an OAuth provider depends on", () => {
+    const provider = { GOOGLE_CLIENT_ID: "id", GOOGLE_CLIENT_SECRET: "secret" };
+    expect(() => loadConfig({ ...baseEnv, ...provider })).toThrow(/API_ORIGIN is required/);
+    expect(() =>
+      loadConfig({ ...baseEnv, ...provider, API_ORIGIN: "https://api.example.com" }),
+    ).toThrow(/PORTAL_ORIGIN is required/);
+    const config = loadConfig({
+      ...baseEnv,
+      ...provider,
+      API_ORIGIN: "https://api.example.com/",
+      PORTAL_ORIGIN: "https://app.example.com/",
+    });
+    expect(config.portalOrigin).toBe("https://app.example.com");
+  });
 });

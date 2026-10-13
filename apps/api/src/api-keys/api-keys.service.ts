@@ -6,8 +6,12 @@ import { API_CONFIG } from "../common/config.provider";
 import type { ApiConfig } from "../common/config";
 import { encryptSettingValue } from "../common/crypto";
 import { RateLimitCounter } from "../common/rate-limit-counter";
+import { effectiveLimits } from "../users/user-limits";
+import { lockUser, UserInactiveError } from "../users/user-lock";
 
 const API_KEY_VALIDATION_CACHE_TTL_MS = 30_000;
+
+export { UserInactiveError };
 
 export interface ApiKeyRecord {
   id: string;
@@ -25,6 +29,14 @@ export interface ApiKeyRecord {
   rate_limit_per_minute: number | null;
   /** Requests allowed per calendar month (UTC); null means no quota. */
   monthly_quota: number | null;
+  /** The portal user who owns the key; null for global keys created by the admin. */
+  user_id: string | null;
+  /**
+   * False when the key belongs to a user who is suspended, deleted or missing. Such a
+   * key is still recognised (so callers can reject it rather than treat it as an
+   * anonymous request); global keys are always active.
+   */
+  owner_active: boolean;
 }
 
 /** Optional per-key limits; `null` clears a limit, `undefined` leaves it unchanged. */
@@ -60,6 +72,7 @@ function toKey(key: {
   expiresAt?: Date | null;
   rateLimitPerMinute?: number | null;
   monthlyQuota?: number | null;
+  userId?: string | null;
 }): ApiKeyRecord {
   return {
     id: key.id,
@@ -74,6 +87,8 @@ function toKey(key: {
     expires_at: key.expiresAt?.toISOString() ?? null,
     rate_limit_per_minute: key.rateLimitPerMinute ?? null,
     monthly_quota: key.monthlyQuota ?? null,
+    user_id: key.userId ?? null,
+    owner_active: true,
   };
 }
 
@@ -96,6 +111,14 @@ function quotaWindow(keyId: string, now = new Date()): { counterKey: string; res
     counterKey: `quota:${keyId}:${year}-${String(month + 1).padStart(2, "0")}`,
     resetAt: new Date(Date.UTC(year, month + 1, 1)),
   };
+}
+
+/** The user already holds the maximum number of active virtual API keys. */
+export class UserApiKeyLimitError extends Error {
+  constructor(readonly limit: number) {
+    super(`api key limit reached (${limit})`);
+    this.name = "UserApiKeyLimitError";
+  }
 }
 
 @Injectable()
@@ -142,6 +165,69 @@ export class ApiKeysService implements OnModuleDestroy {
     });
     const { key_value: _keyValue, ...keyData } = toKey(row);
     return { ...keyData, key };
+  }
+
+  /**
+   * Creates a virtual key owned by a portal user. Only a hash is stored (no recoverable
+   * `key_value`), so the plaintext in the result is the only time it can be seen.
+   * Under the per-user lock, the user's state and limit overrides are read in the same
+   * transaction as the insert: a suspended or deleted user gets no key, and the key
+   * always carries the limits in force when it was created (an admin's change waits
+   * for the lock and then rewrites it).
+   */
+  async createUserApiKey(userId: string, name: string, options: { expiresAt?: Date | null } = {}) {
+    const key = `fc_${crypto.randomBytes(32).toString("base64url")}`;
+    const row = await this.prisma.$transaction(async (tx) => {
+      await lockUser(tx, userId);
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: {
+          status: true,
+          deletedAt: true,
+          maxApiKeys: true,
+          rateLimitPerMinute: true,
+          monthlyQuota: true,
+        },
+      });
+      if (!user || user.status !== "active" || user.deletedAt !== null)
+        throw new UserInactiveError();
+      const limits = effectiveLimits(user);
+      const active = await tx.apiKey.count({ where: { userId, revoked: false } });
+      if (active >= limits.maxApiKeys) throw new UserApiKeyLimitError(limits.maxApiKeys);
+      return tx.apiKey.create({
+        data: {
+          id: crypto.randomUUID(),
+          name,
+          keyHash: this.hashApiKey(key),
+          keyValue: null,
+          keyPrefix: key.slice(0, 8),
+          userId,
+          rateLimitPerMinute: limits.rateLimitPerMinute,
+          ...(limits.monthlyQuota ? { monthlyQuota: limits.monthlyQuota } : {}),
+          ...(options.expiresAt ? { expiresAt: options.expiresAt } : {}),
+        },
+      });
+    });
+    const { key_value: _keyValue, key_hash: _keyHash, ...record } = toKey(row);
+    return { ...record, key };
+  }
+
+  /** The user's active keys, newest first. */
+  async listUserApiKeys(userId: string): Promise<ApiKeyRecord[]> {
+    const rows = await this.prisma.apiKey.findMany({
+      where: { userId, revoked: false },
+      orderBy: { createdAt: "desc" },
+    });
+    return rows.map(toKey);
+  }
+
+  /** Revokes one of the user's own keys; null when the key is not theirs or is already gone. */
+  async revokeUserApiKey(userId: string, id: string): Promise<ApiKeyRecord | null> {
+    const existing = await this.prisma.apiKey.findFirst({
+      where: { id, userId, revoked: false },
+    });
+    if (!existing) return null;
+    return this.revokeApiKey(existing.id);
   }
 
   /** Changes a key's limits; null when the key does not exist. Takes effect immediately. */
@@ -250,7 +336,15 @@ export class ApiKeysService implements OnModuleDestroy {
     if (existing) return existing;
     const request = this.prisma.apiKey
       .findFirst({ where: { keyHash, revoked: false } })
-      .then((row) => (row ? toKey(row) : null));
+      .then(async (row) => {
+        if (!row) return null;
+        const record = toKey(row);
+        // A portal user's key stops working with its owner. It is flagged rather than
+        // dropped, so an open deployment cannot mistake it for an anonymous request
+        // (global keys have no owner and skip this lookup).
+        if (row.userId) record.owner_active = await this.ownerIsActive(row.userId);
+        return record;
+      });
     this.validationInFlight.set(keyHash, request);
     try {
       const value = await request;
@@ -259,6 +353,14 @@ export class ApiKeysService implements OnModuleDestroy {
     } finally {
       if (this.validationInFlight.get(keyHash) === request) this.validationInFlight.delete(keyHash);
     }
+  }
+
+  private async ownerIsActive(userId: string): Promise<boolean> {
+    const owner = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { status: true, deletedAt: true },
+    });
+    return owner !== null && owner.status === "active" && owner.deletedAt === null;
   }
 
   async touchApiKey(id: string): Promise<void> {

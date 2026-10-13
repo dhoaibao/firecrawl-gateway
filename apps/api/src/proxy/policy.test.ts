@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { CloudKeyEntry } from "../common/types";
 import {
+  VALID_ROUTE_MODES,
   chooseInitialBackend,
+  effectiveRouteMode,
   isCloudQuotaFallbackAllowed,
   isFallbackAllowed,
   mayUseCloudKeys,
@@ -106,5 +108,32 @@ describe("routing policy", () => {
         fallbackApiKeys: [],
       });
     });
+  });
+});
+
+describe("effectiveRouteMode", () => {
+  it("leaves global keys on the admin's global mode", () => {
+    for (const mode of VALID_ROUTE_MODES) {
+      expect(effectiveRouteMode(mode, { userId: null })).toBe(mode);
+    }
+  });
+
+  it.each([...VALID_ROUTE_MODES])(
+    "forces a portal user's key to cloud-only when the global mode is %s",
+    (mode) => {
+      expect(effectiveRouteMode(mode, { userId: "user-1" })).toBe("cloud-only");
+    },
+  );
+
+  it("never lets a cloud-only request choose self-hosted or fall back to it", () => {
+    const privacy = { hasSensitiveHeaders: false, hasPrivateTargetUrl: false };
+    for (const needsCloud of [
+      { required: false, reason: "" },
+      { required: true, reason: "agent" },
+    ]) {
+      expect(chooseInitialBackend("cloud-only", needsCloud)).toBe("cloud");
+      expect(isFallbackAllowed("cloud-only", privacy)).toBe(false);
+      expect(isCloudQuotaFallbackAllowed("cloud-only", needsCloud)).toBe(false);
+    }
   });
 });

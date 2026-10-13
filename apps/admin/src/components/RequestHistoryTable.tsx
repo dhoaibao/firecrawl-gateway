@@ -1,15 +1,21 @@
 import { Activity, ChevronLeft, ChevronRight } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Table, TableBody, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Button } from "@firecrawl-gateway/ui/components/button";
+import { Checkbox } from "@firecrawl-gateway/ui/components/checkbox";
+import {
+  Table,
+  TableBody,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@firecrawl-gateway/ui/components/table";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@firecrawl-gateway/ui/components/select";
 import { LogTableRow } from "@/components/LogTableRow";
 import type { AuditEntry } from "@/types";
 

@@ -11,11 +11,11 @@ import {
   X,
 } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Card, CardHeader, CardTitle } from "@/components/ui/card";
-import { cn } from "@/lib/utils";
+import { Badge } from "@firecrawl-gateway/ui/components/badge";
+import { Button } from "@firecrawl-gateway/ui/components/button";
+import { Input } from "@firecrawl-gateway/ui/components/input";
+import { Card, CardHeader, CardTitle } from "@firecrawl-gateway/ui/components/card";
+import { cn } from "@firecrawl-gateway/ui/lib/utils";
 import { api } from "@/lib/api";
 import { useToast } from "@/hooks/useToast";
 import {

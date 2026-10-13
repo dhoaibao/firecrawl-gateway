@@ -22,10 +22,15 @@ model ApiKey {
   expiresAt          DateTime? @map("expires_at")
   rateLimitPerMinute Int?      @map("rate_limit_per_minute")
   monthlyQuota       Int?      @map("monthly_quota")
+  // The portal user who owns this key; null for global keys created by the admin.
+  // Not a foreign key, like `api_key_id` on audit rows: deleting a user revokes
+  // their keys in application code rather than cascading in the database.
+  userId             String?   @map("user_id")
 
   @@index([keyHash])
   @@index([keyPrefix])
   @@index([lastUsedAt])
+  @@index([userId])
   @@map("api_keys")
 }
 
@@ -46,6 +51,9 @@ model AuditLog {
   // rejected or unauthenticated requests, and rows written before attribution.
   // Deliberately not a foreign key so revoking a key never touches audit rows.
   apiKeyId       String?  @map("api_key_id")
+  // The portal user whose key made the request; null for admin and global-key traffic.
+  // Indexed later, with the endpoint that queries by user, to keep this deploy short.
+  userId         String?  @map("user_id")
 
   @@index([createdAt(sort: Desc)])
   @@index([apiKeyId, createdAt(sort: Desc)])
@@ -67,4 +75,90 @@ model RateLimit {
 
   @@index([resetAt])
   @@map("rate_limits")
+}
+
+// Portal accounts (Google / GitHub sign-in). The single admin is still configured
+// by environment variables and is not a row here.
+model User {
+  id                 String    @id
+  // Lower-cased, provider-verified email address.
+  email              String    @unique @db.VarChar(320)
+  name               String?   @db.VarChar(255)
+  avatarUrl          String?   @map("avatar_url") @db.VarChar(2048)
+  // "user" or "admin"; validated by the application.
+  role               String    @default("user") @db.VarChar(16)
+  // "active" or "suspended"; validated by the application.
+  status             String    @default("active") @db.VarChar(16)
+  // Per-user overrides of the default portal limits; null means the default applies.
+  maxApiKeys         Int?      @map("max_api_keys")
+  rateLimitPerMinute Int?      @map("rate_limit_per_minute")
+  monthlyQuota       Int?      @map("monthly_quota")
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  lastLoginAt        DateTime? @map("last_login_at") @db.Timestamptz(3)
+  deletedAt          DateTime? @map("deleted_at") @db.Timestamptz(3)
+
+  identities UserIdentity[]
+  sessions   UserSession[]
+  cloudKeys  UserCloudKey[]
+
+  @@map("users")
+}
+
+// One sign-in method of a user. A user can link several providers.
+model UserIdentity {
+  id             String   @id
+  userId         String   @map("user_id")
+  // "google" or "github".
+  provider       String   @db.VarChar(32)
+  providerUserId String   @map("provider_user_id") @db.VarChar(255)
+  email          String   @db.VarChar(320)
+  emailVerified  Boolean  @default(false) @map("email_verified")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerUserId])
+  @@index([userId])
+  @@map("user_identities")
+}
+
+// Server-side sessions so a single user's session can be revoked. Only a hash of
+// the cookie token is stored.
+model UserSession {
+  id         String    @id
+  userId     String    @map("user_id")
+  tokenHash  String    @unique @map("token_hash") @db.VarChar(64)
+  userAgent  String?   @map("user_agent") @db.VarChar(255)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(3)
+  lastSeenAt DateTime? @map("last_seen_at") @db.Timestamptz(3)
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("user_sessions")
+}
+
+// A user's own Firecrawl Cloud API key (bring your own key). The value is
+// encrypted with FIRECRAWL_KEYS_ENCRYPTION_KEY like the admin's Cloud key pool and
+// is never used for another user's requests or for global keys.
+model UserCloudKey {
+  id             String    @id
+  userId         String    @map("user_id")
+  name           String    @db.VarChar(255)
+  keyValue       String    @map("key_value")
+  keyPrefix      String    @map("key_prefix") @db.VarChar(32)
+  // "cloud" or "fallback", with the same meaning as the admin's Cloud key roles.
+  role           String    @default("cloud") @db.VarChar(16)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  lastVerifiedAt DateTime? @map("last_verified_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("user_cloud_keys")
 }

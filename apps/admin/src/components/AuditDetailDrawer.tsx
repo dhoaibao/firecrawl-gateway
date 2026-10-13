@@ -1,8 +1,13 @@
 import { Check, Clipboard, ExternalLink, Trash2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { Button } from "@firecrawl-gateway/ui/components/button";
+import { Badge } from "@firecrawl-gateway/ui/components/badge";
 import { useReturnFocus } from "@/hooks/useReturnFocus";
-import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetTitle,
+} from "@firecrawl-gateway/ui/components/sheet";
 import { formatRelative } from "@/lib/date";
 import type { AuditEntry } from "@/types";
 

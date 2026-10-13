@@ -12,6 +12,9 @@ import { CronModule } from "./cron/cron.module";
 import { CreditsModule } from "./credits/credits.module";
 import { MetricsModule } from "./metrics/metrics.module";
 import { AlertsModule } from "./alerts/alerts.module";
+import { PortalAuthModule } from "./portal-auth/portal-auth.module";
+import { PortalModule } from "./portal/portal.module";
+import { UsersAdminModule } from "./users-admin/users-admin.module";
 
 @Module({
   imports: [
@@ -21,6 +24,9 @@ import { AlertsModule } from "./alerts/alerts.module";
     AlertsModule,
     PrismaModule,
     AuthModule,
+    PortalAuthModule,
+    PortalModule,
+    UsersAdminModule,
     ApiKeysModule,
     SettingsModule,
     AuditModule,

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://ui.shadcn.com/schema.json",
+  "style": "new-york",
+  "rsc": false,
+  "tsx": true,
+  "tailwind": {
+    "config": "",
+    "css": "src/theme.css",
+    "baseColor": "neutral",
+    "cssVariables": true,
+    "prefix": ""
+  },
+  "aliases": {
+    "components": "@firecrawl-gateway/ui/components",
+    "utils": "@firecrawl-gateway/ui/lib/utils",
+    "ui": "@firecrawl-gateway/ui/components",
+    "lib": "@firecrawl-gateway/ui/lib",
+    "hooks": "@firecrawl-gateway/ui/hooks"
+  },
+  "iconLibrary": "lucide"
+}

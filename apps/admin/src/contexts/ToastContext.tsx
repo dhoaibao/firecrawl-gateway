@@ -1,6 +1,6 @@
 import { createContext, useContext, useCallback, useMemo, type ReactNode } from "react";
 import { toast } from "sonner";
-import { Toaster } from "@/components/ui/sonner";
+import { Toaster } from "@firecrawl-gateway/ui/components/sonner";
 
 export type ToastType = "success" | "error";
 

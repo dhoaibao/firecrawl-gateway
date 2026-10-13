@@ -7,7 +7,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
+} from "@firecrawl-gateway/ui/components/dialog";
 
 interface FormDialogProps {
   open: boolean;

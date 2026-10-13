@@ -30,6 +30,7 @@ function toEntry(entry: {
   targetUrl: string;
   requestId: string | null;
   apiKeyId: string | null;
+  userId?: string | null;
 }): AuditEntry {
   return {
     id: entry.id,
@@ -45,6 +46,7 @@ function toEntry(entry: {
     target_url: entry.targetUrl,
     request_id: entry.requestId ?? undefined,
     api_key_id: entry.apiKeyId ?? undefined,
+    user_id: entry.userId ?? undefined,
   };
 }
 
@@ -69,6 +71,7 @@ export class AuditService {
           targetUrl: entry.target_url,
           requestId: entry.request_id ?? null,
           apiKeyId: entry.api_key_id ?? null,
+          userId: entry.user_id ?? null,
         },
       });
     } catch (error) {

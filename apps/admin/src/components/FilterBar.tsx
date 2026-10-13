@@ -1,12 +1,12 @@
 import { CalendarDays, Server, Activity, SlidersHorizontal, KeyRound } from "lucide-react";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { ToggleGroup, ToggleGroupItem } from "@firecrawl-gateway/ui/components/toggle-group";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@firecrawl-gateway/ui/components/select";
 import type { ApiKeyData, BackendFilter, StatusFilter, DateRange } from "@/types";
 
 const backendFilters: Array<{ label: string; value: BackendFilter }> = [

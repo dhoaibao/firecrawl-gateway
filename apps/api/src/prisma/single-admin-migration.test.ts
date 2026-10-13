@@ -20,11 +20,13 @@ const repairMigration = readFileSync(
 );
 
 describe("single-admin cutover", () => {
-  it("models only global keys and audits", () => {
-    expect(schema).not.toMatch(/model User\s*{/);
-    expect(schema).not.toMatch(/user(Id|_id)/i);
+  it("keeps global keys and audits valid without an owner", () => {
+    // The cutover removed users; portal accounts came back later as separate tables
+    // (see user-accounts-migration.test.ts), and ownership stays optional so every
+    // global key and audit row written by the single-admin deployment remains valid.
     expect(schema).toContain("model ApiKey");
     expect(schema).toContain("model AuditLog");
+    expect(schema).toMatch(/userId\s+String\?\s+@map\("user_id"\)/);
     expect(schema).toContain('targetUrl      String   @default("") @map("target_url")');
   });
 

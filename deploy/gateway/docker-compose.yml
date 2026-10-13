@@ -47,6 +47,42 @@ services:
       timeout: 5s
       retries: 5
 
+  # The customer portal SPA (static files). It calls the gateway API at
+  # PORTAL_API_BASE_URL; routing portal/API/admin hostnames is the host nginx's job.
+  # Opt-in: set COMPOSE_PROFILES=portal in .env. The deploy workflow drops it for a
+  # tag that has no portal image (a rollback to an older release).
+  portal:
+    profiles: [portal]
+    image: ${IMAGE_PREFIX:?set IMAGE_PREFIX}-portal:${IMAGE_TAG:?set IMAGE_TAG}
+    restart: unless-stopped
+    environment:
+      PORTAL_API_BASE_URL: ${PORTAL_API_BASE_URL:-}
+    # Loopback only, like `web`.
+    ports:
+      - "127.0.0.1:${PORTAL_PORT:-8081}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # The public landing page (static files). Opt-in: set COMPOSE_PROFILES=landing in
+  # .env (comma-separated with portal). LANDING_PORTAL_URL is where its sign-in links go.
+  landing:
+    profiles: [landing]
+    image: ${IMAGE_PREFIX:?set IMAGE_PREFIX}-landing:${IMAGE_TAG:?set IMAGE_TAG}
+    restart: unless-stopped
+    environment:
+      LANDING_PORTAL_URL: ${LANDING_PORTAL_URL:-}
+    # Loopback only, like `web`.
+    ports:
+      - "127.0.0.1:${LANDING_PORT:-8082}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # Replaces a host cron: calls the authenticated maintenance endpoint at start
   # and then every 24 hours.
   maintenance:

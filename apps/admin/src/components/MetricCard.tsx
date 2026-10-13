@@ -1,5 +1,5 @@
 import { type LucideIcon } from "lucide-react";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@firecrawl-gateway/ui/components/card";
 
 interface MetricCardProps {
   label: string;

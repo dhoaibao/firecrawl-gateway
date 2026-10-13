@@ -41,6 +41,8 @@ export interface AuditStatsFilter {
   search?: string;
   /** Restrict to one virtual API key (`audit_logs.api_key_id`). */
   apiKeyId?: string;
+  /** Restrict to any of these keys; an empty list matches nothing. */
+  apiKeyIds?: string[];
   range?: StatsRange;
   day?: number;
   month?: number;
@@ -70,6 +72,12 @@ export function buildStatsWhere(filter: AuditStatsFilter): Prisma.Sql {
   if (filter.fallbackOnly) conds.push(Prisma.sql`fallback_used = true`);
   if (filter.slowOnly) conds.push(Prisma.sql`duration_ms >= 1000`);
   if (filter.apiKeyId) conds.push(Prisma.sql`api_key_id = ${filter.apiKeyId}`);
+  if (filter.apiKeyIds)
+    conds.push(
+      filter.apiKeyIds.length
+        ? Prisma.sql`api_key_id IN (${Prisma.join(filter.apiKeyIds)})`
+        : Prisma.sql`FALSE`,
+    );
 
   const search = filter.search?.trim().toLowerCase();
   if (search) {

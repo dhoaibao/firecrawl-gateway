@@ -1,0 +1,5 @@
+@import "tailwindcss";
+@import "@firecrawl-gateway/ui/theme.css";
+
+/* Tailwind scans the app by default; the shared primitives live in packages/ui. */
+@source "../../../packages/ui/src";

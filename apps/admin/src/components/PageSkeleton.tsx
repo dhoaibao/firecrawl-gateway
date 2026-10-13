@@ -1,4 +1,4 @@
-import { Skeleton } from "@/components/ui/skeleton";
+import { Skeleton } from "@firecrawl-gateway/ui/components/skeleton";
 
 interface PageSkeletonProps {
   columns: number;

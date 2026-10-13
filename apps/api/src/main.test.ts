@@ -30,6 +30,9 @@ const savedEnv = vi.hoisted(() => {
     FIRECRAWL_KEYS_ENCRYPTION_KEY:
       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     AUTH_ENABLED: "false",
+    ADMIN_ORIGIN: "https://admin.example.com",
+    API_ORIGIN: "https://api.example.com",
+    PORTAL_ORIGIN: "https://app.example.com",
     LOG_LEVEL: "silent",
     METRICS_TOKEN: "test-metrics-token-0123456789",
   });
@@ -170,5 +173,95 @@ describe("graceful shutdown", () => {
     }
 
     expect(order.slice(0, 2)).toEqual(["http", "modules"]);
+  });
+});
+
+describe("portal auth endpoints", () => {
+  it("is wired into the app, disabled without OAuth clients, and session-guarded", async () => {
+    const providers = await app.inject({ method: "GET", url: "/portal/api/auth/providers" });
+    expect(providers.statusCode).toBe(200);
+    expect(JSON.parse(providers.body)).toEqual({ data: { providers: [] } });
+
+    const login = await app.inject({ method: "GET", url: "/portal/api/auth/login/google" });
+    expect(login.statusCode).toBe(404);
+
+    // Even with AUTH_ENABLED=false the portal never trusts an anonymous caller.
+    const me = await app.inject({ method: "GET", url: "/portal/api/auth/me" });
+    expect(me.statusCode).toBe(401);
+  });
+});
+
+describe("credentialed CORS", () => {
+  const preflight = (url: string, origin: string) =>
+    app.inject({
+      method: "OPTIONS",
+      url,
+      headers: { origin, "access-control-request-method": "POST" },
+    });
+
+  it("allows the portal origin on the portal API only", async () => {
+    const portal = await preflight("/portal/api/auth/logout", "https://app.example.com");
+    expect(portal.headers["access-control-allow-origin"]).toBe("https://app.example.com");
+    expect(portal.headers["access-control-allow-credentials"]).toBe("true");
+
+    for (const url of ["/admin/api/auth/me", "/admin/api/keys", "/v1/scrape"]) {
+      const response = await preflight(url, "https://app.example.com");
+      expect(response.headers["access-control-allow-origin"]).toBeUndefined();
+    }
+  });
+
+  it("keeps the admin origin working and denies it the portal API", async () => {
+    const admin = await preflight("/admin/api/keys", "https://admin.example.com");
+    expect(admin.headers["access-control-allow-origin"]).toBe("https://admin.example.com");
+    const crossed = await preflight("/portal/api/auth/logout", "https://admin.example.com");
+    expect(crossed.headers["access-control-allow-origin"]).toBeUndefined();
+  });
+});
+
+describe("portal account API", () => {
+  it("requires a portal session for every key route, even with AUTH_ENABLED=false", async () => {
+    for (const [method, url] of [
+      ["GET", "/portal/api/api-keys"],
+      ["POST", "/portal/api/api-keys"],
+      ["DELETE", "/portal/api/api-keys/k1"],
+      ["GET", "/portal/api/cloud-keys"],
+      ["POST", "/portal/api/cloud-keys"],
+      ["PATCH", "/portal/api/cloud-keys/k1"],
+      ["POST", "/portal/api/cloud-keys/k1/verify"],
+      ["DELETE", "/portal/api/cloud-keys/k1"],
+    ] as const) {
+      const response = await app.inject({
+        method,
+        url,
+        headers: { origin: "https://app.example.com" },
+      });
+      expect(response.statusCode, `${method} ${url}`).toBe(401);
+    }
+  });
+
+  it("refuses a portal write from another origin before looking at the session", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/portal/api/api-keys",
+      headers: { origin: "https://evil.example.com", cookie: "fg.portal=anything" },
+    });
+    expect(response.statusCode).toBe(403);
+  });
+});
+
+describe("admin users API", () => {
+  it("is wired into the app and unavailable without an admin session", async () => {
+    // AUTH_ENABLED=false makes every admin route answer 404 by design; the point here is
+    // that the controller is registered behind the same guard and no data leaks.
+    for (const [method, url] of [
+      ["GET", "/admin/api/users"],
+      ["GET", "/admin/api/users/u1"],
+      ["PATCH", "/admin/api/users/u1"],
+      ["DELETE", "/admin/api/users/u1"],
+    ] as const) {
+      const response = await app.inject({ method, url });
+      expect(response.statusCode, `${method} ${url}`).toBe(404);
+      expect(response.body).toContain("Admin API is unavailable");
+    }
   });
 });

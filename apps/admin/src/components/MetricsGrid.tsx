@@ -1,6 +1,6 @@
 import { Activity, Cloud, Clock, CreditCard, Radio, Server } from "lucide-react";
 import { MetricCard } from "@/components/MetricCard";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Skeleton } from "@firecrawl-gateway/ui/components/skeleton";
 import { formatPercent, formatLatency } from "@/hooks/useAuditMetrics";
 import type { AuditMetrics } from "@/hooks/useAuditMetrics";
 import type { CreditUsageItem } from "@/types";

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiKeysService } from "./api-keys.service";
+import { ApiKeysService, UserApiKeyLimitError, UserInactiveError } from "./api-keys.service";
 
 const encryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -286,6 +286,65 @@ describe("ApiKeysService", () => {
     });
   });
 
+  describe("portal user ownership", () => {
+    function ownedService(owner: unknown) {
+      const service = new ApiKeysService({} as never, {} as never);
+      const keyHash = service.hashApiKey("fc_owned");
+      const prisma = {
+        apiKey: { findFirst: vi.fn().mockResolvedValue(row({ keyHash, userId: "user-1" })) },
+        user: { findUnique: vi.fn().mockResolvedValue(owner) },
+      };
+      return {
+        prisma,
+        service: new ApiKeysService(prisma as never, {} as never),
+      };
+    }
+
+    it("exposes the owner on the validated record", async () => {
+      const { service, prisma } = ownedService({ status: "active", deletedAt: null });
+
+      const key = await service.validateApiKey("fc_owned");
+
+      expect(key?.user_id).toBe("user-1");
+      expect(key?.owner_active).toBe(true);
+      expect(prisma.user.findUnique).toHaveBeenCalledWith({
+        where: { id: "user-1" },
+        select: { status: true, deletedAt: true },
+      });
+    });
+
+    it.each([
+      ["a suspended owner", { status: "suspended", deletedAt: null }],
+      ["a deleted owner", { status: "active", deletedAt: new Date() }],
+      ["a missing owner", null],
+    ])("flags the key as owned by an inactive account for %s", async (_name, owner) => {
+      const { service } = ownedService(owner);
+
+      // Recognised, not dropped: callers must be able to refuse it instead of treating it
+      // as an unknown (anonymous) key.
+      await expect(service.validateApiKey("fc_owned")).resolves.toMatchObject({
+        id: "key-1",
+        user_id: "user-1",
+        owner_active: false,
+      });
+    });
+
+    it("does not look up an owner for global keys", async () => {
+      const service = new ApiKeysService({} as never, {} as never);
+      const keyHash = service.hashApiKey("fc_global");
+      const prisma = {
+        apiKey: { findFirst: vi.fn().mockResolvedValue(row({ keyHash })) },
+        user: { findUnique: vi.fn() },
+      };
+      const global = new ApiKeysService(prisma as never, {} as never);
+
+      const key = await global.validateApiKey("fc_global");
+
+      expect(key).toMatchObject({ id: "key-1", user_id: null, owner_active: true });
+      expect(prisma.user.findUnique).not.toHaveBeenCalled();
+    });
+  });
+
   it("validates a non-revoked key without loading a user relation", async () => {
     const key = "fc_global-test";
     const prisma = {
@@ -357,5 +416,145 @@ describe("ApiKeysService", () => {
 
     await expect(service.validateApiKey(key)).resolves.toBeNull();
     expect(prisma.apiKey.findFirst).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("ApiKeysService user keys", () => {
+  type UserState = {
+    status: string;
+    deletedAt: Date | null;
+    maxApiKeys: number | null;
+    rateLimitPerMinute: number | null;
+    monthlyQuota: number | null;
+  };
+  const ACTIVE: UserState = {
+    status: "active",
+    deletedAt: null,
+    maxApiKeys: null,
+    rateLimitPerMinute: null,
+    monthlyQuota: null,
+  };
+
+  function userService(options: { active?: number; user?: UserState | null } = {}) {
+    const create = vi.fn(async ({ data }: { data: Record<string, unknown> }) =>
+      row({ ...data, keyValue: data.keyValue ?? null }),
+    );
+    const tx = {
+      $executeRaw: vi.fn().mockResolvedValue(1),
+      user: {
+        findUnique: vi.fn().mockResolvedValue(options.user === undefined ? ACTIVE : options.user),
+      },
+      apiKey: { count: vi.fn().mockResolvedValue(options.active ?? 0), create },
+    };
+    const prisma = {
+      $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(tx)),
+      apiKey: {
+        findMany: vi.fn().mockResolvedValue([]),
+        findFirst: vi.fn(),
+        update: vi.fn(),
+      },
+    };
+    const service = new ApiKeysService(
+      prisma as never,
+      { firecrawlKeysEncryptionKey: encryptionKey } as never,
+    );
+    return { service, prisma, tx, create };
+  }
+
+  it("creates a hash-only key owned by the user with the portal defaults", async () => {
+    const { service, create, tx } = userService();
+
+    const created = await service.createUserApiKey("user-1", "CI");
+
+    const data = create.mock.calls[0][0].data;
+    expect(data).toMatchObject({
+      userId: "user-1",
+      name: "CI",
+      keyValue: null,
+      rateLimitPerMinute: 120,
+    });
+    expect(data).not.toHaveProperty("monthlyQuota");
+    expect(data.keyHash).toBe(service.hashApiKey(created.key));
+    // The plaintext appears once, in the result, and nowhere that is stored.
+    expect(JSON.stringify(data)).not.toContain(created.key);
+    expect(created.key).toMatch(/^fc_/);
+    expect(created).not.toHaveProperty("key_hash");
+    expect(created).not.toHaveProperty("key_value");
+    expect(tx.$executeRaw).toHaveBeenCalledOnce();
+  });
+
+  it("reads the user's state and overrides inside the locked transaction", async () => {
+    const { service, create, tx } = userService({
+      user: { ...ACTIVE, maxApiKeys: 3, rateLimitPerMinute: 30, monthlyQuota: 5000 },
+      active: 2,
+    });
+
+    await service.createUserApiKey("user-1", "CI");
+
+    expect(tx.user.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "user-1" } }),
+    );
+    expect(create.mock.calls[0][0].data).toMatchObject({
+      rateLimitPerMinute: 30,
+      monthlyQuota: 5000,
+    });
+    // The lock is taken before the state is read.
+    expect(tx.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      tx.user.findUnique.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("refuses a key beyond the per-user cap and counts only active keys", async () => {
+    const { service, tx, create } = userService({ active: 10 });
+
+    await expect(service.createUserApiKey("user-1", "one too many")).rejects.toBeInstanceOf(
+      UserApiKeyLimitError,
+    );
+    expect(tx.apiKey.count).toHaveBeenCalledWith({ where: { userId: "user-1", revoked: false } });
+    expect(create).not.toHaveBeenCalled();
+
+    const lowered = userService({ active: 3, user: { ...ACTIVE, maxApiKeys: 3 } });
+    await expect(lowered.service.createUserApiKey("user-1", "x")).rejects.toMatchObject({
+      limit: 3,
+    });
+  });
+
+  it("creates nothing for a suspended, deleted or unknown user", async () => {
+    for (const user of [
+      { ...ACTIVE, status: "suspended" },
+      { ...ACTIVE, deletedAt: new Date() },
+      null,
+    ]) {
+      const { service, create } = userService({ user });
+      await expect(service.createUserApiKey("user-1", "x")).rejects.toBeInstanceOf(
+        UserInactiveError,
+      );
+      expect(create).not.toHaveBeenCalled();
+    }
+  });
+
+  it("lists and revokes only the user's own keys", async () => {
+    const { service, prisma } = userService();
+    await service.listUserApiKeys("user-1");
+    expect(prisma.apiKey.findMany).toHaveBeenCalledWith({
+      where: { userId: "user-1", revoked: false },
+      orderBy: { createdAt: "desc" },
+    });
+
+    prisma.apiKey.findFirst.mockResolvedValueOnce(null);
+    await expect(service.revokeUserApiKey("user-1", "someone-elses")).resolves.toBeNull();
+    expect(prisma.apiKey.findFirst).toHaveBeenCalledWith({
+      where: { id: "someone-elses", userId: "user-1", revoked: false },
+    });
+    expect(prisma.apiKey.update).not.toHaveBeenCalled();
+
+    prisma.apiKey.findFirst.mockResolvedValueOnce(row({ id: "mine", userId: "user-1" }));
+    prisma.apiKey.update.mockResolvedValueOnce(
+      row({ id: "mine", userId: "user-1", revoked: true }),
+    );
+    await expect(service.revokeUserApiKey("user-1", "mine")).resolves.toMatchObject({
+      id: "mine",
+      revoked: true,
+    });
   });
 });

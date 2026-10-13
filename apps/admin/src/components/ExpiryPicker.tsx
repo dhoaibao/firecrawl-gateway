@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { CalendarIcon, X } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
-import { Calendar } from "@/components/ui/calendar";
-import { Input } from "@/components/ui/input";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Button } from "@firecrawl-gateway/ui/components/button";
+import { Calendar } from "@firecrawl-gateway/ui/components/calendar";
+import { Input } from "@firecrawl-gateway/ui/components/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@firecrawl-gateway/ui/components/popover";
 
 /** Expiry time used when a date is picked without choosing a time: the end of that day. */
 const DEFAULT_TIME = "23:59";

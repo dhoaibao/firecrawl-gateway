@@ -7,6 +7,9 @@ import helmet from "@fastify/helmet";
 import rawBody from "fastify-raw-body";
 import { AppModule } from "./app.module";
 import { loadConfig } from "./common/config";
+import { corsOriginsFor } from "./common/cors";
+import { serializeRequestForLog } from "./common/log-redaction";
+import { enabledProviders } from "./portal-auth/oauth-providers";
 import { randomUUID } from "node:crypto";
 
 export async function createApp(): Promise<NestFastifyApplication> {
@@ -14,7 +17,7 @@ export async function createApp(): Promise<NestFastifyApplication> {
   const adapter = new FastifyAdapter({
     bodyLimit: config.maxBodyBytes,
     trustProxy: config.trustProxy === true || config.trustProxy === "true",
-    logger: { level: config.logLevel },
+    logger: { level: config.logLevel, serializers: { req: serializeRequestForLog } },
   });
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, adapter, {
     bufferLogs: true,
@@ -34,17 +37,26 @@ export async function createApp(): Promise<NestFastifyApplication> {
     encoding: "utf8",
     runFirst: true,
   });
-  const allowedOrigins = [config.adminOrigin, config.apiOrigin].filter(Boolean);
   await fastify.register(cors as unknown as FastifyRegisterPlugin, {
-    origin: allowedOrigins.length ? allowedOrigins : false,
-    credentials: true,
-    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    // Per-route: the portal origin is allowed on /portal/api only (see corsOriginsFor).
+    delegator: (
+      request: { url: string },
+      callback: (error: Error | null, options: object) => void,
+    ) => {
+      const origins = corsOriginsFor(config, request.url);
+      callback(null, {
+        origin: origins.length ? origins : false,
+        credentials: true,
+        methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      });
+    },
   });
   await fastify.register(helmet as unknown as FastifyRegisterPlugin);
   await app.init();
+  const portalEnabled = enabledProviders(config).length > 0;
   const handled = config.authEnabled
-    ? "/v1/*, /v2/*, /health, /ready, and /admin"
-    : "/v1/*, /v2/*, /health, and /ready";
+    ? `/v1/*, /v2/*, /health, /ready, ${portalEnabled ? "/portal, " : ""}and /admin`
+    : `/v1/*, /v2/*, /health, ${portalEnabled ? "/portal, " : ""}and /ready`;
   fastify.route({
     method: ["GET", "HEAD", "TRACE", "DELETE", "PATCH", "PUT", "POST", "QUERY"],
     url: "/*",

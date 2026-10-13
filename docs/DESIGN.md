@@ -46,7 +46,7 @@ A dark-themed, data-dense administrative dashboard for operating a hybrid Firecr
 ## Audience And Workflows
 
 - **Operators and admins** monitor live gateway traffic, success rates, fallback behavior, and latency.
-- **The administrator** manages global API keys (create, revoke), audit history, routing policy, API-key inactivity policy, and Firecrawl Cloud API key priority. Credentials are environment-backed; there is no user-management workflow.
+- **The administrator** manages global API keys (create, revoke), audit history, routing policy, API-key inactivity policy, and Firecrawl Cloud API key priority. Credentials are environment-backed. The administrator also oversees portal users on the Users page: search and filter, suspend or reactivate, delete, and override a user's limits in a side drawer (details, sign-in methods, keys without secrets). Keys owned by portal users are managed there, not on the Virtual API Keys page.
 - All authenticated pages share a persistent sidebar; the dashboard auto-refreshes every 5 seconds when "Live" is enabled.
 
 ## Visual Principles
@@ -73,7 +73,7 @@ A dark-themed, data-dense administrative dashboard for operating a hybrid Firecr
 
 ## Color System
 
-Source of truth is `apps/admin/src/index.css` using Tailwind CSS v4 `@theme`.
+Source of truth is `packages/ui/src/theme.css` using Tailwind CSS v4 `@theme`; each app imports it from its own `index.css`.
 
 ### Base surfaces
 
@@ -111,7 +111,7 @@ Use muted/foreground pairs for badges, pills, alerts, toasts, and status indicat
 
 ## Shadow Tokens
 
-Defined in `index.css` and referenced via `shadow-[var(--shadow-*)]`:
+Defined in `packages/ui/src/theme.css` and referenced via `shadow-[var(--shadow-*)]`:
 
 | Token                 | Value                                                                | Usage                      |
 | --------------------- | -------------------------------------------------------------------- | -------------------------- |
@@ -130,7 +130,7 @@ Defined in `index.css` and referenced via `shadow-[var(--shadow-*)]`:
 | `--animate-slide-up`   | slide-up   | 0.25s    | Modals, metric grids             |
 | `--animate-shake`      | shake      | 0.5s     | Form errors (login)              |
 
-Respect `prefers-reduced-motion: reduce` in `index.css`; do not add unbounded animations.
+Respect `prefers-reduced-motion: reduce` in `packages/ui/src/theme.css`; do not add unbounded animations.
 
 ## Typography
 
@@ -163,7 +163,7 @@ Respect `prefers-reduced-motion: reduce` in `index.css`; do not add unbounded an
 
 ### Primitive source
 
-Use the components in `apps/admin/src/components/ui/`. Do not introduce new third-party UI libraries without explicit approval.
+Use the components in `packages/ui/src/components/` (imported as `@firecrawl-gateway/ui/components/<name>`). Inside that package use relative imports, because a package cannot import itself by name under Vite; after `shadcn add`, rewrite the generated alias imports to relative paths. Do not introduce new third-party UI libraries without explicit approval.
 
 - **Button** (`button.tsx`): CVA-based with variants `default | destructive | outline | secondary | ghost | link` and sizes `default | sm | lg | icon`. Includes `active:translate-y-px`, focus ring, and `[&_svg]:size-4` defaults.
 - **Card** (`card.tsx`): `Card`, `CardHeader`, `CardTitle`, `CardDescription`, `CardContent`. Default card has `gap-6`, `rounded-lg`, `border`, `py-6`, and `shadow-[var(--shadow-card)]` with hover shadow.
@@ -196,7 +196,7 @@ Use the components in `apps/admin/src/components/ui/`. Do not introduce new thir
 ### Dependencies to respect
 
 - `@radix-ui/react-select` and `@radix-ui/react-slot` back the Select and Button `asChild` behavior.
-- `react-day-picker` backs the shadcn Calendar; reuse `components/ui/calendar.tsx` rather than adding another date library.
+- `react-day-picker` backs the shadcn Calendar; reuse `packages/ui/src/components/calendar.tsx` rather than adding another date library.
 - `@dnd-kit/core`, `@dnd-kit/sortable`, and `@dnd-kit/utilities` support drag-to-reorder in the Configure page. Prefer these existing packages for future sortable UIs.
 
 ## Interaction States
@@ -233,8 +233,8 @@ Use the components in `apps/admin/src/components/ui/`. Do not introduce new thir
 
 ## Implementation Rules
 
-1. **Use Tailwind CSS v4 `@theme` tokens** in `index.css` for all new colors, shadows, and animations. Avoid hard-coding one-off HSL values in components.
-2. **Prefer `cn()` from `@/lib/utils`** for conditional class composition.
+1. **Use Tailwind CSS v4 `@theme` tokens** in `packages/ui/src/theme.css` for all new colors, shadows, and animations. Avoid hard-coding one-off HSL values in components.
+2. **Prefer `cn()` from `@firecrawl-gateway/ui/lib/utils`** for conditional class composition.
 3. **Use the `components/ui/*` primitives** for buttons, cards, tables, badges, selects, and skeletons. Extend them rather than duplicating styles.
 4. **Custom form inputs are acceptable** when they follow the established pattern: `h-10`–`h-11`, `rounded-lg`, `bg-surface-1`/`bg-surface-3`, `border-white/[0.08]`, placeholder `text-muted-foreground`, hover/focus transitions.
 5. **Page layout must use `PageLayout`** for consistent title/action/header spacing.
@@ -251,7 +251,7 @@ Use the components in `apps/admin/src/components/ui/`. Do not introduce new thir
 Before considering Admin UI work complete:
 
 - [ ] New page uses `PageLayout` and matches existing title/icon/count/action pattern.
-- [ ] New components use `cn()` and Tailwind tokens from `index.css`.
+- [ ] New components use `cn()` and Tailwind tokens from `packages/ui/src/theme.css`.
 - [ ] All buttons use the `Button` primitive (or justified exception documented).
 - [ ] Tables use `DataTable` or `Table` primitives and include an `EmptyState`.
 - [ ] Loading states are handled with `PageSkeleton`, `Skeleton`, or inline spinners.
@@ -264,12 +264,12 @@ Before considering Admin UI work complete:
 
 ## Source Evidence
 
-- Color/theme/animation/shadow definitions: `apps/admin/src/index.css`.
+- Color/theme/animation/shadow definitions: `packages/ui/src/theme.css` (imported by `apps/admin/src/index.css`).
 - App shell, root routing, and protected layouts: `apps/admin/src/App.tsx`.
-- UI primitives: `apps/admin/src/components/ui/{button,card,table,badge,select,skeleton,dialog,alert-dialog,sheet,pagination,toggle,toggle-group,sonner}.tsx`.
+- UI primitives: `packages/ui/src/components/*.tsx` (button, card, table, badge, select, skeleton, dialog, alert-dialog, sheet, pagination, toggle, toggle-group, sonner, popover, calendar, checkbox, input).
 - Layout components: `apps/admin/src/components/Sidebar.tsx`, `apps/admin/src/components/PageLayout.tsx`.
 - Page implementations: `apps/admin/src/pages/{Dashboard,ApiKeys,CloudKeys,Configure,Account,Login}.tsx`.
-- Shared helpers: `apps/admin/src/lib/utils.ts`, `apps/admin/src/lib/routing.ts`, and `apps/admin/src/lib/api.ts`.
+- Shared helpers: `packages/ui/src/lib/utils.ts`, `packages/api-client/src/index.ts`, `apps/admin/src/lib/routing.ts`, and `apps/admin/src/lib/api.ts` (binds the API client to `VITE_API_BASE_URL`).
 - Feedback components: `apps/admin/src/contexts/ToastContext.tsx`, `apps/admin/src/components/ConfirmDialog.tsx`.
 - Data display: `apps/admin/src/components/DataTable.tsx`, `apps/admin/src/components/MetricCard.tsx`, `apps/admin/src/components/MetricsGrid.tsx`.
 
@@ -279,3 +279,23 @@ Before considering Admin UI work complete:
 - Is a light mode required for accessibility or operator preference?
 - Should the design system include explicit dark-mode elevation tokens (e.g., shadow intensity per layer) beyond the current ad-hoc shadows?
 - Should chart components adopt a shared wrapper with consistent aria-labels and loading states?
+
+## Customer Portal (`apps/portal`)
+
+The portal reuses this standard (dark-first tokens from `packages/ui/src/theme.css`, border-based elevation, restrained motion) for a different job: an account area where a signed-in customer manages their own gateway API keys and Firecrawl Cloud keys.
+
+- **Audience:** developers who bring their own Firecrawl key. They visit rarely, to create a key, check credits or read usage, so the portal favours clarity and one obvious next step over density.
+- **Shell:** a sticky top bar (logo, four destinations, sign out) instead of the admin's sidebar; content is `max-w-5xl`, `px-4 py-6 lg:px-6`. Navigation labels collapse to icons below `md` and stay available to screen readers.
+- **Pages:** Overview (get-started checklist that disappears once complete, monthly usage, per-key table, copyable quick-start), API keys, Cloud keys, Account (sign-in methods and linking). Sign-in is a single centred card with one button per configured provider.
+- **Secrets:** a newly created API key is shown once, in a dedicated dialog with an explicit warning and a copy action. Cloud keys are entered in a password field and never displayed again, only a short prefix.
+- **States:** every list has loading skeletons, an error banner with Retry, and an empty state with the primary action. Destructive actions use the confirm dialog.
+- **Copy:** no invented metrics, testimonials or provider logos; provider buttons are text.
+
+## Landing Page (`apps/landing`)
+
+A public, static page (Astro, no client JavaScript) that explains the portal and sends people to sign in. It uses the same dark surface tokens and takes its accent from the logo's blue-to-violet flame: a cyan-to-violet gradient on the headline emphasis, a violet-blue (`--color-action`) for the primary call to action with white text, and a light periwinkle (`--color-logo-text`) for small highlights. These accent tokens are local to `apps/landing` (`src/styles/global.css`); the shared `--color-brand` orange is not used there.
+
+- **Audience:** developers who already use Firecrawl and are deciding whether to put their key behind a gateway.
+- **Structure:** a sticky header (logo, four anchors, Sign in); a hero whose headline says what the product does in plain words, with a request-and-response panel (gradient border) showing a URL going in and clean markdown coming out; a stats strip of three facts that are true of the product (10 keys, 120 requests per minute, 30 days of history); "What Firecrawl does" (scrape, crawl, map, search, described as Firecrawl's own features for readers who do not know it); the gateway section with the request flow (your app, gateway, Firecrawl Cloud); three numbered steps; a definition list of what the gateway adds; a "Good to know" panel; a closing call to action; a footer disclaimer.
+- **Copy rules:** assume the visitor does not know Firecrawl and say what it does before what the gateway adds; every claim must be something the gateway does (limits, 10 keys, 120 requests per minute, 30-day request history, requests billed by Firecrawl to the user). No pricing, testimonials, customer logos, uptime figures or invented metrics; state the non-affiliation with Firecrawl.
+- **Accessibility and motion:** semantic landmarks, a skip link, visible focus rings, `prefers-reduced-motion` honoured, no animation beyond colour transitions.
