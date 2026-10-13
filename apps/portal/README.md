@@ -12,7 +12,7 @@ bun --cwd apps/portal dev
 
 The dev server calls the API at `VITE_API_BASE_URL` (for example
 `http://localhost:8080`). The API must have `PORTAL_ORIGIN` set to the dev server's
-origin (`http://localhost:5173`) and at least one OAuth client configured; see
+origin (`http://localhost:5174`, the port its dev script uses) and at least one OAuth client configured; see
 `.env.example`. The portal and the API must share a site (`localhost` does).
 
 ## Deploy

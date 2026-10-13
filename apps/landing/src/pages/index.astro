@@ -4,7 +4,7 @@ import Layout from "../layouts/Layout.astro";
 // The portal's address is not known at build time: the container replaces this
 // placeholder when it starts (deploy/landing/40-landing-config.sh).
 const portalUrl = import.meta.env.DEV
-  ? (import.meta.env.PUBLIC_PORTAL_URL ?? "http://localhost:5173")
+  ? (import.meta.env.PUBLIC_PORTAL_URL ?? "http://localhost:5174")
   : "__PORTAL_URL__";
 
 const steps = [

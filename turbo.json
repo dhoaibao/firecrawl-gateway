@@ -31,7 +31,8 @@
     "METRICS_TOKEN",
     "RESPONSE_CACHE_MAX_BYTES",
     "REDIS_URL",
-    "VITE_API_BASE_URL"
+    "VITE_API_BASE_URL",
+    "PUBLIC_PORTAL_URL"
   ],
   "tasks": {
     "build": {

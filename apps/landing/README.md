@@ -10,7 +10,7 @@ JavaScript, no API calls and no tracking.
 bun --cwd apps/landing dev
 ```
 
-Sign-in links point at `PUBLIC_PORTAL_URL` (default `http://localhost:5173`) in dev.
+Sign-in links point at `PUBLIC_PORTAL_URL` (default `http://localhost:5174`, the portal's dev port) in dev. The dev server listens on port 4321.
 
 ## Deploy
 
