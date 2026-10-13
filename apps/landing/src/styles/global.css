@@ -1,6 +1,16 @@
 @import "tailwindcss";
 @import "@firecrawl-gateway/ui/theme.css";
 
+/* Landing accent palette, taken from the logo's blue-to-violet flame. Kept local to the
+   landing page; the shared brand token is untouched. */
+@theme {
+  --color-logo-cyan: hsl(199 89% 60%);
+  --color-logo-violet: hsl(258 90% 72%);
+  --color-logo-text: hsl(243 100% 80%);
+  --color-action: hsl(250 85% 58%);
+  --color-action-hover: hsl(250 85% 64%);
+}
+
 html {
   color-scheme: dark;
   scroll-behavior: smooth;
@@ -55,4 +65,48 @@ body {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
   }
+}
+
+/* Faint blueprint grid behind the hero: structure, not decoration with meaning. */
+.grid-texture {
+  background-image:
+    linear-gradient(to right, hsl(250 90% 85% / 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, hsl(250 90% 85% / 0.06) 1px, transparent 1px);
+  background-size: 56px 56px;
+  -webkit-mask-image: radial-gradient(ellipse 75% 70% at 50% 0%, #000 25%, transparent 78%);
+  mask-image: radial-gradient(ellipse 75% 70% at 50% 0%, #000 25%, transparent 78%);
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-up {
+  animation: fade-up 0.55s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+.fade-up-delay {
+  animation-delay: 0.12s;
+}
+
+section[id] {
+  scroll-margin-top: 5rem;
+}
+
+/* A 1px border that runs cyan to violet like the logo's flame. */
+.gradient-border {
+  background: linear-gradient(135deg, var(--color-logo-cyan), var(--color-logo-violet));
+  padding: 1px;
+  border-radius: 0.875rem;
+}
+
+.gradient-border > * {
+  border-radius: calc(0.875rem - 1px);
 }
