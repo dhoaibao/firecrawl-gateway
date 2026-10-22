@@ -13,6 +13,10 @@ interface RateLimitBucket {
   pendingDelta: number;
   /** Authoritative count as of the last successful flush. */
   syncedCount: number;
+  /** Increments carried by the flush in flight, still counted until it settles. */
+  inFlightDelta: number;
+  /** Set by the first successful flush, which loads the count already stored. */
+  synced: boolean;
   resetAt: number;
   lastFlushAt: number;
   /** The pinned window end this bucket was created with, reused by scheduled flushes. */
@@ -80,6 +84,8 @@ export class RateLimitCounter {
       bucket = {
         pendingDelta: 0,
         syncedCount: 0,
+        inFlightDelta: 0,
+        synced: false,
         resetAt: fixedResetAt?.getTime() ?? now + RATE_LIMIT_WINDOW_MS,
         lastFlushAt: 0,
         fixedResetAt,
@@ -87,10 +93,17 @@ export class RateLimitCounter {
       this.recordBucket(key, bucket);
     }
     bucket.pendingDelta += 1;
-    if (now - bucket.lastFlushAt >= FLUSH_INTERVAL_MS)
-      await this.flushBucket(key, bucket, fixedResetAt);
+    if (now - bucket.lastFlushAt >= FLUSH_INTERVAL_MS) {
+      // Only a bucket's first sync is awaited, since it loads the count other instances
+      // (or a previous process) already stored; later flushes run in the background.
+      const flush = this.flushBucket(key, bucket, fixedResetAt);
+      if (!bucket.synced) await flush;
+    }
     if (this.options.scheduleFlush && bucket.pendingDelta > 0) this.scheduleFlush(key, bucket);
-    return { count: bucket.syncedCount + bucket.pendingDelta, resetAt: bucket.resetAt };
+    return {
+      count: bucket.syncedCount + bucket.inFlightDelta + bucket.pendingDelta,
+      resetAt: bucket.resetAt,
+    };
   }
 
   /**
@@ -159,6 +172,7 @@ export class RateLimitCounter {
     // Capture and zero pendingDelta BEFORE awaiting so requests arriving
     // during the flush accumulate into a fresh pendingDelta and survive.
     bucket.pendingDelta = 0;
+    bucket.inFlightDelta = delta;
     bucket.lastFlushAt = Date.now();
     const request = this.prisma
       .$queryRaw<Array<{ count: number; reset_at: Date }>>(
@@ -173,14 +187,17 @@ export class RateLimitCounter {
       )
       .then((rows) => {
         const entry = rows[0];
+        bucket.inFlightDelta = 0;
         if (entry) {
           bucket.syncedCount = Number(entry.count);
           bucket.resetAt = new Date(entry.reset_at).getTime();
+          bucket.synced = true;
         }
       })
       .catch(() => {
         // Restore the captured delta so no increments are lost; local
         // counting continues to enforce until the next flush attempt.
+        bucket.inFlightDelta = 0;
         bucket.pendingDelta += delta;
       })
       .finally(() => {

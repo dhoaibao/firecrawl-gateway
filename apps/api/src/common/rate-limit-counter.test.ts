@@ -248,3 +248,71 @@ describe("RateLimitCounter fixed reset", () => {
     expect(second.count).toBe(2);
   });
 });
+
+describe("RateLimitCounter background flush", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-15T12:00:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const ok = (count: number) => [{ count, reset_at: new Date(Date.now() + 60_000) }];
+
+  it("awaits only the first sync and keeps an in-flight flush's increments counted", async () => {
+    let resolveLater!: (rows: unknown) => void;
+    const queryRaw = vi
+      .fn()
+      .mockResolvedValueOnce(ok(10)) // first sight: 9 stored elsewhere + this one
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveLater = resolve;
+          }),
+      );
+    const counter = makeCounter(queryRaw);
+
+    expect((await counter.hit("key:key-1")).count).toBe(10);
+    await counter.hit("key:key-1");
+    vi.advanceTimersByTime(5_000);
+
+    // The interval flush hangs, yet hit() returns and still counts what it carries.
+    const during = await counter.hit("key:key-1");
+    expect(queryRaw).toHaveBeenCalledTimes(2);
+    expect((queryRaw.mock.calls[1][0] as Sql).values[1]).toBe(2);
+    expect(during.count).toBe(12);
+    expect((await counter.hit("key:key-1")).count).toBe(13);
+
+    resolveLater(ok(12));
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await counter.hit("key:key-1")).count).toBe(14);
+  });
+
+  it("keeps awaiting flushes until one succeeds, so a stored count is never skipped", async () => {
+    const queryRaw = vi.fn().mockRejectedValueOnce(new Error("db blip")).mockResolvedValue(ok(50));
+    const counter = makeCounter(queryRaw);
+
+    expect((await counter.hit("quota:key-1:2026-10")).count).toBe(1);
+    vi.advanceTimersByTime(5_000);
+
+    // The retried first sync is awaited and returns the stored count.
+    expect((await counter.hit("quota:key-1:2026-10")).count).toBe(50);
+  });
+
+  it("restores a failed background flush's increments", async () => {
+    const queryRaw = vi
+      .fn()
+      .mockResolvedValueOnce(ok(1))
+      .mockRejectedValueOnce(new Error("db blip"));
+    const counter = makeCounter(queryRaw);
+
+    await counter.hit("key:key-1");
+    vi.advanceTimersByTime(5_000);
+    await counter.hit("key:key-1"); // starts a background flush that fails
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect((await counter.hit("key:key-1")).count).toBe(3);
+  });
+});
