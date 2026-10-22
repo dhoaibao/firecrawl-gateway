@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuditController } from "./audit.controller";
 import { AuditService } from "./audit.service";
 import type { PrismaService } from "../prisma/prisma.service";
@@ -234,8 +234,8 @@ describe("AuditService readAuditStats", () => {
 
 describe("AuditService API key attribution", () => {
   it("persists the key id, or null when the request had none", async () => {
-    const create = vi.fn().mockResolvedValue(undefined);
-    const service = new AuditService({ auditLog: { create } } as unknown as PrismaService);
+    const createMany = vi.fn().mockResolvedValue({ count: 2 });
+    const service = new AuditService({ auditLog: { createMany } } as unknown as PrismaService);
     const base = {
       id: "a",
       created_at: "2026-08-22T00:00:00.000Z",
@@ -252,9 +252,11 @@ describe("AuditService API key attribution", () => {
 
     await service.appendAudit({ ...base, api_key_id: "key-1" });
     await service.appendAudit({ ...base, id: "b" });
+    await service.onModuleDestroy();
 
-    expect(create.mock.calls[0][0].data.apiKeyId).toBe("key-1");
-    expect(create.mock.calls[1][0].data.apiKeyId).toBeNull();
+    const rows = createMany.mock.calls[0][0].data;
+    expect(rows[0].apiKeyId).toBe("key-1");
+    expect(rows[1].apiKeyId).toBeNull();
   });
 
   it("exposes the key id on read entries", async () => {
@@ -331,5 +333,210 @@ describe("AuditService readApiKeyUsage", () => {
       expect.objectContaining({ range: "month", timeZone: "UTC" }),
     );
     await expect(controller.apiKeyUsage({ range: "decade" })).rejects.toBeDefined();
+  });
+});
+
+describe("AuditService batched writes", () => {
+  const entry = (id: string) => ({
+    id,
+    created_at: "2026-10-22T00:00:00.000Z",
+    method: "POST",
+    path: "/v1/scrape",
+    route_mode: "cloud-first",
+    backend_used: "cloud",
+    fallback_used: false,
+    fallback_reason: "",
+    status_code: 200,
+    duration_ms: 12,
+    target_url: "",
+  });
+  const ids = (call: unknown[]) =>
+    (call[0] as { data: Array<{ id: string }> }).data.map((r) => r.id);
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("returns before the insert and writes queued entries in one batch after the interval", async () => {
+    const createMany = vi.fn().mockResolvedValue({ count: 2 });
+    const service = new AuditService({ auditLog: { createMany } } as unknown as PrismaService);
+
+    await service.appendAudit(entry("a"));
+    await service.appendAudit(entry("b"));
+    expect(createMany).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(createMany).toHaveBeenCalledTimes(1);
+    expect(ids(createMany.mock.calls[0])).toEqual(["a", "b"]);
+  });
+
+  it("writes a full batch at once without waiting for the interval", async () => {
+    const createMany = vi.fn().mockResolvedValue({ count: 200 });
+    const service = new AuditService({ auditLog: { createMany } } as unknown as PrismaService);
+
+    for (let i = 0; i < 200; i += 1) await service.appendAudit(entry(String(i)));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(createMany).toHaveBeenCalledTimes(1);
+    expect(ids(createMany.mock.calls[0])).toHaveLength(200);
+  });
+
+  it("drains every entry on shutdown, including ones queued while a batch is in flight", async () => {
+    let release!: () => void;
+    const createMany = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = () => resolve({ count: 1 });
+          }),
+      )
+      .mockResolvedValue({ count: 1 });
+    const service = new AuditService({ auditLog: { createMany } } as unknown as PrismaService);
+
+    await service.appendAudit(entry("a"));
+    await vi.advanceTimersByTimeAsync(1_000); // batch "a" in flight
+    await service.appendAudit(entry("b"));
+    const draining = service.onModuleDestroy();
+    release();
+    await draining;
+
+    expect(createMany.mock.calls.flatMap((call) => ids(call))).toEqual(["a", "b"]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(createMany).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps flushing on the timer after a timer fires during a slow write", async () => {
+    let release!: () => void;
+    const createMany = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = () => resolve({ count: 1 });
+          }),
+      )
+      .mockResolvedValue({ count: 1 });
+    const service = new AuditService({ auditLog: { createMany } } as unknown as PrismaService);
+
+    await service.appendAudit(entry("a"));
+    await vi.advanceTimersByTimeAsync(1_000); // "a" in flight and hanging
+    await service.appendAudit(entry("b")); // schedules a timer
+    await vi.advanceTimersByTimeAsync(1_000); // that timer fires while "a" is still in flight
+    release();
+    await vi.advanceTimersByTimeAsync(0); // the in-flight loop also writes "b"
+    expect(createMany.mock.calls.flatMap((call) => ids(call))).toEqual(["a", "b"]);
+
+    await service.appendAudit(entry("c"));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(createMany.mock.calls.flatMap((call) => ids(call))).toEqual(["a", "b", "c"]);
+  });
+
+  it("retries a rejected batch row by row so valid entries survive a bad one", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const createMany = vi.fn().mockRejectedValue(new Error("batch rejected"));
+    const create = vi.fn(async ({ data }: { data: { id: string } }) => {
+      if (data.id === "bad") throw new Error("row rejected");
+      return data;
+    });
+    const service = new AuditService({
+      auditLog: { createMany, create },
+    } as unknown as PrismaService);
+
+    await expect(service.appendAudit(entry("a"))).resolves.toBeUndefined();
+    await service.appendAudit(entry("bad"));
+    await service.appendAudit(entry("c"));
+    await service.onModuleDestroy();
+
+    expect(createMany).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls.map(([arg]) => arg.data.id)).toEqual(["a", "bad", "c"]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith("Failed to write audit entry", {
+      id: "bad",
+      error: expect.any(Error),
+    });
+  });
+
+  it("strips NUL, which PostgreSQL text rejects, from request-derived fields", async () => {
+    const createMany = vi.fn().mockResolvedValue({ count: 1 });
+    const service = new AuditService({ auditLog: { createMany } } as unknown as PrismaService);
+
+    await service.appendAudit({
+      ...entry("a"),
+      target_url: "https://example.com/\u0000x",
+      request_id: "req\u0000-1",
+    });
+    await service.onModuleDestroy();
+
+    const [row] = createMany.mock.calls[0][0].data;
+    expect(row.targetUrl).toBe("https://example.com/x");
+    expect(row.requestId).toBe("req-1");
+  });
+
+  it("bounds the queue by size and splits batches by size for long target URLs", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    let release!: () => void;
+    const createMany = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = () => resolve({ count: 1 });
+          }),
+      )
+      .mockResolvedValue({ count: 1 });
+    const service = new AuditService({ auditLog: { createMany } } as unknown as PrismaService);
+    const url = `https://example.com/${"a".repeat(3 * 1024 * 1024)}`; // about 3 MiB
+
+    // 32 MiB fits ten such rows (queued plus in flight); the rest are dropped.
+    for (let i = 0; i < 15; i += 1)
+      await service.appendAudit({ ...entry(String(i)), target_url: url });
+    await vi.advanceTimersByTimeAsync(1_000); // one batch hangs in flight
+
+    expect(
+      warn.mock.calls.filter(([message]) => String(message).startsWith("Dropped")),
+    ).toHaveLength(5);
+    // A 4 MiB batch holds one 3 MiB row.
+    expect(ids(createMany.mock.calls[0])).toEqual(["0"]);
+
+    // In-flight bytes still count, so nothing more is admitted until the write settles.
+    await service.appendAudit({ ...entry("late"), target_url: url });
+    expect(
+      warn.mock.calls.filter(([message]) => String(message).startsWith("Dropped")),
+    ).toHaveLength(6);
+
+    release();
+    await service.onModuleDestroy();
+    expect(createMany.mock.calls.every((call) => ids(call).length === 1)).toBe(true);
+    expect(createMany.mock.calls.flatMap((call) => ids(call))).toEqual(
+      Array.from({ length: 10 }, (_, i) => String(i)),
+    );
+
+    // Once written, the budget is free again.
+    await service.appendAudit({ ...entry("after"), target_url: url });
+    await service.onModuleDestroy();
+    expect(createMany.mock.calls.at(-1) && ids(createMany.mock.calls.at(-1)!)).toEqual(["after"]);
+  });
+
+  it("drops entries once the queue is full instead of growing without bound", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    // The database never answers, so nothing leaves the queue.
+    const createMany = vi.fn(() => new Promise(() => undefined));
+    const service = new AuditService({ auditLog: { createMany } } as unknown as PrismaService);
+
+    for (let i = 0; i < 10_500; i += 1) await service.appendAudit(entry(String(i)));
+
+    // One batch left the queue for the hung insert; the queue then filled to its cap.
+    expect(warn).toHaveBeenCalledWith("Dropped audit entry: write queue is full", {
+      id: expect.any(String),
+    });
+    expect(
+      warn.mock.calls.filter(([message]) => String(message).startsWith("Dropped")),
+    ).toHaveLength(10_500 - 200 - 10_000);
   });
 });

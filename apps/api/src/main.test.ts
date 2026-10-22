@@ -39,6 +39,7 @@ const savedEnv = vi.hoisted(() => {
 import { createApp, drainAndClose } from "./main";
 import { PrismaService } from "./prisma/prisma.service";
 import { ApiKeysService } from "./api-keys/api-keys.service";
+import { AuditService } from "./audit/audit.service";
 
 let app: Awaited<ReturnType<typeof createApp>>;
 
@@ -116,9 +117,16 @@ describe("metrics endpoint", () => {
 });
 
 describe("graceful shutdown ordering", () => {
-  it("persists pending per-key counts before the database disconnects", async () => {
+  it("persists pending per-key counts and audit entries before the database disconnects", async () => {
     const closing = await createApp();
     const order: string[] = [];
+    const drainAudit = AuditService.prototype.onModuleDestroy;
+    vi.spyOn(AuditService.prototype, "onModuleDestroy").mockImplementation(async function (
+      this: AuditService,
+    ) {
+      order.push("audit-drain");
+      await drainAudit.call(this);
+    });
     const drain = ApiKeysService.prototype.onModuleDestroy;
     const disconnect = PrismaService.prototype.onModuleDestroy;
     vi.spyOn(ApiKeysService.prototype, "onModuleDestroy").mockImplementation(async function (
@@ -140,7 +148,9 @@ describe("graceful shutdown ordering", () => {
       vi.restoreAllMocks();
     }
 
-    expect(order).toEqual(["api-keys-drain", "prisma-disconnect"]);
+    expect(order.at(-1)).toBe("prisma-disconnect");
+    expect(order).toEqual(expect.arrayContaining(["api-keys-drain", "audit-drain"]));
+    expect(order).toHaveLength(3);
   });
 });
 

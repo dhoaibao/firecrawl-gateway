@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, type OnModuleDestroy } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import type { AuditEntry } from "../common/types";
@@ -15,6 +15,19 @@ import {
 export type { ApiKeyUsage, AuditStats, AuditStatsFilter };
 
 export type DeleteFilter = "today" | "week" | "month" | "all";
+
+// Entries are buffered and inserted in batches, so a proxied request never waits on its
+// own INSERT. A crash (not a graceful shutdown) loses at most one interval of entries.
+const FLUSH_INTERVAL_MS = 1_000;
+const MAX_BATCH = 200;
+const MAX_BATCH_BYTES = 4 * 1024 * 1024;
+// Bound memory while PostgreSQL is slow or down, counting queued and in-flight entries;
+// entries beyond either cap are dropped. Bytes matter because a target URL comes from the
+// request body and can be megabytes long.
+const MAX_PENDING = 10_000;
+const MAX_PENDING_BYTES = 32 * 1024 * 1024;
+// Rough cost of a row's fixed fields, so many tiny rows are not counted as free.
+const ROW_OVERHEAD_BYTES = 256;
 
 function toEntry(entry: {
   id: string;
@@ -48,33 +61,126 @@ function toEntry(entry: {
   };
 }
 
+// PostgreSQL text rejects NUL, and fields like the target URL come from the request body.
+function pgText(value: string): string {
+  return value.replaceAll("\0", "");
+}
+
+/** Approximate in-memory size of a queued row (UTF-16 code units of its variable fields). */
+function rowBytes(row: Prisma.AuditLogCreateManyInput): number {
+  return (
+    ROW_OVERHEAD_BYTES +
+    row.path.length +
+    (row.targetUrl?.length ?? 0) +
+    (row.fallbackReason?.length ?? 0) +
+    (row.requestId?.length ?? 0)
+  );
+}
+
+function toRow(entry: AuditEntry): Prisma.AuditLogCreateManyInput {
+  return {
+    id: entry.id,
+    createdAt: new Date(entry.created_at),
+    method: pgText(entry.method),
+    path: pgText(entry.path),
+    routeMode: pgText(entry.route_mode),
+    backendUsed: pgText(entry.backend_used),
+    fallbackUsed: entry.fallback_used,
+    fallbackReason: pgText(entry.fallback_reason),
+    statusCode: entry.status_code,
+    durationMs: entry.duration_ms,
+    targetUrl: pgText(entry.target_url),
+    requestId: entry.request_id == null ? null : pgText(entry.request_id),
+    apiKeyId: entry.api_key_id ?? null,
+  };
+}
+
 @Injectable()
-export class AuditService {
+export class AuditService implements OnModuleDestroy {
+  private pending: Prisma.AuditLogCreateManyInput[] = [];
+  /** Size of the queued plus in-flight rows; released when their write settles. */
+  private bufferedBytes = 0;
+  private flushTimer?: ReturnType<typeof setTimeout>;
+  private flushing?: Promise<void>;
+
   constructor(private readonly prisma: PrismaService) {}
 
+  /** Queues an entry for the next batch insert; it never waits on PostgreSQL. */
   async appendAudit(entry: AuditEntry): Promise<void> {
-    try {
-      await this.prisma.auditLog.create({
-        data: {
-          id: entry.id,
-          createdAt: new Date(entry.created_at),
-          method: entry.method,
-          path: entry.path,
-          routeMode: entry.route_mode,
-          backendUsed: entry.backend_used,
-          fallbackUsed: entry.fallback_used,
-          fallbackReason: entry.fallback_reason,
-          statusCode: entry.status_code,
-          durationMs: entry.duration_ms,
-          targetUrl: entry.target_url,
-          requestId: entry.request_id ?? null,
-          apiKeyId: entry.api_key_id ?? null,
-        },
-      });
-    } catch (error) {
-      // An audit failure must not make an upstream request fail.
-      console.warn("Failed to write audit entry", { id: entry.id, error });
+    const row = toRow(entry);
+    const bytes = rowBytes(row);
+    if (this.pending.length >= MAX_PENDING || this.bufferedBytes + bytes > MAX_PENDING_BYTES) {
+      console.warn("Dropped audit entry: write queue is full", { id: entry.id });
+      return;
     }
+    this.bufferedBytes += bytes;
+    this.pending.push(row);
+    if (this.pending.length >= MAX_BATCH) void this.flush();
+    else this.scheduleFlush();
+  }
+
+  /** Writes queued entries while the database is still connected. */
+  async onModuleDestroy(): Promise<void> {
+    // Entries queued while a batch was in flight are written by the next pass.
+    while (this.flushing || this.pending.length) await this.flush();
+    clearTimeout(this.flushTimer);
+    this.flushTimer = undefined;
+  }
+
+  private scheduleFlush(): void {
+    if (this.flushTimer) return;
+    this.flushTimer = setTimeout(() => {
+      // Forget the fired handle first: flush() returns early while a batch is in flight,
+      // and a stale handle would block every later schedule.
+      this.flushTimer = undefined;
+      void this.flush();
+    }, FLUSH_INTERVAL_MS);
+    // A pending flush must never keep the process alive; onModuleDestroy covers shutdown.
+    this.flushTimer.unref?.();
+  }
+
+  private flush(): Promise<void> {
+    if (this.flushing) return this.flushing;
+    clearTimeout(this.flushTimer);
+    this.flushTimer = undefined;
+    this.flushing = this.writePending().finally(() => {
+      this.flushing = undefined;
+      if (this.pending.length) this.scheduleFlush();
+    });
+    return this.flushing;
+  }
+
+  private async writePending(): Promise<void> {
+    while (this.pending.length) {
+      const batch = this.takeBatch();
+      try {
+        await this.prisma.auditLog.createMany({ data: batch });
+      } catch {
+        // One rejected row must not take the rest of its batch down, so retry them one by
+        // one; an audit failure still never makes an upstream request fail.
+        await Promise.all(
+          batch.map((row) =>
+            this.prisma.auditLog.create({ data: row }).catch((error: unknown) => {
+              console.warn("Failed to write audit entry", { id: row.id, error });
+            }),
+          ),
+        );
+      } finally {
+        for (const row of batch) this.bufferedBytes -= rowBytes(row);
+      }
+    }
+  }
+
+  /** Takes up to MAX_BATCH rows and MAX_BATCH_BYTES (always at least one row). */
+  private takeBatch(): Prisma.AuditLogCreateManyInput[] {
+    let count = 0;
+    let bytes = 0;
+    while (count < this.pending.length && count < MAX_BATCH) {
+      bytes += rowBytes(this.pending[count]);
+      if (count > 0 && bytes > MAX_BATCH_BYTES) break;
+      count += 1;
+    }
+    return this.pending.splice(0, count);
   }
 
   async readAuditEntries(limit = 500, since?: Date): Promise<AuditEntry[]> {
