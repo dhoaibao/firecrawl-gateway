@@ -160,7 +160,7 @@ describe("ProxyService", () => {
     expect(reply.send).toHaveBeenCalledTimes(1);
   });
 
-  it("persists the audit insert before sending an early 409 rejection response", async () => {
+  it("sends an early 409 before the audit insert settles, but waits for the insert", async () => {
     const events: string[] = [];
     let resolveAudit!: () => void;
     const auditDone = new Promise<void>((resolve) => {
@@ -178,18 +178,23 @@ describe("ProxyService", () => {
     const req = makeRequest({ raw: { url: "/v1/agent" }, url: "/v1/agent" });
 
     const handled = service.handle(req, reply as never);
-    await vi.waitFor(() => expect(events.length).toBeGreaterThanOrEqual(1));
+    await vi.waitFor(() => expect(events.length).toBeGreaterThanOrEqual(2));
 
-    expect(events).toEqual(["audit-started"]);
-    expect(reply.send).not.toHaveBeenCalled();
+    expect(events).toEqual(["audit-started", "reply-sent"]);
+    expect(reply.code).toHaveBeenCalledWith(409);
+    let returned = false;
+    void handled.then(() => {
+      returned = true;
+    });
+    await Promise.resolve();
+    expect(returned).toBe(false);
 
     resolveAudit();
     await handled;
-    expect(reply.code).toHaveBeenCalledWith(409);
-    expect(events).toEqual(["audit-started", "audit-settled", "reply-sent"]);
+    expect(events).toEqual(["audit-started", "reply-sent", "audit-settled"]);
   });
 
-  it("persists the audit insert before sending an early 401 response", async () => {
+  it("sends an early 401 before the audit insert settles, but waits for the insert", async () => {
     const events: string[] = [];
     let resolveAudit!: () => void;
     const auditDone = new Promise<void>((resolve) => {
@@ -215,15 +220,20 @@ describe("ProxyService", () => {
     const req = makeRequest({ headers: {} });
 
     const handled = service.handle(req, reply as never);
-    await vi.waitFor(() => expect(events.length).toBeGreaterThanOrEqual(1));
+    await vi.waitFor(() => expect(events.length).toBeGreaterThanOrEqual(2));
 
-    expect(events).toEqual(["audit-started"]);
-    expect(reply.send).not.toHaveBeenCalled();
+    expect(events).toEqual(["audit-started", "reply-sent"]);
+    expect(reply.code).toHaveBeenCalledWith(401);
+    let returned = false;
+    void handled.then(() => {
+      returned = true;
+    });
+    await Promise.resolve();
+    expect(returned).toBe(false);
 
     resolveAudit();
     await handled;
-    expect(reply.code).toHaveBeenCalledWith(401);
-    expect(events).toEqual(["audit-started", "audit-settled", "reply-sent"]);
+    expect(events).toEqual(["audit-started", "reply-sent", "audit-settled"]);
   });
 
   it("does not fail early rejection response when audit insert unexpectedly rejects", async () => {

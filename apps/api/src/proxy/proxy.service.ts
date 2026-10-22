@@ -710,7 +710,7 @@ export class ProxyService {
     await this.audit.appendAudit(entry);
   }
 
-  /** Audits and answers a request that never reached an upstream. */
+  /** Answers a request that never reached an upstream, auditing it alongside like `respond`. */
   private async rejectEarly(
     ctx: ProxyContext,
     backendUsed: string,
@@ -718,8 +718,11 @@ export class ProxyService {
     reason: string,
     payload: unknown,
   ): Promise<void> {
-    await this.appendAuditEntry(ctx, backendUsed, statusCode, false, reason).catch(() => undefined);
+    const auditPromise = this.appendAuditEntry(ctx, backendUsed, statusCode, false, reason).catch(
+      () => undefined,
+    );
     ctx.reply.code(statusCode).send(payload);
+    await auditPromise;
   }
 
   /** Reserves a Cloud key and proxies to Cloud with it; null when none is reservable. */
