@@ -11,6 +11,7 @@ All notable repository changes are documented here. This file follows the struct
 
 ### Changed
 
+- The gateway's PostgreSQL now runs as the `postgres` service of `deploy/gateway/docker-compose.yml` (data in the `postgres_data` volume, not published on the host) instead of an external database. The compose file builds `DATABASE_URL` from `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`; the deploy verification step also requires `postgres` to be running. Existing deployments must set `POSTGRES_PASSWORD` in the server `.env` and restore their data into the new container before deploying.
 - The GHCR deployment workflow also deploys the `deploy/firecrawl` stack when the optional `FIRECRAWL_ENV_FILE` secret is set.
 - Added a GHCR deployment flow: a root `Dockerfile` (`api` and `web` targets), `deploy/gateway/` (compose file, nginx config, `.env.example`), and `.github/workflows/docker-publish.yml` that builds, pushes to GHCR, and deploys over SSH with `prisma migrate deploy` on each deploy and a `maintenance` service replacing the external cron.
 - Removed all Vercel deployment support: both `vercel.json` files, the `api/index.js` serverless entry, the default `handler` export from `apps/api/src/main.ts` (the API now listens only when run directly), and Vercel documentation. The API runs as a Node server, the admin builds to a static SPA, and the daily `GET /api/cron/maintenance` call is no longer made by the platform (see the GHCR deployment entry below).

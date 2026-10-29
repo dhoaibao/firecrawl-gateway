@@ -5,16 +5,47 @@
 # The gateway joins the Firecrawl stack's network (deploy/firecrawl) so
 # FIRECRAWL_SELF_HOSTED_URL can be http://api:3002. Start that stack first, or
 # create the network yourself: docker network create firecrawl_backend
+#
+# The gateway's PostgreSQL runs in this stack (service `postgres`, data in the
+# `postgres_data` volume). DATABASE_URL is built below from POSTGRES_USER,
+# POSTGRES_PASSWORD, and POSTGRES_DB and overrides any DATABASE_URL in .env.
 
 name: firecrawl-gateway
 
 x-api-image: &api-image ${IMAGE_PREFIX:?set IMAGE_PREFIX}-api:${IMAGE_TAG:?set IMAGE_TAG}
 
+# Direct (non-pooled) connection, which is what Prisma migrations need. The
+# password is embedded in a URL, so keep it URL-safe (openssl rand -hex 24).
+x-database-env: &database-env
+  DATABASE_URL: postgresql://${POSTGRES_USER:-gateway}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-firecrawl_gateway}
+
 services:
+  postgres:
+    # Pin the major version: the data directory is not compatible across majors.
+    image: postgres:${POSTGRES_VERSION:-17-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-gateway}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-firecrawl_gateway}
+    # Not published: only the services on this compose network reach it.
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
   gateway:
     image: *api-image
     env_file: .env
+    environment: *database-env
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     # On stop the gateway drains in-flight requests, which can run up to
     # API_REQUEST_TIMEOUT_MS (120s by default); keep this above that.
     stop_grace_period: 130s
@@ -52,6 +83,7 @@ services:
   maintenance:
     image: *api-image
     env_file: .env
+    environment: *database-env
     restart: unless-stopped
     depends_on:
       gateway:
@@ -65,9 +97,16 @@ services:
   migrate:
     image: *api-image
     env_file: .env
+    environment: *database-env
     profiles: [tools]
     restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
     command: ["./node_modules/.bin/prisma", "migrate", "deploy"]
+
+volumes:
+  postgres_data:
 
 networks:
   firecrawl:

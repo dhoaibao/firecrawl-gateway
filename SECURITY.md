@@ -2,9 +2,9 @@
 
 ## Scope
 
-This policy covers the gateway application, the admin dashboard, repository configuration, and first-party workflows in this repository. Firecrawl Cloud, PostgreSQL, and their infrastructure are outside this repository's control; the upstream Firecrawl images used by the `deploy/firecrawl` Compose stack and the host that runs it are also outside it. Report provider or account issues to the relevant provider; report a vulnerability in this gateway here.
+This policy covers the gateway application, the admin dashboard, repository configuration, and first-party workflows in this repository. Firecrawl Cloud and its infrastructure are outside this repository's control, as are the upstream `postgres` image used by the `deploy/gateway` Compose stack and the host that runs it; the upstream Firecrawl images used by the `deploy/firecrawl` Compose stack and the host that runs it are also outside it. Report provider or account issues to the relevant provider; report a vulnerability in this gateway here.
 
-The gateway is a separate project in front of those services. It does not host PostgreSQL or Firecrawl Cloud, and a successful repository check does not validate the security of a deployed Firecrawl stack (including one started from `deploy/firecrawl`, which runs unauthenticated and must stay on loopback or behind an authenticating proxy, VPN, or firewall) or of external services.
+The gateway is a separate project in front of those services. It does not host Firecrawl Cloud. Its PostgreSQL container is not published on the host and is reachable only on the gateway Compose network; a successful repository check does not validate the security of a deployed Firecrawl stack (including one started from `deploy/firecrawl`, which runs unauthenticated and must stay on loopback or behind an authenticating proxy, VPN, or firewall) or of external services.
 
 ## Reporting a vulnerability
 

@@ -2,7 +2,7 @@
 
 Firecrawl Gateway is an independently deployed gateway for operators who use Firecrawl Cloud, a self-hosted Firecrawl run from this repository's Docker Compose stack, or both. It provides one API boundary for compatible Firecrawl requests, routing controls, global virtual API keys, and an operator dashboard for settings and audit data.
 
-This repository is a separate gateway application, not Firecrawl or PostgreSQL, and claims no official affiliation. It ships a Docker Compose stack in [`deploy/firecrawl`](deploy/firecrawl/docker-compose.yml) for self-hosting Firecrawl, but does not host PostgreSQL or Firecrawl Cloud. Upstream availability, feature compatibility, account access, and billing for Cloud and PostgreSQL remain the responsibility of those external services.
+This repository is a separate gateway application, not Firecrawl or PostgreSQL, and claims no official affiliation. It ships a Docker Compose stack in [`deploy/firecrawl`](deploy/firecrawl/docker-compose.yml) for self-hosting Firecrawl, and a gateway stack in [`deploy/gateway`](deploy/gateway/docker-compose.yml) that includes the gateway's own PostgreSQL container, but does not host Firecrawl Cloud. Upstream availability, feature compatibility, account access, and billing for Cloud remain the responsibility of that external service.
 
 ## Why this exists
 

@@ -1,12 +1,12 @@
 # Contributing
 
-Thanks for helping improve Firecrawl Gateway. The repository contains two independently deployable apps: a NestJS/Fastify API and a root-hosted React/Vite admin dashboard. Both front Firecrawl (Cloud and the self-hosted stack in `deploy/firecrawl`) and an externally hosted PostgreSQL; this repository does not run PostgreSQL or Firecrawl Cloud.
+Thanks for helping improve Firecrawl Gateway. The repository contains two independently deployable apps: a NestJS/Fastify API and a root-hosted React/Vite admin dashboard. Both front Firecrawl (Cloud and the self-hosted stack in `deploy/firecrawl`) and PostgreSQL; this repository runs PostgreSQL in the `deploy/gateway` Compose stack but does not run Firecrawl Cloud.
 
 ## Project boundaries
 
 - `apps/api` is the gateway API. It proxies `/v1/*` and `/v2/*`, serves health/readiness endpoints, and exposes authenticated administration routes under `/admin/api/*`.
 - `apps/admin` is the root-hosted operator dashboard. It talks to the API through `VITE_API_BASE_URL`.
-- Firecrawl Cloud and PostgreSQL are external deployment prerequisites, not services maintained by this repository. Self-hosted Firecrawl is provided by the Docker Compose stack in `deploy/firecrawl`.
+- Firecrawl Cloud is an external deployment prerequisite, not a service maintained by this repository. Self-hosted Firecrawl is provided by the Docker Compose stack in `deploy/firecrawl`, and the gateway's PostgreSQL by the one in `deploy/gateway`.
 - GitHub Actions runs CI (`deploy.yml`) on pull requests and, on pushes to `main`, `docker-publish.yml`, which runs the same checks and then publishes images to GHCR and deploys them over SSH to the `production` environment. A green check is not a deployment confirmation.
 
 ## Before you start

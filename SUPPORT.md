@@ -14,6 +14,6 @@ Include a minimal reproduction and redacted logs. Never include API keys, passwo
 
 ## Out of scope for this repository
 
-Firecrawl Cloud availability, PostgreSQL provider incidents, hosting-platform issues, billing, and credentials for external services must be handled with the relevant provider. This repository does not host or administer those services. Problems in the self-hosted Firecrawl Docker Compose stack in `deploy/firecrawl` can be raised here; upstream Firecrawl bugs belong to the Firecrawl project.
+Firecrawl Cloud availability, hosting-platform issues, billing, and credentials for external services must be handled with the relevant provider. This repository does not host or administer those services. Problems in the self-hosted Firecrawl Docker Compose stack in `deploy/firecrawl` can be raised here; upstream Firecrawl bugs belong to the Firecrawl project.
 
 Do not use a public issue for a suspected vulnerability. Follow [`SECURITY.md`](SECURITY.md) instead. For conduct concerns, follow [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).

@@ -4,7 +4,7 @@
 
 ## Repository Purpose
 
-This Bun-workspace Turborepo ships an independently deployable NestJS/Fastify gateway API and root-hosted React/Vite admin dashboard for Firecrawl and an externally hosted PostgreSQL; it does not host PostgreSQL. `deploy/firecrawl/docker-compose.yml` is the repository's Docker Compose stack for the self-hosted Firecrawl backend (Firecrawl Cloud stays external).
+This Bun-workspace Turborepo ships an independently deployable NestJS/Fastify gateway API and root-hosted React/Vite admin dashboard for Firecrawl and PostgreSQL. `deploy/gateway/docker-compose.yml` runs the gateway's own PostgreSQL (`postgres` service, `postgres_data` volume) and `deploy/firecrawl/docker-compose.yml` is the Docker Compose stack for the self-hosted Firecrawl backend (Firecrawl Cloud stays external).
 
 ## Project Operating Guide
 
@@ -15,7 +15,7 @@ This Bun-workspace Turborepo ships an independently deployable NestJS/Fastify ga
 - Estimated-credit routing lives in `apps/api/src/credits/`; the optional `REDIS_URL` ledger store shares reservations across instances, otherwise key rotation is per-instance.
 - PostgreSQL schema and migration history are canonical in `apps/api/prisma/schema.prisma` and `apps/api/prisma/migrations/`. Prisma manages global API keys, settings, audit logs, and rate-limit records.
 - The root-hosted admin SPA lives in `apps/admin/src/`; follow `docs/DESIGN.md` for its design standard. Admin API requests remain under `/admin/api/*` on the API origin.
-- Deployment: the root `Dockerfile` builds the `api` and `web` images, `.github/workflows/docker-publish.yml` publishes them to GHCR and deploys over SSH, and `deploy/gateway/` holds the server compose file, nginx config, and `.env.example`. Consult `RELEASING.md` for release and deployment checks.
+- Deployment: the root `Dockerfile` builds the `api` and `web` images, `.github/workflows/docker-publish.yml` publishes them to GHCR and deploys over SSH, and `deploy/gateway/` holds the server compose file (including PostgreSQL), nginx config, and `.env.example`. The compose file builds the containers' `DATABASE_URL` from `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`. Consult `RELEASING.md` for release and deployment checks.
 
 ### Canonical sources and required flows
 
@@ -27,7 +27,7 @@ This Bun-workspace Turborepo ships an independently deployable NestJS/Fastify ga
 
 ### Project-specific boundaries
 
-- Firecrawl Cloud and PostgreSQL are external deployment prerequisites; the self-hosted Firecrawl comes from `deploy/firecrawl`. Passing GitHub Actions checks (`.github/workflows/deploy.yml`) are not deployment evidence; deployment is `docker-publish.yml`, which runs those checks first.
+- Firecrawl Cloud is an external deployment prerequisite; the self-hosted Firecrawl comes from `deploy/firecrawl` and the gateway's PostgreSQL from `deploy/gateway`. Outside that Docker deployment (local development), `DATABASE_URL` points at any PostgreSQL you provide. Passing GitHub Actions checks (`.github/workflows/deploy.yml`) are not deployment evidence; deployment is `docker-publish.yml`, which runs those checks first.
 - The post-baseline single-admin migration deletes existing users, virtual API keys, and audit logs before removing user ownership. It needs a migration-capable direct PostgreSQL connection; see `RELEASING.md` before an approved migration.
 - The API forwards request bodies as UTF-8, so it is intended for UTF-8 JSON rather than binary or Latin-1 payloads. Audit logs are stored only in PostgreSQL.
 - Routing modes and Cloud requirements are decided in `apps/api/src/proxy/policy.ts`; sensitive headers, cookies, and private target URLs restrict fallback.

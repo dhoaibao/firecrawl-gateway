@@ -255,7 +255,7 @@ jobs:
         run: |
           set -euo pipefail
           running="$(ssh deploy "cd '$DEPLOY_PATH' && docker compose ps --status running --services")"
-          for service in gateway web maintenance; do
+          for service in postgres gateway web maintenance; do
             if ! printf '%s\n' "$running" | grep -qx "$service"; then
               echo "::error::service $service is not running after deploy"
               exit 1
