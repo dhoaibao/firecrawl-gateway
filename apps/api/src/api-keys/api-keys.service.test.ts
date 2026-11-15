@@ -164,11 +164,13 @@ describe("ApiKeysService", () => {
     });
 
     function quotaService(count: () => number) {
-      const queryRaw = vi
-        .fn()
-        .mockImplementation((_sql: unknown) =>
-          Promise.resolve([{ count: count(), reset_at: new Date("2026-11-01T00:00:00.000Z") }]),
-        );
+      const queryRaw = vi.fn().mockImplementation((_sql: unknown) => {
+        // Start of the next UTC month at call time, so the window never expires mid-test
+        // and the helper follows fake timers (it was a fixed date that went stale).
+        const now = new Date();
+        const monthEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+        return Promise.resolve([{ count: count(), reset_at: monthEnd }]);
+      });
       return {
         service: new ApiKeysService({ $queryRaw: queryRaw } as never, {} as never),
         queryRaw,
