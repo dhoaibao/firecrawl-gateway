@@ -70,6 +70,6 @@ export class SessionService {
   }
 
   private cookieSecure(): boolean {
-    return this.config.sessionSecure ?? process.env.NODE_ENV === "production";
+    return this.config.sessionSecure ?? this.config.nodeEnv === "production";
   }
 }

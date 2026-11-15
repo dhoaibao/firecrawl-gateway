@@ -29,6 +29,13 @@ describe("hasPrivateTargetUrl", () => {
     "http://[::ffff:192.168.1.1]/",
     "http://[::ffff:c0a8:101]/",
     "http://[::ffff:127.0.0.1]/",
+    "http://grafana/",
+    "http://grafana:3000/d/x",
+    "http://intranet./",
+    "http://100.64.0.1/",
+    "http://100.100.100.100/",
+    "http://100.127.255.255/",
+    "http://[::]/",
   ])("treats %s as private", (url) => {
     expect(hasPrivateTargetUrl([url])).toBe(true);
   });
@@ -44,6 +51,8 @@ describe("hasPrivateTargetUrl", () => {
     "http://[2001:db8::1]/",
     "http://[::ffff:8.8.8.8]/",
     "http://[fec0::1]/",
+    "http://100.63.255.255/",
+    "http://100.128.0.1/",
   ])("treats %s as public", (url) => {
     expect(hasPrivateTargetUrl([url])).toBe(false);
   });

@@ -30,6 +30,34 @@ describe("loadConfig", () => {
     expect(loadConfig({ ...baseEnv, SESSION_SECURE: "OFF" }).sessionSecure).toBe(false);
   });
 
+  it.each([
+    [undefined, false],
+    ["", false],
+    ["false", false],
+    ["0", false],
+    ["No", false],
+    ["off", false],
+    ["true", true],
+    ["TRUE", true],
+    ["1", true],
+    ["yes", true],
+    ["ON", true],
+  ])("parses TRUST_PROXY=%j as %s", (value, expected) => {
+    expect(loadConfig({ ...baseEnv, TRUST_PROXY: value }).trustProxy).toBe(expected);
+  });
+
+  it.each(["10.0.0.1", "2", "maybe", "loopback"])(
+    "fails startup for the unrecognized TRUST_PROXY=%j",
+    (value) => {
+      expect(() => loadConfig({ ...baseEnv, TRUST_PROXY: value })).toThrow(/TRUST_PROXY/);
+    },
+  );
+
+  it("exposes NODE_ENV through config, empty when unset", () => {
+    expect(loadConfig({ ...baseEnv, NODE_ENV: "production" }).nodeEnv).toBe("production");
+    expect(loadConfig(baseEnv).nodeEnv).toBe("");
+  });
+
   it("accepts an optional Redis TCP URL", () => {
     expect(loadConfig({ ...baseEnv, REDIS_URL: "redis://localhost:6379" }).redisUrl).toBe(
       "redis://localhost:6379",

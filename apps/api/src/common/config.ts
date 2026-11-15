@@ -8,6 +8,19 @@ const boolFromEnv = z.preprocess((value) => {
   return value;
 }, z.boolean());
 
+// Unlike `boolFromEnv`, unset means off, and an unrecognized value fails startup: a typo or
+// an IP must not silently leave every client sharing the reverse proxy's address.
+const trustProxyFromEnv = z.preprocess(
+  (value) => {
+    if (value === undefined) return false;
+    const normalized = String(value).trim().toLowerCase();
+    if (["", "false", "0", "no", "off"].includes(normalized)) return false;
+    if (["true", "1", "yes", "on"].includes(normalized)) return true;
+    return value;
+  },
+  z.boolean({ message: "TRUST_PROXY must be true or false" }),
+);
+
 const optionalOrigin = z.preprocess((value) => {
   if (!value || String(value).trim() === "") return "";
   return String(value).trim().replace(/\/$/, "");
@@ -62,7 +75,9 @@ export const configSchema = z
     adminPassword: z.string().default(""),
     adminOrigin: optionalOrigin,
     apiOrigin: optionalOrigin,
-    trustProxy: z.union([z.boolean(), z.string()]).default(false),
+    trustProxy: trustProxyFromEnv,
+    // Only read to default the session cookie's Secure flag (see `sessionSecure`).
+    nodeEnv: z.string().default(""),
     logLevel: z.string().default("info"),
     cronSecret: z.string().default(""),
     // Bearer token for GET /admin/api/metrics; unset disables the endpoint (404).
@@ -126,6 +141,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     adminOrigin: env.ADMIN_ORIGIN,
     apiOrigin: env.API_ORIGIN,
     trustProxy: env.TRUST_PROXY,
+    nodeEnv: env.NODE_ENV,
     logLevel: env.LOG_LEVEL,
     cronSecret: env.CRON_SECRET,
     metricsToken: env.METRICS_TOKEN,

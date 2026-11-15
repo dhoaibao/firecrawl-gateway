@@ -93,14 +93,16 @@ function isPrivateHostname(hostname: string): boolean {
   // IPv6 private/loopback ranges: fc00::/7 (ULA), fe80::/10 (link-local)
   if (host.includes(":")) {
     const firstHextet = host.split(":")[0];
-    if (!firstHextet) return host === "::1";
+    if (!firstHextet) return host === "::1" || host === "::";
     const value = parseInt(firstHextet, 16);
     if (Number.isNaN(value)) return false;
     return (value >= 0xfc00 && value <= 0xfdff) || (value >= 0xfe80 && value <= 0xfebf);
   }
 
   const ipv4 = host.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
-  if (!ipv4) return false;
+  // A name without a dot (`http://grafana/`) only resolves through an internal search
+  // domain or hosts file, so it is never a public target.
+  if (!ipv4) return !host.replace(/\.$/, "").includes(".");
 
   const [, aRaw, bRaw] = ipv4;
   const a = Number(aRaw);
@@ -108,6 +110,7 @@ function isPrivateHostname(hostname: string): boolean {
   return (
     a === 10 ||
     a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) ||
     (a === 172 && b >= 16 && b <= 31) ||
     (a === 192 && b === 168) ||
     (a === 169 && b === 254)

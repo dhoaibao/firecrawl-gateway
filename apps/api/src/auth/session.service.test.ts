@@ -42,19 +42,30 @@ describe("SessionService", () => {
   });
 
   it("sets an http-only, same-site lax cookie that is secure only in production", () => {
-    vi.stubEnv("NODE_ENV", "production");
-    expect(issue(makeService()).options).toMatchObject({
+    expect(issue(makeService({ nodeEnv: "production" })).options).toMatchObject({
       httpOnly: true,
       sameSite: "lax",
       secure: true,
       maxAge: 30 * 24 * 60 * 60,
     });
 
-    vi.stubEnv("NODE_ENV", "development");
-    expect(issue(makeService()).options).toMatchObject({ sameSite: "lax", secure: false });
-    expect(issue(makeService({ sessionSecure: true })).options).toMatchObject({ secure: true });
+    expect(issue(makeService({ nodeEnv: "development" })).options).toMatchObject({
+      sameSite: "lax",
+      secure: false,
+    });
+    expect(issue(makeService()).options).toMatchObject({ secure: false });
+    expect(
+      issue(makeService({ nodeEnv: "development", sessionSecure: true })).options,
+    ).toMatchObject({ secure: true });
+    expect(
+      issue(makeService({ nodeEnv: "production", sessionSecure: false })).options,
+    ).toMatchObject({ secure: false });
+  });
+
+  it("follows config.nodeEnv and ignores the ambient NODE_ENV", () => {
     vi.stubEnv("NODE_ENV", "production");
-    expect(issue(makeService({ sessionSecure: false })).options).toMatchObject({ secure: false });
+
+    expect(issue(makeService({ nodeEnv: "development" })).options).toMatchObject({ secure: false });
   });
 
   it("rejects a session older than 30 days", () => {
