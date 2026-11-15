@@ -15,23 +15,23 @@ model ApiKey {
   keyValue   String?   @map("key_value") @db.VarChar(255)
   keyPrefix  String    @map("key_prefix") @db.VarChar(255)
   revoked    Boolean   @default(false)
-  createdAt  DateTime  @default(now()) @map("created_at")
-  updatedAt  DateTime  @default(now()) @updatedAt @map("updated_at")
-  lastUsedAt DateTime? @map("last_used_at")
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  lastUsedAt DateTime? @map("last_used_at") @db.Timestamptz(6)
   // Optional per-key limits; null means no expiry / no per-key rate limit.
-  expiresAt          DateTime? @map("expires_at")
+  expiresAt          DateTime? @map("expires_at") @db.Timestamptz(6)
   rateLimitPerMinute Int?      @map("rate_limit_per_minute")
   monthlyQuota       Int?      @map("monthly_quota")
 
-  @@index([keyHash])
-  @@index([keyPrefix])
-  @@index([lastUsedAt])
+  @@index([keyHash], map: "idx_api_keys_key_hash")
+  @@index([keyPrefix], map: "idx_api_keys_key_prefix")
+  @@index([lastUsedAt], map: "idx_api_keys_last_used_at")
   @@map("api_keys")
 }
 
 model AuditLog {
   id             String   @id
-  createdAt      DateTime @map("created_at")
+  createdAt      DateTime @map("created_at") @db.Timestamptz(6)
   method         String
   path           String
   routeMode      String   @map("route_mode")
@@ -47,7 +47,7 @@ model AuditLog {
   // Deliberately not a foreign key so revoking a key never touches audit rows.
   apiKeyId       String?  @map("api_key_id")
 
-  @@index([createdAt(sort: Desc)])
+  @@index([createdAt(sort: Desc)], map: "idx_audit_logs_created_at")
   @@index([apiKeyId, createdAt(sort: Desc)])
   @@map("audit_logs")
 }
@@ -55,7 +55,7 @@ model AuditLog {
 model Setting {
   key       String   @id
   value     String
-  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@map("settings")
 }
@@ -63,8 +63,8 @@ model Setting {
 model RateLimit {
   key     String   @id
   count   Int
-  resetAt DateTime @map("reset_at")
+  resetAt DateTime @map("reset_at") @db.Timestamptz(6)
 
-  @@index([resetAt])
+  @@index([resetAt], map: "idx_rate_limits_reset_at")
   @@map("rate_limits")
 }
