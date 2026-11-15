@@ -7,6 +7,10 @@
 <!-- List the commands you ran and their results. -->
 
 - [ ] `bun run typecheck`
+- [ ] `bun run lint`
+- [ ] `bun run format:check`
+- [ ] `bun run test`
+- [ ] `bun run build`
 - [ ] Other relevant checks are listed below
 
 ## Checklist

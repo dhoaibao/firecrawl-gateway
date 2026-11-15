@@ -266,7 +266,7 @@ Before considering Admin UI work complete:
 
 - Color/theme/animation/shadow definitions: `apps/admin/src/index.css`.
 - App shell, root routing, and protected layouts: `apps/admin/src/App.tsx`.
-- UI primitives: `apps/admin/src/components/ui/{button,card,table,badge,select,skeleton,dialog,alert-dialog,sheet,pagination,toggle,toggle-group,sonner}.tsx`.
+- UI primitives: `apps/admin/src/components/ui/{button,card,table,badge,select,skeleton,dialog,alert-dialog,sheet,pagination,toggle,toggle-group,sonner,input,checkbox,popover,calendar}.tsx`.
 - Layout components: `apps/admin/src/components/Sidebar.tsx`, `apps/admin/src/components/PageLayout.tsx`.
 - Page implementations: `apps/admin/src/pages/{Dashboard,ApiKeys,CloudKeys,Configure,Account,Login}.tsx`.
 - Shared helpers: `apps/admin/src/lib/utils.ts`, `apps/admin/src/lib/routing.ts`, and `apps/admin/src/lib/api.ts`.
@@ -275,7 +275,6 @@ Before considering Admin UI work complete:
 
 ## Open Questions
 
-- Should form inputs be migrated to a `components/ui/input.tsx` primitive for consistency?
 - Is a light mode required for accessibility or operator preference?
 - Should the design system include explicit dark-mode elevation tokens (e.g., shadow intensity per layer) beyond the current ad-hoc shadows?
 - Should chart components adopt a shared wrapper with consistent aria-labels and loading states?

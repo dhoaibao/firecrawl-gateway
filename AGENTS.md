@@ -22,13 +22,13 @@ This Bun-workspace Turborepo ships an independently deployable NestJS/Fastify ga
 - Root `package.json` and `turbo.json` own workspace scripts and task orchestration; the only workspace glob is `apps/*`. Edit source rather than generated Prisma clients or build outputs (`dist/`). A new environment variable must also be added to `turbo.json` `globalPassThroughEnv` and `.env.example`.
 - The `.husky/pre-commit` hook runs `lint-staged` (Prettier on all supported files, ESLint on staged API/admin sources).
 - Keep configuration examples in `.env.example`; runtime configuration is validated by `apps/api/src/common/config.ts`.
-- After changing Prisma schema, generate the client with `bun run db:generate`. Apply migrations with `bun run db:migrate` only as an approved operational cutover; migrations are not applied during API startup.
+- After changing Prisma schema, generate the client with `bun run db:generate`. Apply migrations manually with `bun run db:migrate` only as an approved operational cutover. The API does not migrate at startup, but `.github/workflows/docker-publish.yml` runs `prisma migrate deploy` on every deploy of `main`, so merging a migration is itself the cutover (gated by the `production` environment).
 - API behavior and setup guidance belongs in `README.md`, `QUICKSTART.md`, `SELF_HOST.md`, and `apps/api/README.md`; dashboard UI guidance belongs in `docs/DESIGN.md`.
 
 ### Project-specific boundaries
 
 - Firecrawl Cloud is an external deployment prerequisite; the self-hosted Firecrawl comes from `deploy/firecrawl` and the gateway's PostgreSQL from `deploy/gateway`. Outside that Docker deployment (local development), `DATABASE_URL` points at any PostgreSQL you provide. Passing GitHub Actions checks (`.github/workflows/deploy.yml`) are not deployment evidence; deployment is `docker-publish.yml`, which runs those checks first.
-- The post-baseline single-admin migration deletes existing users, virtual API keys, and audit logs before removing user ownership. It needs a migration-capable direct PostgreSQL connection; see `RELEASING.md` before an approved migration.
+- The post-baseline single-admin migration deletes existing users, virtual API keys, and audit logs before removing user ownership. It needs a migration-capable direct PostgreSQL connection; see `RELEASING.md` before merging or applying it.
 - The API forwards request bodies as UTF-8, so it is intended for UTF-8 JSON rather than binary or Latin-1 payloads. Audit logs are stored only in PostgreSQL.
 - Routing modes and Cloud requirements are decided in `apps/api/src/proxy/policy.ts`; sensitive headers, cookies, and private target URLs restrict fallback.
 

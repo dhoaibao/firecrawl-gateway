@@ -32,12 +32,12 @@ Maintainers may ask for a smaller or further-redacted reproduction. Coordinate a
 
 ## CI and deployment boundary
 
-- The typecheck workflow is intentionally typecheck-only; it is not a security scan. `docker-publish.yml` builds images and deploys on pushes to `main` using secrets on the `production` environment (SSH key, `ENV_FILE`); restrict who can edit workflows and consider required reviewers on that environment.
+- The CI workflow (`deploy.yml`) runs typecheck, lint, format check, tests, and build; it is not a security scan. `docker-publish.yml` builds images and deploys on pushes to `main` using secrets on the `production` environment (SSH key, `ENV_FILE`); restrict who can edit workflows and consider required reviewers on that environment.
 - Images contain no secrets; the API and admin dashboard are deployed as GHCR images from one compose file. Production credentials and external service configuration belong in the deployment environment, not in GitHub Actions logs or repository files.
 - A passing CI check does not prove that CORS origins, database access, upstream URLs, API keys, or rate limits are safe. Include the relevant deployment boundary in a report without including its secret values.
 
 ## Migration warning
 
-Stop any running API process before running `bun run db:migrate`. The same `DATABASE_URL` is used by runtime and migrations, so it must be migration-capable; do not use a transaction-only PgBouncer endpoint as-is. The post-baseline single-admin cutover migration intentionally deletes existing users, virtual API keys, and audit-log records, then removes user ownership. Run migrations only with explicit approval and a verified backup; Prisma migrations are not applied during API startup.
+Stop any running API process before running `bun run db:migrate`. The same `DATABASE_URL` is used by runtime and migrations, so it must be migration-capable; do not use a transaction-only PgBouncer endpoint as-is. The post-baseline single-admin cutover migration intentionally deletes existing users, virtual API keys, and audit-log records, then removes user ownership. Run migrations only with explicit approval and a verified backup. Prisma migrations are not applied during API startup, but `docker-publish.yml` runs `prisma migrate deploy` on every deploy of `main`, so merging a migration is the approval point: require reviewers on the `production` environment.
 
 For routine development and support, see [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`SUPPORT.md`](SUPPORT.md). For a release or deployment checklist, see [`RELEASING.md`](RELEASING.md).

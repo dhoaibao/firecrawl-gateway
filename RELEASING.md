@@ -6,7 +6,7 @@ This document is a lightweight checklist for an authorized maintainer preparing 
 
 - The repository contains two independently deployable apps: `apps/api` (Node server) and `apps/admin` (static SPA).
 - `deploy.yml` runs CI (typecheck, lint, format check, test, build) for pull requests. `docker-publish.yml` runs the same checks on pushes to `main` and, only if they pass, builds and publishes the images to GHCR and deploys them over SSH, running `prisma migrate deploy` on each deploy. A manual rollback re-run with an earlier tag skips the checks. Neither publishes GitHub releases.
-- Firecrawl Cloud is an external service. A repository release does not create or upgrade it, nor does it redeploy a running self-hosted Firecrawl stack from `deploy/firecrawl`. The gateway's PostgreSQL runs in the `deploy/gateway` stack; a deploy keeps its `postgres_data` volume and does not change its major version.
+- Firecrawl Cloud is an external service. A repository release does not create or upgrade it. The deploy workflow recreates the self-hosted Firecrawl stack from `deploy/firecrawl` only when its compose file or the `FIRECRAWL_ENV_FILE` secret changed (see [`SELF_HOST.md`](SELF_HOST.md)). The gateway's PostgreSQL runs in the `deploy/gateway` stack; a deploy keeps its `postgres_data` volume and does not change its major version.
 
 ## Prepare the release
 
@@ -18,7 +18,8 @@ This document is a lightweight checklist for an authorized maintainer preparing 
   bun run build
   bun run lint
   bun run test
-  rtk git diff --check
+  bun run format:check
+  git diff --check
   ```
 
   If a check is not relevant or cannot run in the release environment, record that fact rather than implying it passed.
@@ -42,7 +43,7 @@ The exact version, tag, and release are decisions for the maintainer; this check
 
 Verify the deployment that corresponds to the intended commit:
 
-- Confirm the configured origins and `VITE_API_BASE_URL` match the deployed API/admin origins.
+- Confirm `ADMIN_ORIGIN` and `API_ORIGIN` match the deployed public origin. The Docker deployment serves the admin and the API on one origin and does not use `VITE_API_BASE_URL`.
 - Check the API `/health` and `/ready` endpoints, then perform a minimal non-sensitive request through the intended gateway origin.
 - Confirm the root-hosted admin loads and can reach the API using the configured origin.
 - Confirm the `maintenance` container logged a successful call (`docker compose logs maintenance`) and review logs without exposing secrets.
@@ -52,11 +53,11 @@ Green GitHub checks do not prove that either app deployed successfully or that t
 
 ## Prisma migrations are separate
 
-Do not treat a release or deployment as permission to migrate the database. Prisma migrations are separate, operationally sensitive, and approval-gated:
+A deployment applies pending Prisma migrations: `docker-publish.yml` stops the gateway and runs `prisma migrate deploy` on every deploy, so merging a migration to `main` is the cutover. Migrations are operationally sensitive and approval-gated, and API startup and builds never apply them. Treat the merge, or a manual `bun run db:migrate`, as the approval point:
 
 - Stop any running API process first.
 - Take or verify an appropriate PostgreSQL backup (for the bundled container, `docker compose exec -T postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > backup.sql`) and use a migration-capable direct `DATABASE_URL`; do not use a transaction-only PgBouncer endpoint as-is.
-- Review the exact migration and obtain explicit cutover approval before running `bun run db:migrate`.
+- Review the exact migration and obtain explicit cutover approval before merging it to `main` or running `bun run db:migrate`.
 - The post-baseline single-admin cutover intentionally deletes existing users, virtual API keys, and audit-log records, then removes user ownership. This is destructive. It is not applied by API startup, but `docker-publish.yml` stops the gateway and runs `prisma migrate deploy` on every deploy, so a database that has not yet applied it will be wiped by the next deploy; apply it deliberately or hold deploys until then. Require reviewers on the `production` environment to gate this.
 - Verify the API only after the migration completes successfully and the administrator has confirmed the resulting configuration.
 

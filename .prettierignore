@@ -14,3 +14,6 @@ node_modules/
 
 # Test and coverage output
 **/coverage/
+
+# b-agentic run state (git-ignored through the global excludes, which Prettier does not read)
+.b-agentic/
