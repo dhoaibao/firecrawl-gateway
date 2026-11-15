@@ -40,6 +40,7 @@ import { createApp, drainAndClose } from "./main";
 import { PrismaService } from "./prisma/prisma.service";
 import { ApiKeysService } from "./api-keys/api-keys.service";
 import { AuditService } from "./audit/audit.service";
+import { MetricsService } from "./metrics/metrics.service";
 
 let app: Awaited<ReturnType<typeof createApp>>;
 
@@ -102,11 +103,13 @@ describe("metrics endpoint", () => {
 
   it("scrapes without querying Postgres even when the database is unreachable", async () => {
     // The limiter flushes to Postgres through $queryRaw; the metrics route must bypass it.
+    // A client IP no other test uses, so a counted request would flush on first sight.
     const queryRaw = vi.spyOn(app.get(PrismaService), "$queryRaw");
 
     const response = await app.inject({
       method: "GET",
       url: "/admin/api/metrics",
+      remoteAddress: "198.51.100.30",
       headers: { authorization: "Bearer test-metrics-token-0123456789" },
     });
 
@@ -114,6 +117,89 @@ describe("metrics endpoint", () => {
     expect(queryRaw).not.toHaveBeenCalled();
     queryRaw.mockRestore();
   });
+});
+
+describe("per-IP rate limiting through the real pipeline", () => {
+  // Each test uses its own client IP: the limiter always syncs with Postgres the
+  // first time it sees an IP, so the stubbed count below applies deterministically.
+  function stubStoredCount(count: number) {
+    return vi
+      .spyOn(app.get(PrismaService), "$queryRaw")
+      .mockResolvedValue([{ count, reset_at: new Date(Date.now() + 60_000) }] as never);
+  }
+
+  it("answers 429 with the contract body and headers once an IP is over the limit", async () => {
+    const queryRaw = stubStoredCount(1_000);
+    const recordRateLimited = vi.spyOn(app.get(MetricsService), "recordRateLimited");
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/not-a-route",
+      remoteAddress: "198.51.100.10",
+    });
+
+    expect(response.statusCode).toBe(429);
+    expect(JSON.parse(response.body)).toEqual({
+      success: false,
+      error: "Too many requests. Please try again later.",
+    });
+    expect(response.headers["x-ratelimit-limit"]).toBe("300");
+    expect(response.headers["x-ratelimit-remaining"]).toBe("0");
+    expect(response.headers["x-ratelimit-reset"]).toBeDefined();
+    expect(response.headers["x-request-id"]).toBeDefined();
+    expect(recordRateLimited).toHaveBeenCalledTimes(1);
+    queryRaw.mockRestore();
+    recordRateLimited.mockRestore();
+  });
+
+  it("lets an under-limit IP through with the rate-limit headers", async () => {
+    const queryRaw = stubStoredCount(5);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/not-a-route",
+      remoteAddress: "198.51.100.11",
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.headers["x-ratelimit-limit"]).toBe("300");
+    expect(response.headers["x-ratelimit-remaining"]).toBe("295");
+    queryRaw.mockRestore();
+  });
+
+  it("limits the admin login route, which has no other throttle", async () => {
+    const queryRaw = stubStoredCount(1_000);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/admin/api/auth/login",
+      remoteAddress: "198.51.100.12",
+      payload: { email: "a@example.com", password: "wrong" },
+    });
+
+    expect(response.statusCode).toBe(429);
+    queryRaw.mockRestore();
+  });
+
+  it.each(["/health", "/ready", "/admin/api/metrics"])(
+    "does not count or header %s even for an IP over the limit",
+    async (url) => {
+      const queryRaw = stubStoredCount(1_000);
+
+      const response = await app.inject({
+        method: "GET",
+        url,
+        remoteAddress: "198.51.100.20",
+        headers: { authorization: "Bearer test-metrics-token-0123456789" },
+      });
+
+      expect(response.statusCode).not.toBe(429);
+      expect(response.headers["x-ratelimit-limit"]).toBeUndefined();
+      // /ready issues its own readiness query; the limiter itself must add none.
+      if (url !== "/ready") expect(queryRaw).not.toHaveBeenCalled();
+      queryRaw.mockRestore();
+    },
+  );
 });
 
 describe("graceful shutdown ordering", () => {

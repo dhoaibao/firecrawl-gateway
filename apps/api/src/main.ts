@@ -2,18 +2,20 @@ import "reflect-metadata";
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, NestFastifyApplication } from "@nestjs/platform-fastify";
 import cookie from "@fastify/cookie";
+import type { FastifyReply, FastifyRequest } from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import rawBody from "fastify-raw-body";
 import { AppModule } from "./app.module";
 import { loadConfig } from "./common/config";
+import { RateLimitMiddleware } from "./common/rate-limit.middleware";
 import { randomUUID } from "node:crypto";
 
 export async function createApp(): Promise<NestFastifyApplication> {
   const config = loadConfig();
   const adapter = new FastifyAdapter({
     bodyLimit: config.maxBodyBytes,
-    trustProxy: config.trustProxy === true || config.trustProxy === "true",
+    trustProxy: config.trustProxy,
     logger: { level: config.logLevel },
   });
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, adapter, {
@@ -41,6 +43,11 @@ export async function createApp(): Promise<NestFastifyApplication> {
     methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   });
   await fastify.register(helmet as unknown as FastifyRegisterPlugin);
+  const rateLimiter = app.get(RateLimitMiddleware);
+  // The cast bridges a duplicate fastify type copy (the cookie plugin's) only.
+  fastify.addHook("onRequest", (request, reply) =>
+    rateLimiter.handle(request as unknown as FastifyRequest, reply as unknown as FastifyReply),
+  );
   await app.init();
   const handled = config.authEnabled
     ? "/v1/*, /v2/*, /health, /ready, and /admin"

@@ -71,11 +71,12 @@ describe("RateLimitMiddleware (hybrid in-memory counting)", () => {
   async function makeRequestThrough(middleware: RateLimitMiddleware, ip?: string, url?: string) {
     const reply = makeReply();
     const next = vi.fn();
-    await middleware.use(
+    const result = await middleware.handle(
       url !== undefined ? makeRequest(url, ip) : makeRequest(undefined, ip),
       reply.reply,
-      next,
     );
+    // The hook resolves undefined when the request may continue and the reply when it sent a 429.
+    if (result === undefined) next();
     return { reply, next };
   }
 
@@ -225,7 +226,10 @@ describe("RateLimitMiddleware (hybrid in-memory counting)", () => {
       Array.from({ length: 5 }, () => {
         const reply = makeReply();
         const next = vi.fn();
-        return middleware.use(makeRequest(), reply.reply, next).then(() => ({ reply, next }));
+        return middleware.handle(makeRequest(), reply.reply).then((result) => {
+          if (result === undefined) next();
+          return { reply, next };
+        });
       }),
     );
 

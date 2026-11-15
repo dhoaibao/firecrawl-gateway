@@ -1,4 +1,4 @@
-import { MiddlewareConsumer, Module, NestModule, RequestMethod } from "@nestjs/common";
+import { Module } from "@nestjs/common";
 import { ApiConfigModule } from "./common/config.module";
 import { RateLimitMiddleware } from "./common/rate-limit.middleware";
 import { PrismaModule } from "./prisma/prisma.module";
@@ -28,10 +28,7 @@ import { AlertsModule } from "./alerts/alerts.module";
     HealthModule,
     CronModule,
   ],
+  // The per-IP limiter is a Fastify onRequest hook registered in `createApp`.
   providers: [RateLimitMiddleware],
 })
-export class AppModule implements NestModule {
-  configure(consumer: MiddlewareConsumer): void {
-    consumer.apply(RateLimitMiddleware).forRoutes({ path: "*path", method: RequestMethod.ALL });
-  }
-}
+export class AppModule {}
