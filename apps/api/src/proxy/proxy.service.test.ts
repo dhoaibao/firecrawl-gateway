@@ -32,7 +32,7 @@ function makeRequest(overrides: Record<string, unknown> = {}): RequestWithContex
   } as unknown as RequestWithContext;
 }
 
-function makeReply(events: string[] = []) {
+function makeReply(events: string[] = [], replyHeaders: Record<string, string> = {}) {
   const raw = new Writable({
     write(_chunk, _encoding, callback) {
       callback();
@@ -44,6 +44,7 @@ function makeReply(events: string[] = []) {
     headers: vi.fn(),
     send: vi.fn(),
     hijack: vi.fn(),
+    getHeaders: vi.fn(() => replyHeaders),
     raw,
   };
   reply.code.mockReturnValue(reply);
@@ -654,6 +655,49 @@ describe("ProxyService", () => {
     }
   });
 
+  it.each([
+    [200, "streamed"],
+    [404, "buffered"],
+  ] as const)(
+    "keeps the gateway's X-RateLimit headers over the upstream's on a %s %s response",
+    async (status, _kind) => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response('{"success":true}', {
+          status,
+          headers: {
+            "content-type": "application/json",
+            "X-RateLimit-Limit": "1000",
+            "x-ratelimit-remaining": "999",
+            "x-upstream-other": "kept",
+          },
+        }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const reply = makeReply([], {
+        "x-ratelimit-limit": "300",
+        "x-ratelimit-remaining": "42",
+        "x-ratelimit-reset": "1790000000",
+        "x-request-id": "not-a-ratelimit-header",
+      });
+
+      await makeService().handle(makeRequest(), reply as never);
+
+      const headers = (reply.raw.writeHead.mock.calls[0]?.[1] ??
+        reply.headers.mock.calls[0]?.[0]) as Record<string, string>;
+      expect(headers).toMatchObject({
+        "x-ratelimit-limit": "300",
+        "x-ratelimit-remaining": "42",
+        "x-ratelimit-reset": "1790000000",
+        "x-upstream-other": "kept",
+      });
+      // The upstream's differently-cased duplicate is gone, and only X-RateLimit-* is copied.
+      expect(Object.keys(headers).filter((name) => /^x-ratelimit-limit$/i.test(name))).toHaveLength(
+        1,
+      );
+      expect(headers).not.toHaveProperty("x-request-id");
+    },
+  );
+
   it("drops client cookies upstream but still treats them as sensitive for fallback", async () => {
     const key = "fc_cloud_key_1234567890";
     const encrypted = encryptSettingValue(JSON.stringify([key]), config.firecrawlKeysEncryptionKey);
@@ -674,6 +718,76 @@ describe("ProxyService", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][1].headers).not.toHaveProperty("cookie");
     expect(credits.reserve).not.toHaveBeenCalled();
+  });
+});
+
+describe("ProxyService path guard", () => {
+  const unsafePaths = [
+    "/v1/../v0/admin/x",
+    "/v1/../../x",
+    "/v2/./crawl",
+    "/v1/..",
+    "/v1/..\\v0/x",
+    "/v1/%2e%2e/v0/x",
+    "/v1/%2E%2E/v0/x",
+    "/v1/.%2e/v0/x",
+    "/v1/a%2fb",
+    "/v1/a%2Fb",
+    "/v1/a%5cb",
+    "/v1/a%5Cb",
+    "/v1/a/../b?x=1",
+  ];
+
+  it.each(unsafePaths)("answers 400 and never forwards %s", async (url) => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const settings = makeSettings();
+    const audit = { appendAudit: vi.fn().mockResolvedValue(undefined) };
+    const service = makeService(settings, audit);
+    const reply = makeReply();
+
+    await service.handle(makeRequest({ raw: { url }, url }), reply as never);
+
+    expect(reply.code).toHaveBeenCalledWith(400);
+    expect(reply.send).toHaveBeenCalledWith({ success: false, error: "Invalid request path" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    // Rejected before authentication and settings are loaded.
+    expect(settings.getSettings).not.toHaveBeenCalled();
+  });
+
+  it("rejects a playground-style path whose prefix was stripped, like the route does", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const service = makeService();
+    const reply = makeReply();
+
+    await service.handle(makeRequest(), reply as never, "/v1/../v0/x");
+
+    expect(reply.code).toHaveBeenCalledWith(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["/v1/scrape", "https://self.test/v1/scrape"],
+    [
+      "/v2/crawl/0b6d6f1e-4f5a-4c3c-9c1a-123456789abc",
+      "https://self.test/v2/crawl/0b6d6f1e-4f5a-4c3c-9c1a-123456789abc",
+    ],
+    ["/v1/file..name", "https://self.test/v1/file..name"],
+    [
+      "/v2/crawl?url=https%3A%2F%2Fexample.com%2Fa%2F..%2Fb&x=%5C",
+      "https://self.test/v2/crawl?url=https%3A%2F%2Fexample.com%2Fa%2F..%2Fb&x=%5C",
+    ],
+  ])("still forwards %s unchanged", async (url, expected) => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const service = makeService();
+    const reply = makeReply();
+
+    await service.handle(makeRequest({ raw: { url }, url }), reply as never);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toBe(expected);
   });
 });
 

@@ -125,6 +125,17 @@ interface Outcome {
   cacheHit?: boolean;
 }
 
+// The raw path is forwarded upstream byte for byte, but Fastify's `/v1/*` match and the
+// `new URL` used for policy are looser than what the upstream resolves: a `.` or `..`
+// segment, a backslash, or an encoded dot, slash or backslash could climb out of
+// `/v1/` or `/v2/`. Reject those instead of forwarding them. Only the path is checked:
+// query strings legitimately carry encoded URLs.
+const UNSAFE_PATH = /(?:^|\/)\.{1,2}(?:\/|$)|\\|%2e|%2f|%5c/i;
+
+function hasUnsafePath(url: string): boolean {
+  return UNSAFE_PATH.test(url.split(/[?#]/, 1)[0]);
+}
+
 // `routeMode` was once a client override; it is no longer honored, so do not forward it upstream.
 function withoutRouteModeParam(originalUrl: string, parsedUrl: URL): string {
   if (!parsedUrl.searchParams.has("routeMode")) return originalUrl;
@@ -323,6 +334,10 @@ export class ProxyService {
     reply: FastifyReply,
     originalUrl: string,
   ): ProxyContext | null {
+    if (hasUnsafePath(originalUrl)) {
+      reply.code(400).send({ success: false, error: "Invalid request path" });
+      return null;
+    }
     let parsedUrl: URL;
     try {
       parsedUrl = new URL(originalUrl, "http://gateway.local");
@@ -914,6 +929,14 @@ export class ProxyService {
       headers[key] = value;
     });
     headers["x-hybrid-firecrawl-backend"] = meta.backendLabel ?? result.backend;
+    // The per-IP limiter's X-RateLimit-* headers are the client's allowance at this gateway:
+    // they replace any the upstream sent, and a hijacked (streamed) reply would drop them.
+    for (const [name, value] of Object.entries(reply.getHeaders())) {
+      if (!name.toLowerCase().startsWith("x-ratelimit-") || value === undefined) continue;
+      for (const existing of Object.keys(headers))
+        if (existing.toLowerCase() === name.toLowerCase()) delete headers[existing];
+      headers[name] = String(value);
+    }
     if (meta.cache) headers["x-hybrid-firecrawl-cache"] = meta.cache;
     headers["x-hybrid-firecrawl-fallback"] = String(meta.fallbackUsed);
     if (meta.fallbackReason) headers["x-hybrid-firecrawl-fallback-reason"] = meta.fallbackReason;
