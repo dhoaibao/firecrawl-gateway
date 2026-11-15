@@ -48,6 +48,8 @@ function parseMonthlyQuota(value: unknown): number | null | undefined {
   return value;
 }
 
+const MAX_KEY_NAME_LENGTH = 255;
+
 interface LimitsBody {
   expires_at?: unknown;
   rate_limit_per_minute?: unknown;
@@ -88,8 +90,11 @@ export class ApiKeysController {
   }
 
   @Post()
-  async create(@Body() body: LimitsBody & { name?: unknown }) {
-    if (typeof body.name !== "string" || !body.name) apiError(400, "name is required");
+  async create(@Body() body: (LimitsBody & { name?: unknown }) | undefined) {
+    if (typeof body?.name !== "string" || !body.name) apiError(400, "name is required");
+    // `name` is VarChar(255): count characters, not UTF-16 units, as PostgreSQL does.
+    if ([...body.name].length > MAX_KEY_NAME_LENGTH)
+      apiError(400, `name must be at most ${MAX_KEY_NAME_LENGTH} characters`);
     return { data: await this.keys.createApiKey(body.name, parseLimits(body)) };
   }
 

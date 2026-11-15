@@ -58,6 +58,34 @@ describe("ApiKeysController", () => {
     });
   });
 
+  it.each([undefined, null, {}, { name: "" }, { name: 7 }])(
+    "answers 400, not 500, when the name is missing (%j)",
+    async (body) => {
+      const keys = { createApiKey: vi.fn() };
+      const controller = new ApiKeysController(keys as never);
+
+      await expect(controller.create(body as never)).rejects.toMatchObject({ status: 400 });
+      expect(keys.createApiKey).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects a name over 255 characters but accepts exactly 255, counting code points", async () => {
+    const keys = { createApiKey: vi.fn().mockResolvedValue({ ...record(), key: "fc_x" }) };
+    const controller = new ApiKeysController(keys as never);
+
+    await expect(controller.create({ name: "a".repeat(256) })).rejects.toMatchObject({
+      status: 400,
+    });
+    expect(keys.createApiKey).not.toHaveBeenCalled();
+
+    // 255 astral characters are 510 UTF-16 units but fit VarChar(255).
+    await controller.create({ name: "😀".repeat(255) });
+    expect(keys.createApiKey).toHaveBeenCalledTimes(1);
+    await expect(controller.create({ name: "😀".repeat(256) })).rejects.toMatchObject({
+      status: 400,
+    });
+  });
+
   it("reports this month's quota usage only for keys that have a quota", async () => {
     const keys = {
       listApiKeys: vi

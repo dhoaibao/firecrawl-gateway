@@ -20,6 +20,9 @@ function oneOf<T extends string>(value: string | undefined, name: string, allowe
 }
 
 export function parseStatsFilter(query: Record<string, string | undefined>): AuditStatsFilter {
+  // A repeated query parameter (`?search=a&search=b`) arrives as an array.
+  for (const [name, value] of Object.entries(query))
+    if (value !== undefined && typeof value !== "string") apiError(400, `${name} is invalid`);
   const search = query.search;
   if (search !== undefined && search.length > 200) apiError(400, "search is too long");
   const tz = query.tz === undefined || query.tz === "" ? undefined : query.tz;

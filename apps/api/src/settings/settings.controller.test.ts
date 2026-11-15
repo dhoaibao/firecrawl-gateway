@@ -1,3 +1,4 @@
+import { Logger } from "@nestjs/common";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsController } from "./settings.controller";
 import { decryptSettingValue, encryptSettingValue, generateEncryptionKey } from "../common/crypto";
@@ -169,6 +170,38 @@ describe("SettingsController list legacy migration", () => {
       expect.stringMatching(/^enc:v1:/),
     );
     expect(settings.setSetting).not.toHaveBeenCalled();
+  });
+});
+
+describe("SettingsController list with unreadable keys", () => {
+  it("omits an undecryptable key list, keeps the other settings, and rewrites nothing", async () => {
+    const otherKey = generateEncryptionKey();
+    const unreadable = encryptSettingValue(
+      JSON.stringify(["fc_test_key_1234567890abcdef"]),
+      otherKey,
+    );
+    const settings = {
+      listSettings: vi.fn().mockResolvedValue([
+        { key: "default_route_mode", value: "self-hosted-only", updated_at: "" },
+        { key: "firecrawl_api_keys", value: unreadable, updated_at: "" },
+      ]),
+      setSetting: vi.fn(),
+      replaceSettingIfUnchanged: vi.fn(),
+    };
+    const warn = vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    const controller = new SettingsController(settings as never, config as never, {} as never);
+
+    const { data } = await controller.list();
+
+    expect(data).toEqual({ default_route_mode: "self-hosted-only" });
+    expect(settings.replaceSettingIfUnchanged).not.toHaveBeenCalled();
+    expect(settings.setSetting).not.toHaveBeenCalled();
+    // Only the error class is logged, never the stored value or key material.
+    expect(warn).toHaveBeenCalledTimes(1);
+    const message = String(warn.mock.calls[0][0]);
+    expect(message).toContain("firecrawl_api_keys");
+    expect(message).not.toContain(unreadable);
+    expect(message).not.toContain(encryptionKey);
   });
 });
 

@@ -81,10 +81,21 @@ export class SettingsController {
         data[row.key] = this.maskedTelegramToken(row.value);
         continue;
       }
-      const value =
-        row.key === "firecrawl_api_keys"
-          ? decryptSettingValue(row.value, this.config.firecrawlKeysEncryptionKey)
-          : { value: row.value, encrypted: false };
+      let value: { value: string; encrypted: boolean };
+      if (row.key === "firecrawl_api_keys") {
+        try {
+          value = decryptSettingValue(row.value, this.config.firecrawlKeysEncryptionKey);
+        } catch (error) {
+          // A changed encryption key or a corrupt row must not fail the whole list. The key
+          // list is left out, and nothing is rewritten, so the stored value stays intact.
+          this.logger.warn(
+            `Stored firecrawl_api_keys could not be decrypted (${error instanceof Error ? error.name : "unknown error"})`,
+          );
+          continue;
+        }
+      } else {
+        value = { value: row.value, encrypted: false };
+      }
       data[row.key] =
         row.key === "firecrawl_api_keys"
           ? keyEntriesOrRaw(value.value)

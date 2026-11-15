@@ -125,6 +125,33 @@ describe("AuditController data", () => {
   });
 });
 
+describe("AuditController stats query parsing", () => {
+  it.each(["search", "backend", "tz", "range", "day"])(
+    "answers 400, not 500, for a repeated %s parameter on stats and usage",
+    async (name) => {
+      const audit = makeAuditMock();
+      const controller = new AuditController(audit as unknown as AuditService);
+      const query = { [name]: ["a", "b"] } as unknown as Record<string, string>;
+
+      await expect(controller.stats(query)).rejects.toMatchObject({ status: 400 });
+      await expect(controller.apiKeyUsage(query)).rejects.toMatchObject({ status: 400 });
+      expect(audit.readAuditStats).not.toHaveBeenCalled();
+      expect(audit.readApiKeyUsage).not.toHaveBeenCalled();
+    },
+  );
+
+  it("still accepts single string parameters", async () => {
+    const audit = makeAuditMock();
+    const controller = new AuditController(audit as unknown as AuditService);
+
+    await controller.stats({ search: "scrape", backend: "cloud" });
+
+    expect(audit.readAuditStats).toHaveBeenCalledWith(
+      expect.objectContaining({ search: "scrape", backend: "cloud" }),
+    );
+  });
+});
+
 describe("AuditService readAuditStats", () => {
   it("aggregates over the whole table without a row cap", async () => {
     const queryRaw = vi.fn().mockResolvedValue([
