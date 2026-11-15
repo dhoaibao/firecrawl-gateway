@@ -32,7 +32,7 @@ USER node
 EXPOSE 8080
 CMD ["node", "dist/main.js"]
 
-FROM nginxinc/nginx-unprivileged:1.27-alpine AS web
+FROM nginx/nginx-unprivileged:1.30-alpine AS web
 COPY deploy/gateway/web.nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/apps/admin/dist /usr/share/nginx/html
 EXPOSE 8080
