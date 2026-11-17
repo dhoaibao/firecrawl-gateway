@@ -2,6 +2,13 @@ import crypto from "node:crypto";
 
 const ENCRYPTION_PREFIX = "enc:v1";
 const KEY_BYTES = 32;
+const AUTH_TAG_BYTES = 16;
+
+/** Constant-time string equality: hashing first makes the compared buffers equal in length. */
+export function safeEqualStrings(a: string, b: string): boolean {
+  const digest = (value: string) => crypto.createHash("sha256").update(value).digest();
+  return crypto.timingSafeEqual(digest(a), digest(b));
+}
 
 function encryptionKey(key: string): Buffer {
   if (!/^[0-9a-fA-F]{64}$/.test(key)) {
@@ -34,12 +41,16 @@ export function decryptSettingValue(
   const parts = value.split(":");
   if (parts.length !== 5) throw new Error("Invalid encrypted Firecrawl API key setting");
   const [, , ivEncoded, tagEncoded, ciphertextEncoded] = parts;
+  const tag = Buffer.from(tagEncoded, "base64url");
+  // GCM would accept a truncated tag, which weakens authentication: require the full 16 bytes.
+  if (tag.length !== AUTH_TAG_BYTES) throw new Error("Invalid encrypted Firecrawl API key setting");
   const decipher = crypto.createDecipheriv(
     "aes-256-gcm",
     encryptionKey(key),
     Buffer.from(ivEncoded, "base64url"),
+    { authTagLength: AUTH_TAG_BYTES },
   );
-  decipher.setAuthTag(Buffer.from(tagEncoded, "base64url"));
+  decipher.setAuthTag(tag);
   const plaintext = Buffer.concat([
     decipher.update(Buffer.from(ciphertextEncoded, "base64url")),
     decipher.final(),

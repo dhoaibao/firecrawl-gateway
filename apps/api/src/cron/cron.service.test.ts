@@ -21,6 +21,7 @@ function makeService(queryRaw: ReturnType<typeof vi.fn>) {
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     } as never,
     credits as never,
+    { clearValidationCache: vi.fn() } as never,
   );
 }
 
@@ -70,6 +71,83 @@ function makeDispatchPrisma(options: {
 }
 
 describe("CronService", () => {
+  const authService = (cronSecret: string) =>
+    new CronService(
+      {} as never,
+      {} as never,
+      { cronSecret } as never,
+      {} as never,
+      { clearValidationCache: vi.fn() } as never,
+    );
+
+  it.each([
+    ["Bearer secret", "secret", true],
+    ["Bearer wrong", "secret", false],
+    ["bearer secret", "secret", false],
+    ["Bearer  secret", "secret", false],
+    ["Bearer secret ", "secret", false],
+    ["secret", "secret", false],
+    ["", "secret", false],
+    [undefined, "secret", false],
+    ["Bearer ", "", false],
+    ["", "", false],
+    [undefined, "", false],
+  ])("authorizes the cron header %j against secret %j: %s", (header, secret, expected) => {
+    expect(authService(secret).isAuthorized(header)).toBe(expected);
+  });
+
+  describe("auto-revoking inactive keys", () => {
+    function revokingService(updateMany: ReturnType<typeof vi.fn>, days: string | null) {
+      const apiKeys = { clearValidationCache: vi.fn() };
+      const settings = {
+        getSetting: vi.fn(async (key: string) =>
+          key === "api_key_inactivity_revoke_days" && days !== null ? { key, value: days } : null,
+        ),
+      };
+      const service = new CronService(
+        { $queryRaw: vi.fn().mockResolvedValue([]), apiKey: { updateMany } } as never,
+        settings as never,
+        { cronSecret: "secret" } as never,
+        { refreshCreditUsageForKeys: vi.fn().mockResolvedValue([]) } as never,
+        apiKeys as never,
+      );
+      return { service, apiKeys };
+    }
+
+    it("clears the validation cache when keys were revoked", async () => {
+      const updateMany = vi.fn().mockResolvedValue({ count: 2 });
+      const { service, apiKeys } = revokingService(updateMany, "30");
+
+      await expect(service.runMaintenance()).resolves.toMatchObject({ revoked: 2 });
+
+      expect(updateMany).toHaveBeenCalledTimes(1);
+      expect(apiKeys.clearValidationCache).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves the validation cache alone when nothing was revoked", async () => {
+      const updateMany = vi.fn().mockResolvedValue({ count: 0 });
+      const { service, apiKeys } = revokingService(updateMany, "30");
+
+      await expect(service.runMaintenance()).resolves.toMatchObject({ revoked: 0 });
+
+      expect(updateMany).toHaveBeenCalledTimes(1);
+      expect(apiKeys.clearValidationCache).not.toHaveBeenCalled();
+    });
+
+    it.each([null, "0", "-1", "abc"])(
+      "does not revoke or clear the cache when the setting is %j",
+      async (days) => {
+        const updateMany = vi.fn();
+        const { service, apiKeys } = revokingService(updateMany, days);
+
+        await expect(service.runMaintenance()).resolves.toMatchObject({ revoked: 0 });
+
+        expect(updateMany).not.toHaveBeenCalled();
+        expect(apiKeys.clearValidationCache).not.toHaveBeenCalled();
+      },
+    );
+  });
+
   it("refreshes configured credit pools as part of daily maintenance", async () => {
     const key = "fc_cron_key_12345678";
     const encryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -92,6 +170,7 @@ describe("CronService", () => {
       settings as never,
       { cronSecret: "secret", firecrawlKeysEncryptionKey: encryptionKey } as never,
       credits as never,
+      { clearValidationCache: vi.fn() } as never,
     );
 
     await expect(service.runMaintenance()).resolves.toMatchObject({ creditUsageRefreshed: 1 });
@@ -118,6 +197,7 @@ describe("CronService", () => {
       settings as never,
       { cronSecret: "secret", firecrawlKeysEncryptionKey: encryptionKey } as never,
       credits as never,
+      { clearValidationCache: vi.fn() } as never,
     );
 
     await service.runMaintenance();

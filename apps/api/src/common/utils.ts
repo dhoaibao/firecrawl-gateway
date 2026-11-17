@@ -51,6 +51,29 @@ export function collectTargetUrls(jsonBody: unknown): string[] {
   return [...new Set(urls)];
 }
 
+const URL_SCHEME_PREFIX = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+// Target URLs for the privacy check. Firecrawl accepts a `url`/`urls` value without a scheme
+// (`10.0.0.5:8080/admin`), which `collectTargetUrls` ignores, so those values get an assumed
+// `http://` here. Only these keys are widened: treating every string as a host would flag
+// plain words such as `markdown` as private.
+export function collectPrivacyTargetUrls(jsonBody: unknown): string[] {
+  const urls = collectTargetUrls(jsonBody);
+  const addCandidate = (value: unknown) => {
+    if (typeof value !== "string") return;
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    urls.push(URL_SCHEME_PREFIX.test(trimmed) ? trimmed : `http://${trimmed}`);
+  };
+  for (const key of ["url", "urls"]) {
+    for (const value of findObjectsByKey(jsonBody, key)) {
+      if (Array.isArray(value)) value.forEach(addCandidate);
+      else addCandidate(value);
+    }
+  }
+  return [...new Set(urls)];
+}
+
 function isPrivateHostname(hostname: string): boolean {
   let host = hostname.toLowerCase();
   // Strip IPv6 brackets so "[::1]" normalizes to "::1"

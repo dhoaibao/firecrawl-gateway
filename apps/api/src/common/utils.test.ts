@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  collectPrivacyTargetUrls,
   collectTargetUrls,
   findObjectsByKey,
   hasPrivateTargetUrl,
@@ -79,6 +80,46 @@ describe("collectTargetUrls", () => {
   it("returns nothing for bodies without URLs", () => {
     expect(collectTargetUrls(null)).toEqual([]);
     expect(collectTargetUrls({ a: [1, true, "plain"] })).toEqual([]);
+  });
+});
+
+describe("collectPrivacyTargetUrls", () => {
+  it.each([
+    { url: "10.0.0.5:8080/admin" },
+    { url: "localhost:3000" },
+    { url: "[::1]:80" },
+    { url: "user@10.0.0.5" },
+    { url: "  10.0.0.5/x  " },
+    { urls: ["example.com", "192.168.1.1/x"] },
+    { nested: { deeper: [{ url: "grafana:3000/d/x" }] } },
+    { url: "http://10.0.0.5/" },
+  ])("treats %j as a private target", (body) => {
+    expect(hasPrivateTargetUrl(collectPrivacyTargetUrls(body))).toBe(true);
+  });
+
+  it.each([
+    { url: "example.com/page", formats: ["markdown"] },
+    { urls: ["example.com", "https://sub.example.com:8443/x"] },
+    { formats: ["markdown", "html"], onlyMainContent: true },
+    { url: { nested: "object" } },
+    { url: "" },
+    { url: 42 },
+  ])("does not treat %j as private", (body) => {
+    expect(hasPrivateTargetUrl(collectPrivacyTargetUrls(body))).toBe(false);
+  });
+
+  it("adds http:// only to scheme-less url/urls values and keeps scheme-ful values as given", () => {
+    expect(
+      collectPrivacyTargetUrls({
+        url: "example.com/a",
+        urls: ["https://b.example/", "c.example"],
+        other: "plain",
+      }),
+    ).toEqual(["https://b.example/", "http://example.com/a", "http://c.example"]);
+  });
+
+  it("leaves collectTargetUrls limited to http(s) strings", () => {
+    expect(collectTargetUrls({ url: "10.0.0.5:8080/admin", urls: ["example.com"] })).toEqual([]);
   });
 });
 

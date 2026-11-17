@@ -918,6 +918,52 @@ describe("ProxyService routing outcomes", () => {
     expect(entry).toMatchObject({ status_code: 503, backend_used: "self-hosted" });
   });
 
+  it.each([
+    ["scheme-less IPv4", { url: "10.0.0.5:8080/admin" }],
+    ["scheme-less localhost in urls", { urls: ["example.com", "localhost:3000"] }],
+    ["scheme-ful private URL", { url: "http://10.0.0.5:8080/admin" }],
+  ])("never falls back to Cloud for a private target URL (%s)", async (_label, body) => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("unavailable", { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const credits = creditsReserving(KEYS[0]);
+
+    const { reply, entry } = await run(cloudSettings(KEYS, "self-hosted-first"), credits, {
+      headers: { "content-type": "application/json" },
+      body,
+      rawBody: Buffer.from(JSON.stringify(body)),
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("https://self.test/v1/test");
+    expect(credits.reserve).not.toHaveBeenCalled();
+    expect(reply.code).toHaveBeenCalledWith(503);
+    expect(entry).toMatchObject({ status_code: 503, backend_used: "self-hosted" });
+    // Only http(s) targets are recorded in the audit log, so a scheme-less value stays out of it.
+    expect(entry.target_url).toBe("url" in body && /^http/.test(body.url) ? body.url : "");
+  });
+
+  it("still falls back to Cloud for a public scheme-less target URL", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const body = { url: "example.com/page" };
+
+    const { entry } = await run(
+      cloudSettings(KEYS, "self-hosted-first"),
+      creditsReserving(KEYS[0]),
+      {
+        headers: { "content-type": "application/json" },
+        body,
+        rawBody: Buffer.from(JSON.stringify(body)),
+      },
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(entry).toMatchObject({ backend_used: "cloud", fallback_used: true, target_url: "" });
+  });
+
   it("rotates to the next Cloud key after a 429 and reports why", async () => {
     const fetchMock = vi
       .fn()

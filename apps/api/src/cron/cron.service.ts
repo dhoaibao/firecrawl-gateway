@@ -6,6 +6,8 @@ import { loadCloudApiKeys } from "../settings/cloud-keys";
 import { API_CONFIG } from "../common/config.provider";
 import type { ApiConfig } from "../common/config";
 import { CreditRoutingService } from "../credits/credit-routing.service";
+import { ApiKeysService } from "../api-keys/api-keys.service";
+import { safeEqualStrings } from "../common/crypto";
 
 @Injectable()
 export class CronService {
@@ -20,10 +22,13 @@ export class CronService {
     private readonly settings: SettingsService,
     @Inject(API_CONFIG) private readonly config: ApiConfig,
     private readonly credits: CreditRoutingService,
+    private readonly apiKeys: ApiKeysService,
   ) {}
 
   isAuthorized(authorization: string | undefined): boolean {
-    return Boolean(this.config.cronSecret) && authorization === `Bearer ${this.config.cronSecret}`;
+    const { cronSecret } = this.config;
+    if (!cronSecret || typeof authorization !== "string") return false;
+    return safeEqualStrings(authorization, `Bearer ${cronSecret}`);
   }
 
   async runMaintenance(): Promise<{
@@ -132,15 +137,17 @@ export class CronService {
     const days = Number(record?.value);
     if (!Number.isFinite(days) || days <= 0) return 0;
     const threshold = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-    return (
-      await this.prisma.apiKey.updateMany({
-        where: {
-          revoked: false,
-          createdAt: { lt: threshold },
-          OR: [{ lastUsedAt: null }, { lastUsedAt: { lt: threshold } }],
-        },
-        data: { revoked: true },
-      })
-    ).count;
+    const { count } = await this.prisma.apiKey.updateMany({
+      where: {
+        revoked: false,
+        createdAt: { lt: threshold },
+        OR: [{ lastUsedAt: null }, { lastUsedAt: { lt: threshold } }],
+      },
+      data: { revoked: true },
+    });
+    // Validation results are cached for a short TTL; drop them so the revoked keys stop
+    // authenticating on this instance now, as with a manual revoke.
+    if (count > 0) this.apiKeys.clearValidationCache();
+    return count;
   }
 }

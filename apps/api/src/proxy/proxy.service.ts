@@ -13,6 +13,7 @@ import type {
 } from "../common/types";
 import {
   cryptoRandomId,
+  collectPrivacyTargetUrls,
   collectTargetUrls,
   hasPrivateTargetUrl,
   inspectBody,
@@ -458,11 +459,12 @@ export class ProxyService {
       });
       return null;
     }
-    const targetUrls = collectTargetUrls(json);
-    ctx.primaryTargetUrl = targetUrls[0] || "";
+    // The audit log keeps only http(s) targets; the privacy check also assumes http:// for a
+    // scheme-less `url`/`urls` value so `10.0.0.5:8080/admin` still blocks Cloud fallback.
+    ctx.primaryTargetUrl = collectTargetUrls(json)[0] || "";
     const privacy: PrivacyFlags = {
       hasSensitiveHeaders: hasSensitiveHeaders(this.privacyHeaders(request), json),
-      hasPrivateTargetUrl: hasPrivateTargetUrl(targetUrls),
+      hasPrivateTargetUrl: hasPrivateTargetUrl(collectPrivacyTargetUrls(json)),
     };
     const needsCloud = requestNeedsCloud(ctx.path, json);
     const firstBackend = chooseInitialBackend(ctx.routeMode, needsCloud);

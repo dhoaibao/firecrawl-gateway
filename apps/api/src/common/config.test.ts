@@ -117,6 +117,43 @@ describe("loadConfig", () => {
     ).toBe("http://firecrawl:3002");
   });
 
+  it.each([
+    [undefined, true],
+    ["", true],
+    ["   ", true],
+    ["true", true],
+    ["1", true],
+    ["yes", true],
+    ["ON", true],
+    ["false", false],
+    ["0", false],
+    ["No", false],
+    ["off", false],
+  ])("parses AUTH_ENABLED=%j as %s", (value, expected) => {
+    const env = expected ? baseEnv : { ...baseEnv, SESSION_SECRET: undefined };
+    expect(loadConfig({ ...env, AUTH_ENABLED: value }).authEnabled).toBe(expected);
+  });
+
+  it.each(["", "   "])(
+    "keeps authentication on and requires admin credentials for a blank AUTH_ENABLED=%j",
+    (value) => {
+      expect(() =>
+        loadConfig({
+          DATABASE_URL: baseEnv.DATABASE_URL,
+          FIRECRAWL_KEYS_ENCRYPTION_KEY: baseEnv.FIRECRAWL_KEYS_ENCRYPTION_KEY,
+          AUTH_ENABLED: value,
+        }),
+      ).toThrow(/ADMIN_EMAIL is required/);
+    },
+  );
+
+  it.each(["maybe", "2", "enabled"])(
+    "fails startup for the unrecognized AUTH_ENABLED=%j",
+    (value) => {
+      expect(() => loadConfig({ ...baseEnv, AUTH_ENABLED: value })).toThrow();
+    },
+  );
+
   it("allows an empty session secret when authentication is disabled", () => {
     const config = loadConfig({ AUTH_ENABLED: "false", ...baseEnv, SESSION_SECRET: undefined });
 

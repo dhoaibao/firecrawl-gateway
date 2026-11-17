@@ -1,9 +1,12 @@
 import { z } from "zod";
 
+// Unset or blank means the default (true). Blank must never read as false: a bare `AUTH_ENABLED=`
+// line would otherwise silently turn authentication off.
 const boolFromEnv = z.preprocess((value) => {
   if (value === undefined) return true;
   const normalized = String(value).trim().toLowerCase();
-  if (["", "false", "0", "no", "off"].includes(normalized)) return false;
+  if (normalized === "") return true;
+  if (["false", "0", "no", "off"].includes(normalized)) return false;
   if (["true", "1", "yes", "on"].includes(normalized)) return true;
   return value;
 }, z.boolean());
